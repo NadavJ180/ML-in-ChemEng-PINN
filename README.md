@@ -2,4 +2,4 @@
 Create a PINN for an end of course project in Machine Learning
 
 
-By Nadav Jaan & Alon Solomiak
+By Nadav Jean & Alon Solomiak
