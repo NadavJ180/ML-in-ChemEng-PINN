@@ -1,0 +1,16 @@
+# Python environment
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Data and Models
+data/*
+!data/.gitkeep
+*.pt
+*.pth
+
+# IDE and OS files
+.vscode/
+.idea/
+.DS_Store
