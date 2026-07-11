@@ -1,6 +1,6 @@
 import torch
 import pytest
-from src.data.taylor_green import generate_tgv, compute_nu_and_T
+from src.data.taylor_green import generate_tgv, compute_nu, compute_T
 from src.physics.navier_stokes import compute_residuals
 
 def test_navier_stokes_tgv_compliance():
@@ -12,7 +12,7 @@ def test_navier_stokes_tgv_compliance():
     U0 = 1.0
     Re = 100.0
     k = 1
-    nu, T = compute_nu_and_T(U0, Re, k)
+    nu, T = compute_nu(U0, Re, k), compute_T(U0, Re, k)
     
     # 2. Generate random collocation points (x, y, t)
     # We use view(-1, 1) to ensure they are column vectors
