@@ -1,9 +1,9 @@
 import torch
 
-def compute_nu_and_T(U0: float, Re: float, k: int) -> tuple[float, float]:
+def compute_nu(U0: float, Re: float, k: int) -> float:
     """
-    Computes the kinematic viscosity and the final simulation time for the 
-    Taylor-Green Vortex to ensure appropriate physical decay scaling.
+    Computes the kinematic viscosity for the 
+    Taylor-Green Vortex.
     
     Args:
         U0 : Maximum initial velocity amplitude.
@@ -12,15 +12,31 @@ def compute_nu_and_T(U0: float, Re: float, k: int) -> tuple[float, float]:
         
     Returns:
         - nu :  Kinematic viscosity of the fluid
+    """
+    nu = U0 / (Re * k)
+    
+    return nu
+
+def compute_T(U0: float, Re: float, k: int) -> float:
+    """
+    Computes the final simulation time for the 
+    Taylor-Green Vortex to ensure appropriate physical decay scaling.
+    
+    Args:
+        U0 : Maximum initial velocity amplitude.
+        Re : Reynolds number, representing the ratio of inertial to viscous forces.
+        k  : Integer wavenumber dictating the spatial frequency of the vortices.
+        
+    Returns:
         - T  :  Final simulation time, scaled by the exponential decay rate (time constant- tau)  
                 to ensure the flow is captured before dissipating completely. 
                 Capped at a maximum of 2.0 seconds.
     """
-    nu = U0 / (Re * k)
+    nu = compute_nu(U0, Re, k)
     tau = 1.0 / (2 * nu * k**2)     # Time constant for the exponential decay of the flow field
     T = min(2.0, tau)
     
-    return nu, T
+    return T
 
 def generate_tgv(x: torch.Tensor, y: torch.Tensor, t: torch.Tensor, 
                  U0: float, k: int, phi_x: float, phi_y: float, nu: float) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
