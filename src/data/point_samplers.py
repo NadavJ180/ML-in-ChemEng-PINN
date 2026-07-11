@@ -73,7 +73,8 @@ def sample_periodic_boundaries(T: float, N_bc_per_axis: int = 1000) -> dict:
 
     Returns:
         dict: A dictionary containing two keys ('x_bounds', 'y_bounds'), where each 
-        value is a tuple of two tensors representing the paired boundary coordinates.
+        value is a tuple of two tensors representing the paired boundary coordinates 
+        (bottom / left, top / right).
     """
     # X-boundaries (x=0 and x=2π)
     y_x_bounds = torch.empty(N_bc_per_axis, 1).uniform_(0, 2 * torch.pi)
