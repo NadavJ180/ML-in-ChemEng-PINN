@@ -27,7 +27,11 @@ def test_sampler_acceptance_criteria():
     
     for case in all_cases:
         case_id = case["case_id"]
-        T = compute_T(case["U0"], case["Re"], case["k"]) 
+        T = compute_T(
+            Re=case["Re"], 
+            k=case["k"], 
+            U0=case["U0"]
+        ) 
         
         data = generate_case_dataset(T=T, N_interior=10000, N_ic=2000, N_bc=1000)
         

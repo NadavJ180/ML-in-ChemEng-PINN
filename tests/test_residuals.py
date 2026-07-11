@@ -1,6 +1,6 @@
 import torch
 import pytest
-from src.data.taylor_green import generate_tgv, compute_nu, compute_T
+from src.physics.taylor_green import generate_tgv, compute_nu, compute_T
 from src.physics.navier_stokes import compute_residuals
 
 def test_navier_stokes_tgv_compliance():
