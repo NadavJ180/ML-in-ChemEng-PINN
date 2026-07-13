@@ -35,7 +35,7 @@ def compute_residuals(u: torch.Tensor, v: torch.Tensor, p: torch.Tensor,
         x  : Spatial x-coordinate tensor (requires_grad=True).
         y  : Spatial y-coordinate tensor (requires_grad=True).
         t  : Time coordinate tensor (requires_grad=True).
-        nu : Kinematic viscosity of the fluid.
+        nu : The kinematic viscocity of the fluid flow.
         
     Returns:
         A tuple containing the PDE residuals:
@@ -61,7 +61,7 @@ def compute_residuals(u: torch.Tensor, v: torch.Tensor, p: torch.Tensor,
     v_xx = fwd_gradient(v_x, x)
     v_yy = fwd_gradient(v_y, y)
     
-    # Residual calculations (PDEs)
+    # Residual calculations (PDEs) 
     # X-Momentum Residual
     R_u = u_t + (u * u_x) + (v * u_y) + p_x - nu * (u_xx + u_yy)
     
