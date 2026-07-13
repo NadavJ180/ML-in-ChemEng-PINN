@@ -16,7 +16,6 @@ import math
 import sys
 from pathlib import Path
 import torch.optim as optim
-from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 # 1. Define the project root
 project_root = Path(__file__).parent.parent.parent
@@ -139,22 +138,14 @@ def train_adam(model, case_data, case_meta, args):
         k=case_meta["k"]
     )
     
-    optimizer = optim.Adam(model.parameters(), lr=1e-3)
-    
-    # Dynamic scheduler: Cuts LR by 50% if total loss plateaus for 150 epochs
-    scheduler = ReduceLROnPlateau(
-        optimizer, 
-        mode='min', 
-        factor=0.5, 
-        patience=150, 
-        min_lr=1e-5
-    ) 
+    optimizer = optim.Adam(model.parameters(), lr=1e-3) 
     
     model.train()
     
     for epoch in range(args.adam_epochs):
         optimizer.zero_grad()
         
+        # 1. Slice a memory-safe mini-batch and push to GPU
         batch, ic_true = sample_minibatch(
             case_data=case_data, 
             n_int=args.n_int, 
@@ -163,19 +154,16 @@ def train_adam(model, case_data, case_meta, args):
             device=args.device
         )
         
-        # 1. Extract the differentiable total_loss tensor and the logging metrics
+        # 2. Forward pass and multi-component loss evaluation
         total_loss, metrics = criterion(model, batch, ic_true)
         
-        # 2. Backward pass strictly on the connected PyTorch tensor
+        # 3. Backward pass and weight update
         total_loss.backward()
         optimizer.step()
         
-        # 3. Step the scheduler based on the continuous loss value
-        scheduler.step(total_loss)
-        
+        # 4. Progress logging
         if epoch % 100 == 0 or epoch == args.adam_epochs - 1:
-            current_lr = optimizer.param_groups[0]['lr']
-            print(f"Epoch {epoch:04d}/{args.adam_epochs} | LR: {current_lr:.2e} | Loss: {total_loss.item():.4e} | "
+            print(f"Epoch {epoch:04d}/{args.adam_epochs} | Total Loss: {total_loss.item():.4e} | "
                   f"L_NS: {metrics['L_NS']:.2e} | L_div: {metrics['L_div']:.2e} | "
                   f"L_IC: {metrics['L_IC']:.2e} | L_BC: {metrics['L_BC']:.2e}")
                   
