@@ -95,7 +95,7 @@ class LossEvaluator:
         loss_div = self.mse(R_c_scaled, zeros_scaled)
         
         # L_p: Pressure anchoring (mean of scaled p squared)
-        loss_p = torch.mean(p_scaled**2)
+        loss_p = torch.mean(p_scaled)**2
         
         # Return the unscaled NS loss alongside the rest
         return loss_ns, loss_div, loss_p, loss_ns_unscaled
