@@ -13,6 +13,14 @@ from pathlib import Path
 import torch.optim as optim
 import time
 import math
+import sys
+from pathlib import Path
+
+# 1. Define the project root
+project_root = Path(__file__).parent.parent.parent
+
+# 2. Force Python to add the project root to its search path
+sys.path.append(str(project_root))
 
 # Import custom architecture and loss evaluator
 from src.models.pinn import BaselinePINN
@@ -54,7 +62,7 @@ def parse_args():
     parser.add_argument("--n_bc", type=int, default=500, help="Number of points per boundary per step")
     
     # Optimizer settings
-    parser.add_argument("--adam_epochs", type=int, default=2000, help="Epochs for Adam optimizer")
+    parser.add_argument("--adam_epochs", type=int, default=5000, help="Epochs for Adam optimizer")
     parser.add_argument("--lbfgs_iters", type=int, default=1000, help="Max iterations for L-BFGS")
     
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
@@ -297,6 +305,15 @@ def evaluate_model(model, case_meta, eval_grid, device, chunk_size=5000):
     
     return passed_all, rel_l2, mse_rc, (mse_ru + mse_rv)
 
+def sort_cases_by_difficulty(cases):
+    """
+    Sorts a list of case dictionaries from easiest to hardest physics.
+    Primary sort: Wave number (k) - lower is smoother and easier to resolve.
+    Secondary sort: Reynolds number (Re) - lower is more viscous and stable.
+    """
+    # Sorts first by 'k', and if 'k's are tied, sorts by 'Re'
+    return sorted(cases, key=lambda c: (c['k'], c['Re']))
+
 def main():
     print_vram_instructions()
     args = parse_args()
@@ -311,9 +328,13 @@ def main():
     with open(metadata_path, "r") as f:
         dataset = json.load(f)
         
+    # Combine all datasets into one execution list
     all_cases = dataset["train"] + dataset["validation"] + dataset["test"]
-    total_cases = len(all_cases)
     
+    # SORT BY DIFFICULTY: Easiest (low k, low Re) to Hardest (high k, high Re)
+    all_cases = sort_cases_by_difficulty(all_cases)
+
+    total_cases = len(all_cases)
     global_start_time = time.time()
     
     print(f"Starting execution for {total_cases} TGV cases on {args.device.upper()}...")
@@ -340,13 +361,17 @@ def main():
         eval_grid = case_data["eval_grid"]
         passed, rel_l2, mse_rc, mse_rm = evaluate_model(model, case, eval_grid, args.device)
         
-        # Apply Section 12.4 Risk Mitigation Rule
-        if passed:
-            print(f"\n✅ Case {case_id} PASSED all usability criteria.")
-            # TODO: Save the valid model weights and grid predictions here
-        else:
-            print(f"\n⚠️ Case {case_id} FAILED criteria. Tagging for Risk Mitigation (Retry with reduced Re / lower k).")
-            # TODO: Append to a failed_cases.log file
+       # Apply Section 12.4 Risk Mitigation Rule
+        log_file = project_root / "training_summary.log"
+        with open(log_file, "a") as f:
+            if passed:
+                f.write(f"PASSED: {case_id} | RelL2: {rel_l2:.4f}\n")
+                print(f"\n✅ Case {case_id} PASSED all usability criteria.")
+                # Save model
+                torch.save(model.state_dict(), project_root / "models" / f"{case_id}_best.pth")
+            else:
+                f.write(f"FAILED: {case_id} | RelL2: {rel_l2:.4f}\n")
+                print(f"\n⚠️ Case {case_id} FAILED criteria. Tagging for Risk Mitigation.")
             
         case_elapsed = time.time() - case_start
         print(f"⏳ Case {case_id} execution time: {case_elapsed/60:.2f} minutes")
