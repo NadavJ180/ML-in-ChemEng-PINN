@@ -28,6 +28,7 @@ sys.path.append(str(project_root))
 # Import custom architecture and loss evaluator
 from src.models.pinn import BaselinePINN
 from src.models.loss import LossEvaluator
+from src.models.scaling import ResidualScaler
 from src.physics.taylor_green import compute_nu, compute_T # Needed for analytical equations
 from src.physics.navier_stokes import compute_residuals # Needed for evaluation
 
@@ -177,7 +178,7 @@ def train_adam(model, case_data, case_meta, args):
         # 4. Progress logging
         if epoch % 100 == 0 or epoch == args.adam_epochs - 1:
             print(f"Epoch {epoch:04d}/{args.adam_epochs} | Total Loss: {total_loss.item():.4e} | "
-                  f"L_NS: {metrics['L_NS']:.2e} | L_div: {metrics['L_div']:.2e} | "
+                  f"L_NS(s): {metrics['L_NS']:.2e} | L_NS(raw): {metrics['L_NS_raw']:.2e} | L_div: {metrics['L_div']:.2e} | "
                   f"L_IC: {metrics['L_IC']:.2e} | L_BC: {metrics['L_BC']:.2e}")
                   
     return model, criterion, history
@@ -242,7 +243,7 @@ def train_lbfgs(model, criterion, case_data, args):
         # Logging (L-BFGS handles its own loop, so we log inside the closure)
         if iteration % 100 == 0:
             print(f"L-BFGS Iter {iteration:04d} | Total Loss: {total_loss.item():.4e} | "
-                  f"L_NS: {metrics['L_NS']:.2e} | L_div: {metrics['L_div']:.2e} | "
+                  f"L_NS(s): {metrics['L_NS']:.2e} | L_NS(raw): {metrics['L_NS_raw']:.2e} | L_div: {metrics['L_div']:.2e} | "
                   f"L_IC: {metrics['L_IC']:.2e} | L_BC: {metrics['L_BC']:.2e}")
         
         iteration += 1
@@ -266,7 +267,11 @@ def evaluate_model(model, case_meta, eval_grid, device, chunk_size=5000):
     U0 = case_meta["U0"]
     k = case_meta["k"]
     nu = compute_nu(U0, Re, k)
+    nu = compute_nu(U0, Re, k)
     
+    # Initialize centralized scaler for consistent evaluation
+    scaler = ResidualScaler(U0, k)
+
     total_points = eval_grid.shape[0]
     
     # Accumulators for the metrics
@@ -287,9 +292,10 @@ def evaluate_model(model, case_meta, eval_grid, device, chunk_size=5000):
         preds = model(coords)
         u_pred, v_pred, p_pred = preds[:, 0:1], preds[:, 1:2], preds[:, 2:3]
         
-        # 1. Compute unscaled residuals
-        R_u, R_v, R_c = compute_residuals(u_pred, v_pred, p_pred, x, y, t, nu)
-        
+        # 1. Compute and scale residuals for consistent evaluation
+        R_u_raw, R_v_raw, R_c_raw = compute_residuals(u_pred, v_pred, p_pred, x, y, t, nu)
+        R_u, R_v, R_c = scaler.scale_residuals(R_u_raw, R_v_raw, R_c_raw)
+
         sum_mse_ru += torch.sum(R_u**2).item()
         sum_mse_rv += torch.sum(R_v**2).item()
         sum_mse_rc += torch.sum(R_c**2).item()

@@ -13,6 +13,7 @@ import torch.nn as nn
 # Import your existing dimensional physics engine
 from src.physics.navier_stokes import compute_residuals
 from src.physics.taylor_green import compute_nu
+from src.models.scaling import ResidualScaler
 
 class LossEvaluator:
     def __init__(self, Re: float, U0: float, k: float):
@@ -31,9 +32,6 @@ class LossEvaluator:
         self.U0 = U0
         self.k = k
         
-        # Characteristic length
-        self.L = 1.0 / self.k 
-        
         # Calculate the true physical kinematic viscosity
         self.nu = compute_nu(U0=self.U0, Re=self.Re, k=self.k)
         
@@ -46,10 +44,11 @@ class LossEvaluator:
         self.lambda_bc = 10.0
         self.lambda_p = 1.0
         
-        # Characteristic scales for normalization
-        self.scale_ns = (self.U0**2) / self.L
-        self.scale_div = self.U0 / self.L
-        self.scale_p = self.U0**2
+        # Initialize the centralized scaler
+        self.scaler = ResidualScaler(U0=self.U0, k=self.k)
+        
+        # Keep scale_p explicitly accessible since it is used directly for boundary/interior pressure
+        self.scale_p = self.scaler.scale_p
 
     def compute_interior_loss(self, model, interior_coords):
         """
@@ -82,21 +81,24 @@ class LossEvaluator:
         # 4. Call your existing physics function with the TRUE dimensional nu
         R_u, R_v, R_c = compute_residuals(u, v, p, x, y, t, self.nu)
         
-        # 5. Scale the residuals and pressure down to O(1) turning the MSE into a dimensionless quantity
-        R_u_scaled = R_u / self.scale_ns
-        R_v_scaled = R_v / self.scale_ns
-        R_c_scaled = R_c / self.scale_div
+        # Calculate raw (unscaled) NS loss for diagnostic terminal logging
+        zeros_raw = torch.zeros_like(R_u)
+        loss_ns_unscaled = self.mse(R_u, zeros_raw) + self.mse(R_v, zeros_raw)
+        
+        # 5. Scale the residuals and pressure down using the centralized scaler
+        R_u_scaled, R_v_scaled, R_c_scaled = self.scaler.scale_residuals(R_u, R_v, R_c)
         p_scaled = p / self.scale_p
         
         # 6. Calculate MSE of scaled residuals against zero tensors
-        zeros = torch.zeros_like(R_u_scaled)
-        loss_ns = self.mse(R_u_scaled, zeros) + self.mse(R_v_scaled, zeros)
-        loss_div = self.mse(R_c_scaled, zeros)
+        zeros_scaled = torch.zeros_like(R_u_scaled)
+        loss_ns = self.mse(R_u_scaled, zeros_scaled) + self.mse(R_v_scaled, zeros_scaled)
+        loss_div = self.mse(R_c_scaled, zeros_scaled)
         
         # L_p: Pressure anchoring (mean of scaled p squared)
         loss_p = torch.mean(p_scaled**2)
         
-        return loss_ns, loss_div, loss_p
+        # Return the unscaled NS loss alongside the rest
+        return loss_ns, loss_div, loss_p, loss_ns_unscaled
 
     def compute_ic_loss(self, model, ic_coords, ic_true):
         """
@@ -177,7 +179,8 @@ class LossEvaluator:
         bc_x_left, bc_x_right = batch["bc"]["x_bounds"]
         bc_y_bottom, bc_y_top = batch["bc"]["y_bounds"]
         
-        loss_ns, loss_div, loss_p = self.compute_interior_loss(model, interior)
+        # Catch the new unscaled loss
+        loss_ns, loss_div, loss_p, loss_ns_unscaled = self.compute_interior_loss(model, interior)
         loss_ic = self.compute_ic_loss(model, ic, ic_true)
         loss_bc = self.compute_bc_loss(model, bc_x_left, bc_x_right, bc_y_bottom, bc_y_top)
         
@@ -193,6 +196,7 @@ class LossEvaluator:
             "L_IC": loss_ic.item(),
             "L_BC": loss_bc.item(),
             "L_p": loss_p.item(),
+            "L_NS_raw": loss_ns_unscaled.item(), # Added for terminal logging
             "Total": total_loss.item()
         }
         

@@ -51,7 +51,7 @@ def main():
         )
         
         # Generate the unified dictionary of spatial/temporal points
-        case_data = generate_case_dataset(T=T, N_interior=10000, N_ic=2000, N_bc=1000)
+        case_data = generate_case_dataset(T=T, N_interior=100000, N_ic=2000, N_bc=1000)
         
         # Cast the dictionary values to float64 for consistency with the PINN architecture
         for key, val in case_data.items():
