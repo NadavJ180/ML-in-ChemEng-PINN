@@ -16,7 +16,7 @@ import math
 import sys
 from pathlib import Path
 import torch.optim as optim
-from torch.optim.lr_scheduler import ExponentialLR
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 # 1. Define the project root
 project_root = Path(__file__).parent.parent.parent
@@ -143,9 +143,14 @@ def train_adam(model, case_data, case_meta, args):
     # Standard learning rate for PINN Adam pre-training
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
     
-    # 2. Initialize the scheduler. 
-    # A gamma of 0.999 smoothly decays the LR from 1e-3 down to ~6e-6 over 5000 epochs.
-    scheduler = ExponentialLR(optimizer, gamma=0.999) 
+    # Dynamic scheduler: Cuts LR by 50% if total loss plateaus for 150 epochs
+    scheduler = ReduceLROnPlateau(
+        optimizer, 
+        mode='min', 
+        factor=0.5, 
+        patience=150, 
+        min_lr=1e-5
+    ) 
     
     model.train()
     
@@ -160,18 +165,29 @@ def train_adam(model, case_data, case_meta, args):
             device=args.device
         )
         
-        total_loss, metrics = criterion(model, batch, ic_true)
+        # 1. Extract raw unweighted components from the evaluator
+        _, metrics = criterion(model, batch, ic_true)
         
-        total_loss.backward()
+        # 2. Enforce defensive loss scaling to penalize cheating.
+        # We multiply the Navier-Stokes residual by 10 to force the optimizer
+        # to respect the fluid physics over simple data memorization.
+        custom_total_loss = (
+            10.0 * metrics['L_NS'] + 
+            1.0 * metrics['L_div'] + 
+            1.0 * metrics['L_IC'] + 
+            1.0 * metrics['L_BC']
+        )
+        
+        # 3. Backward pass on the re-weighted loss
+        custom_total_loss.backward()
         optimizer.step()
         
-        # 3. Step the scheduler AFTER the optimizer steps
-        scheduler.step()
+        # 4. Step the scheduler based on the custom loss value
+        scheduler.step(custom_total_loss)
         
         if epoch % 100 == 0 or epoch == args.adam_epochs - 1:
-            # Added the current LR to the print statement so you can watch it decay
-            current_lr = scheduler.get_last_lr()[0]
-            print(f"Epoch {epoch:04d}/{args.adam_epochs} | LR: {current_lr:.2e} | Total Loss: {total_loss.item():.4e} | "
+            current_lr = optimizer.param_groups[0]['lr']
+            print(f"Epoch {epoch:04d}/{args.adam_epochs} | LR: {current_lr:.2e} | Loss: {custom_total_loss.item():.4e} | "
                   f"L_NS: {metrics['L_NS']:.2e} | L_div: {metrics['L_div']:.2e} | "
                   f"L_IC: {metrics['L_IC']:.2e} | L_BC: {metrics['L_BC']:.2e}")
                   
