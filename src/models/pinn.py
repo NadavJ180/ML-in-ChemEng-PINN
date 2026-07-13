@@ -45,7 +45,7 @@ class BaselinePINN(nn.Module):
         self.network = nn.Sequential(*layers)
         
         # Enforce Float64 (double precision) globally for this module
-        self.to(torch.float64)
+        self.to(torch.float32)
 
     def forward(self, x):
         """
@@ -58,5 +58,5 @@ class BaselinePINN(nn.Module):
         predictions : torch.Tensor of shape (N, 3) representing (\hat{u}, \hat{v}, \hat{p})
         """
         # Ensure input tensor is strictly float64 before passing through
-        x = x.to(torch.float64)
+        x = x.to(torch.float32)
         return self.network(x)
