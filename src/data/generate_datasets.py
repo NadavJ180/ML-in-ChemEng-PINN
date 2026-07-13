@@ -53,6 +53,25 @@ def main():
         # Generate the unified dictionary of spatial/temporal points
         case_data = generate_case_dataset(T=T, N_interior=10000, N_ic=2000, N_bc=1000)
         
+        # Cast the dictionary values to float64 for consistency with the PINN architecture
+        for key, val in case_data.items():
+            if isinstance(val, torch.Tensor):
+                case_data[key] = val.to(torch.float64)
+            elif isinstance(val, dict):
+                for subkey, subval in val.items():
+                    if isinstance(subval, tuple): # Handling the bc dictionary structure
+                        case_data[key][subkey] = tuple(t.to(torch.float64) for t in subval)
+
+        # Calculate and store ic_true directly in the dictionary
+        U0_val = case["U0"]
+        k_val = case["k"]
+        x_ic = case_data["ic"][:, 0:1]
+        y_ic = case_data["ic"][:, 1:2]
+        
+        u_true = U0_val * torch.sin(k_val * x_ic) * torch.cos(k_val * y_ic)
+        v_true = -U0_val * torch.cos(k_val * x_ic) * torch.sin(k_val * y_ic)
+        case_data["ic_true"] = torch.cat([u_true, v_true], dim=1)
+
         # Save the dictionary as a compressed PyTorch file
         save_path = output_dir / f"{case_id}.pt"
         torch.save(case_data, save_path)
