@@ -51,7 +51,7 @@ def main():
         )
         
         # Generate the unified dictionary of spatial/temporal points
-        case_data = generate_case_dataset(T=T, N_interior=100000, N_ic=2000, N_bc=1000)
+        case_data = generate_case_dataset(T=T, N_interior=10000, N_ic=2000, N_bc=1000)
         
         # Cast the dictionary values to float64 for consistency with the PINN architecture
         for key, val in case_data.items():
@@ -60,7 +60,7 @@ def main():
             elif isinstance(val, dict):
                 for subkey, subval in val.items():
                     if isinstance(subval, tuple): # Handling the bc dictionary structure
-                        case_data[key][subkey] = tuple(t.to(torch.float32) for t in subval)
+                        case_data[key][subkey] = tuple(t.to(torch.float64) for t in subval)
 
         # Calculate and store ic_true directly in the dictionary
         U0_val = case["U0"]
