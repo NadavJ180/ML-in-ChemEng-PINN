@@ -133,14 +133,12 @@ def train_adam(model, case_data, case_meta, args):
     """
     print("\n--- Phase 1: Adam Optimization ---")
     
-    # Initialize the Loss Evaluator with the exact case parameters
     criterion = LossEvaluator(
         Re=case_meta["Re"], 
         U0=case_meta["U0"], 
         k=case_meta["k"]
     )
     
-    # Standard learning rate for PINN Adam pre-training
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
     
     # Dynamic scheduler: Cuts LR by 50% if total loss plateaus for 150 epochs
@@ -165,29 +163,19 @@ def train_adam(model, case_data, case_meta, args):
             device=args.device
         )
         
-        # 1. Extract raw unweighted components from the evaluator
-        _, metrics = criterion(model, batch, ic_true)
+        # 1. Extract the differentiable total_loss tensor and the logging metrics
+        total_loss, metrics = criterion(model, batch, ic_true)
         
-        # 2. Enforce defensive loss scaling to penalize cheating.
-        # We multiply the Navier-Stokes residual by 10 to force the optimizer
-        # to respect the fluid physics over simple data memorization.
-        custom_total_loss = (
-            10.0 * metrics['L_NS'] + 
-            1.0 * metrics['L_div'] + 
-            1.0 * metrics['L_IC'] + 
-            1.0 * metrics['L_BC']
-        )
-        
-        # 3. Backward pass on the re-weighted loss
-        custom_total_loss.backward()
+        # 2. Backward pass strictly on the connected PyTorch tensor
+        total_loss.backward()
         optimizer.step()
         
-        # 4. Step the scheduler based on the custom loss value
-        scheduler.step(custom_total_loss)
+        # 3. Step the scheduler based on the continuous loss value
+        scheduler.step(total_loss)
         
         if epoch % 100 == 0 or epoch == args.adam_epochs - 1:
             current_lr = optimizer.param_groups[0]['lr']
-            print(f"Epoch {epoch:04d}/{args.adam_epochs} | LR: {current_lr:.2e} | Loss: {custom_total_loss.item():.4e} | "
+            print(f"Epoch {epoch:04d}/{args.adam_epochs} | LR: {current_lr:.2e} | Loss: {total_loss.item():.4e} | "
                   f"L_NS: {metrics['L_NS']:.2e} | L_div: {metrics['L_div']:.2e} | "
                   f"L_IC: {metrics['L_IC']:.2e} | L_BC: {metrics['L_BC']:.2e}")
                   
