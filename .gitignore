@@ -14,3 +14,7 @@ data/*
 .vscode/
 .idea/
 .DS_Store
+
+# Testing
+.pytest_cache/
+__pycache__/
