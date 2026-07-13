@@ -40,7 +40,7 @@ class LossEvaluator:
         self.mse = nn.MSELoss()
         
         # Loss weights defined in Section 6 specifications
-        self.lambda_ns = 1.0
+        self.lambda_ns = 10.0
         self.lambda_div = 10.0
         self.lambda_ic = 10.0
         self.lambda_bc = 10.0
