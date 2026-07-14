@@ -457,6 +457,15 @@ def main():
     
     for idx, case in enumerate(all_cases):
         case_id = case["case_id"]
+        
+        # --- NEW CHECKPOINT LOGIC ---
+        # Check if this case has already been successfully trained and saved
+        expected_model_path = project_root / "models" / f"{case_id}_best.pth"
+        if expected_model_path.exists():
+            print(f"\n{'='*50}\n[{idx+1}/{total_cases}] Skipping {case_id}: Model already exists.\n{'='*50}")
+            continue
+        # ----------------------------
+
         case_start = time.time()
         
         print(f"\n{'='*50}\n[{idx+1}/{total_cases}] Training Case: {case_id}\n"
