@@ -74,6 +74,12 @@ def parse_args():
 
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     
+    # Commands for debugging and isolated testing (reverse order and isolated cases)
+    parser.add_argument("--reverse_order", action="store_true",
+                     help="TEMPORARY: run cases hardest-first instead of easiest-first (for diagnostic testing)")
+    parser.add_argument("--case_id", type=str, default=None,
+                     help="Run only this specific case_id (for isolated diagnostic testing)")
+    
     return parser.parse_args()
 
 def sample_minibatch(case_data: dict, n_int: int, n_ic: int, n_bc: int, device: str):
@@ -190,7 +196,7 @@ class LBFGSConverged(Exception):
     """Signals that L-BFGS has plateaued and can stop early."""
     pass
 
-def train_lbfgs(model, criterion, case_data, args):
+def train_lbfgs(model, criterion, case_data, case_meta, args, device, eval_interval=500):
     """
     Executes Phase 2 of PINN training using the L-BFGS optimizer.
     Uses a static mini-batch to ensure convergence of the line-search algorithm
@@ -217,6 +223,9 @@ def train_lbfgs(model, criterion, case_data, args):
         device=args.device
     )
     
+    eval_grid = case_data["eval_grid"]   # needed for periodic checks
+
+
     # 2. Initialize L-BFGS with strong Wolfe line search for stability
     optimizer = optim.LBFGS(
         model.parameters(),
@@ -229,6 +238,7 @@ def train_lbfgs(model, criterion, case_data, args):
     
     # Dictionary to track loss history
     history = {'Total': [], 'L_NS': [], 'L_div': [], 'L_IC': [], 'L_BC': []}
+    rel_l2_history = []   # NEW: track (iteration, RelL2) pairs
     iteration = 0
     
     # 3. Define the closure function required by L-BFGS
@@ -253,6 +263,15 @@ def train_lbfgs(model, criterion, case_data, args):
                   f"L_NS(s): {metrics['L_NS']:.2e} | L_NS(raw): {metrics['L_NS_raw']:.2e} | L_div: {metrics['L_div']:.2e} | "
                   f"L_IC: {metrics['L_IC']:.2e} | L_BC: {metrics['L_BC']:.2e}")
         
+        # --- NEW: periodic held-out RelL2 check ---
+        if iteration > 0 and iteration % eval_interval == 0:
+            _, rel_l2, mse_rc, mse_rm = evaluate_model(
+                model, case_meta, eval_grid, device, chunk_size=5000, verbose=False
+            )
+            rel_l2_history.append((iteration, rel_l2))
+            print(f"    [Periodic Eval] Iter {iteration}: RelL2={rel_l2:.4f} | MSE_Rc={mse_rc:.2e} | MSE_Rm={mse_rm:.2e}")
+            model.train()   # evaluate_model sets model.eval() internally; switch back
+
         # --- Early stopping check, windowed to avoid noise ---
         window = args.lbfgs_check_window
         if iteration >= args.lbfgs_min_iters and iteration % window == 0 and len(history['Total']) >= 2 * window:
@@ -273,14 +292,15 @@ def train_lbfgs(model, criterion, case_data, args):
     except LBFGSConverged as e:
         print(f"L-BFGS converged early at iteration {e.args[0]} (plateau detected).")
     
-    return model, history
+    return model, history, rel_l2_history
 
-def evaluate_model(model, case_meta, eval_grid, device, chunk_size=5000):
+def evaluate_model(model, case_meta, eval_grid, device, chunk_size=5000, verbose=True):
     """
     Evaluates the trained model against the WP3 Acceptance Criteria using the
     81,920 point evaluation grid. Processes in chunks to prevent VRAM overflow.
     """
-    print("\n--- Phase 3: Acceptance Criteria Evaluation ---")
+    if verbose:
+        print("\n--- Phase 3: Acceptance Criteria Evaluation ---")
     model.eval()
     
     Re = case_meta["Re"]
@@ -347,9 +367,10 @@ def evaluate_model(model, case_meta, eval_grid, device, chunk_size=5000):
     
     passed_all = crit_1_pass and crit_2_pass and crit_3_pass
     
-    print(f"RelL2(u,v) = {rel_l2:.4f} \t[Criteria < 0.10]: {'✅' if crit_1_pass else '❌'}")
-    print(f"MSE(R_c)   = {mse_rc:.4e} \t[Criteria < 1e-4]: {'✅' if crit_2_pass else '❌'}")
-    print(f"MSE(R_m)   = {(mse_ru+mse_rv):.4e} \t[Criteria < 1e-3]: {'✅' if crit_3_pass else '❌'}")
+    if verbose:
+        print(f"RelL2(u,v) = {rel_l2:.4f} \t[Criteria < 0.10]: {'✅' if crit_1_pass else '❌'}")
+        print(f"MSE(R_c)   = {mse_rc:.4e} \t[Criteria < 1e-4]: {'✅' if crit_2_pass else '❌'}")
+        print(f"MSE(R_m)   = {(mse_ru+mse_rv):.4e} \t[Criteria < 1e-3]: {'✅' if crit_3_pass else '❌'}")
     
     return passed_all, rel_l2, mse_rc, (mse_ru + mse_rv)
 
@@ -422,6 +443,13 @@ def main():
     # SORT BY DIFFICULTY: Easiest (low k, low Re) to Hardest (high k, high Re)
     all_cases = sort_cases_by_difficulty(all_cases)
 
+    # TEMPORARY: for testing hardest-case behavior before full sweep — remove/disable after
+    if args.reverse_order:
+        all_cases = list(reversed(all_cases))
+        print("⚠️  Running in REVERSED order (hardest case first) for diagnostic testing.\n")
+    if args.case_id:
+        all_cases = [c for c in all_cases if c["case_id"] == args.case_id]
+
     total_cases = len(all_cases)
     global_start_time = time.time()
     
@@ -443,11 +471,24 @@ def main():
         
         # Train
         model, criterion, adam_hist = train_adam(model, case_data, case, args)
-        model, lbfgs_hist = train_lbfgs(model, criterion, case_data, args)
+        model, lbfgs_hist, rel_l2_hist = train_lbfgs(model, criterion, case_data, case, args, args.device)
         
         plot_case_history(case_id, adam_hist, lbfgs_hist, plots_dir)
         print(f"📈 Saved loss history plot to {plots_dir.name}/{case_id}_loss_history.png")
         
+        if rel_l2_hist:
+            iters, rel_l2_vals = zip(*rel_l2_hist)
+            plt.figure(figsize=(8, 5))
+            plt.plot(iters, rel_l2_vals, marker='o')
+            plt.axhline(0.10, color='red', linestyle='--', label='Acceptance threshold')
+            plt.xlabel('L-BFGS Iteration')
+            plt.ylabel('RelL2(u,v) on eval grid')
+            plt.title(f'Held-out RelL2 during L-BFGS — {case_id}')
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            plt.savefig(plots_dir / f"{case_id}_rel_l2_tracking.png")
+            plt.close()
+
         # Evaluate
         eval_grid = case_data["eval_grid"]
         passed, rel_l2, mse_rc, mse_rm = evaluate_model(model, case, eval_grid, args.device)
