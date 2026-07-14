@@ -67,9 +67,18 @@ def parse_args():
     
     # Optimizer settings
     parser.add_argument("--adam_epochs", type=int, default=5000, help="Epochs for Adam optimizer")
-    parser.add_argument("--lbfgs_iters", type=int, default=2500, help="Max iterations for L-BFGS")
-    
+    parser.add_argument("--lbfgs_iters", type=int, default=5000, help="Max iterations for L-BFGS")
+    parser.add_argument("--lbfgs_min_iters", type=int, default=300, help="Minimum L-BFGS iterations before early-stop check begins")
+    parser.add_argument("--lbfgs_check_window", type=int, default=100, help="Window size for plateau detection")
+    parser.add_argument("--lbfgs_rel_tol", type=float, default=1e-3, help="Relative loss-improvement threshold to trigger early stop")
+
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    
+    # Commands for debugging and isolated testing (reverse order and isolated cases)
+    parser.add_argument("--reverse_order", action="store_true",
+                     help="TEMPORARY: run cases hardest-first instead of easiest-first (for diagnostic testing)")
+    parser.add_argument("--case_id", type=str, default=None,
+                     help="Run only this specific case_id (for isolated diagnostic testing)")
     
     return parser.parse_args()
 
@@ -183,7 +192,11 @@ def train_adam(model, case_data, case_meta, args):
                   
     return model, criterion, history
 
-def train_lbfgs(model, criterion, case_data, args):
+class LBFGSConverged(Exception):
+    """Signals that L-BFGS has plateaued and can stop early."""
+    pass
+
+def train_lbfgs(model, criterion, case_data, case_meta, args, device, eval_interval=500):
     """
     Executes Phase 2 of PINN training using the L-BFGS optimizer.
     Uses a static mini-batch to ensure convergence of the line-search algorithm
@@ -210,6 +223,9 @@ def train_lbfgs(model, criterion, case_data, args):
         device=args.device
     )
     
+    eval_grid = case_data["eval_grid"]   # needed for periodic checks
+
+
     # 2. Initialize L-BFGS with strong Wolfe line search for stability
     optimizer = optim.LBFGS(
         model.parameters(),
@@ -222,6 +238,7 @@ def train_lbfgs(model, criterion, case_data, args):
     
     # Dictionary to track loss history
     history = {'Total': [], 'L_NS': [], 'L_div': [], 'L_IC': [], 'L_BC': []}
+    rel_l2_history = []   # NEW: track (iteration, RelL2) pairs
     iteration = 0
     
     # 3. Define the closure function required by L-BFGS
@@ -246,21 +263,44 @@ def train_lbfgs(model, criterion, case_data, args):
                   f"L_NS(s): {metrics['L_NS']:.2e} | L_NS(raw): {metrics['L_NS_raw']:.2e} | L_div: {metrics['L_div']:.2e} | "
                   f"L_IC: {metrics['L_IC']:.2e} | L_BC: {metrics['L_BC']:.2e}")
         
+        # --- NEW: periodic held-out RelL2 check ---
+        if iteration > 0 and iteration % eval_interval == 0:
+            _, rel_l2, mse_rc, mse_rm = evaluate_model(
+                model, case_meta, eval_grid, device, chunk_size=5000, verbose=False
+            )
+            rel_l2_history.append((iteration, rel_l2))
+            print(f"    [Periodic Eval] Iter {iteration}: RelL2={rel_l2:.4f} | MSE_Rc={mse_rc:.2e} | MSE_Rm={mse_rm:.2e}")
+            model.train()   # evaluate_model sets model.eval() internally; switch back
+
+        # --- Early stopping check, windowed to avoid noise ---
+        window = args.lbfgs_check_window
+        if iteration >= args.lbfgs_min_iters and iteration % window == 0 and len(history['Total']) >= 2 * window:
+            recent = sum(history['Total'][-window:]) / window
+            prior = sum(history['Total'][-2*window:-window]) / window
+            rel_improvement = abs(prior - recent) / (abs(prior) + 1e-12)
+            if rel_improvement < args.lbfgs_rel_tol:
+                iteration += 1
+                raise LBFGSConverged(iteration)
+
         iteration += 1
         return total_loss
         
     # 4. Execute the optimization step
     model.train()
-    optimizer.step(closure)
+    try:
+        optimizer.step(closure)
+    except LBFGSConverged as e:
+        print(f"L-BFGS converged early at iteration {e.args[0]} (plateau detected).")
     
-    return model, history
+    return model, history, rel_l2_history
 
-def evaluate_model(model, case_meta, eval_grid, device, chunk_size=5000):
+def evaluate_model(model, case_meta, eval_grid, device, chunk_size=5000, verbose=True):
     """
     Evaluates the trained model against the WP3 Acceptance Criteria using the
     81,920 point evaluation grid. Processes in chunks to prevent VRAM overflow.
     """
-    print("\n--- Phase 3: Acceptance Criteria Evaluation ---")
+    if verbose:
+        print("\n--- Phase 3: Acceptance Criteria Evaluation ---")
     model.eval()
     
     Re = case_meta["Re"]
@@ -327,9 +367,10 @@ def evaluate_model(model, case_meta, eval_grid, device, chunk_size=5000):
     
     passed_all = crit_1_pass and crit_2_pass and crit_3_pass
     
-    print(f"RelL2(u,v) = {rel_l2:.4f} \t[Criteria < 0.10]: {'✅' if crit_1_pass else '❌'}")
-    print(f"MSE(R_c)   = {mse_rc:.4e} \t[Criteria < 1e-4]: {'✅' if crit_2_pass else '❌'}")
-    print(f"MSE(R_m)   = {(mse_ru+mse_rv):.4e} \t[Criteria < 1e-3]: {'✅' if crit_3_pass else '❌'}")
+    if verbose:
+        print(f"RelL2(u,v) = {rel_l2:.4f} \t[Criteria < 0.10]: {'✅' if crit_1_pass else '❌'}")
+        print(f"MSE(R_c)   = {mse_rc:.4e} \t[Criteria < 1e-4]: {'✅' if crit_2_pass else '❌'}")
+        print(f"MSE(R_m)   = {(mse_ru+mse_rv):.4e} \t[Criteria < 1e-3]: {'✅' if crit_3_pass else '❌'}")
     
     return passed_all, rel_l2, mse_rc, (mse_ru + mse_rv)
 
@@ -357,7 +398,7 @@ def plot_case_history(case_id, adam_hist, lbfgs_hist, save_dir):
     plt.axvspan(adam_len, total_len, color='orange', alpha=0.05, label='L-BFGS Phase')
     
     plt.yscale('log')
-    plt.xlabel('Optimization Steps')
+    plt.xlabel('Optimization Steps (Adam) / L-BFGS Closure Evaluations')
     plt.ylabel('Loss (Log Scale)')
     plt.title(f'Loss History for {case_id}')
     plt.legend(loc='upper right')
@@ -402,6 +443,13 @@ def main():
     # SORT BY DIFFICULTY: Easiest (low k, low Re) to Hardest (high k, high Re)
     all_cases = sort_cases_by_difficulty(all_cases)
 
+    # TEMPORARY: for testing hardest-case behavior before full sweep — remove/disable after
+    if args.reverse_order:
+        all_cases = list(reversed(all_cases))
+        print("⚠️  Running in REVERSED order (hardest case first) for diagnostic testing.\n")
+    if args.case_id:
+        all_cases = [c for c in all_cases if c["case_id"] == args.case_id]
+
     total_cases = len(all_cases)
     global_start_time = time.time()
     
@@ -409,6 +457,15 @@ def main():
     
     for idx, case in enumerate(all_cases):
         case_id = case["case_id"]
+        
+        # --- NEW CHECKPOINT LOGIC ---
+        # Check if this case has already been successfully trained and saved
+        expected_model_path = project_root / "models" / f"{case_id}_best.pth"
+        if expected_model_path.exists():
+            print(f"\n{'='*50}\n[{idx+1}/{total_cases}] Skipping {case_id}: Model already exists.\n{'='*50}")
+            continue
+        # ----------------------------
+
         case_start = time.time()
         
         print(f"\n{'='*50}\n[{idx+1}/{total_cases}] Training Case: {case_id}\n"
@@ -419,15 +476,28 @@ def main():
         case_data = torch.load(pt_path, map_location="cpu")
         
         # Initialize the fresh model for this case
-        model = BaselinePINN().to(args.device)
+        model = BaselinePINN(k=case["k"]).to(args.device)
         
         # Train
         model, criterion, adam_hist = train_adam(model, case_data, case, args)
-        model, lbfgs_hist = train_lbfgs(model, criterion, case_data, args)
+        model, lbfgs_hist, rel_l2_hist = train_lbfgs(model, criterion, case_data, case, args, args.device)
         
         plot_case_history(case_id, adam_hist, lbfgs_hist, plots_dir)
         print(f"📈 Saved loss history plot to {plots_dir.name}/{case_id}_loss_history.png")
         
+        if rel_l2_hist:
+            iters, rel_l2_vals = zip(*rel_l2_hist)
+            plt.figure(figsize=(8, 5))
+            plt.plot(iters, rel_l2_vals, marker='o')
+            plt.axhline(0.10, color='red', linestyle='--', label='Acceptance threshold')
+            plt.xlabel('L-BFGS Iteration')
+            plt.ylabel('RelL2(u,v) on eval grid')
+            plt.title(f'Held-out RelL2 during L-BFGS — {case_id}')
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            plt.savefig(plots_dir / f"{case_id}_rel_l2_tracking.png")
+            plt.close()
+
         # Evaluate
         eval_grid = case_data["eval_grid"]
         passed, rel_l2, mse_rc, mse_rm = evaluate_model(model, case, eval_grid, args.device)

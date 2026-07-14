@@ -23,9 +23,10 @@ class BaselinePINN(nn.Module):
     - Features: [x, y, t, sin(x), cos(x), sin(y), cos(y)]
     - Outputs: (\hat{u}, \hat{v}, \hat{p}) predicted velocity and pressure fields.
     """
-    def __init__(self):
+    def __init__(self, k: float):
         super(BaselinePINN, self).__init__()
-        
+        self.k = k
+
         # Define the layers
         layers = []
         
@@ -66,10 +67,10 @@ class BaselinePINN(nn.Module):
         t = x_in[:, 2:3]
         
         # Generate spatial Fourier features to capture periodic vortex structures
-        sin_x = torch.sin(x)
-        cos_x = torch.cos(x)
-        sin_y = torch.sin(y)
-        cos_y = torch.cos(y)
+        sin_x = torch.sin(self.k * x)
+        cos_x = torch.cos(self.k * x)
+        sin_y = torch.sin(self.k * y)
+        cos_y = torch.cos(self.k * y)
         
         # Concatenate raw inputs with the new features
         # The gradients will still track perfectly back to the raw x, y, and t
