@@ -67,8 +67,11 @@ def parse_args():
     
     # Optimizer settings
     parser.add_argument("--adam_epochs", type=int, default=5000, help="Epochs for Adam optimizer")
-    parser.add_argument("--lbfgs_iters", type=int, default=2500, help="Max iterations for L-BFGS")
-    
+    parser.add_argument("--lbfgs_iters", type=int, default=5000, help="Max iterations for L-BFGS")
+    parser.add_argument("--lbfgs_min_iters", type=int, default=300, help="Minimum L-BFGS iterations before early-stop check begins")
+    parser.add_argument("--lbfgs_check_window", type=int, default=100, help="Window size for plateau detection")
+    parser.add_argument("--lbfgs_rel_tol", type=float, default=1e-3, help="Relative loss-improvement threshold to trigger early stop")
+
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     
     return parser.parse_args()
@@ -183,6 +186,10 @@ def train_adam(model, case_data, case_meta, args):
                   
     return model, criterion, history
 
+class LBFGSConverged(Exception):
+    """Signals that L-BFGS has plateaued and can stop early."""
+    pass
+
 def train_lbfgs(model, criterion, case_data, args):
     """
     Executes Phase 2 of PINN training using the L-BFGS optimizer.
@@ -246,12 +253,25 @@ def train_lbfgs(model, criterion, case_data, args):
                   f"L_NS(s): {metrics['L_NS']:.2e} | L_NS(raw): {metrics['L_NS_raw']:.2e} | L_div: {metrics['L_div']:.2e} | "
                   f"L_IC: {metrics['L_IC']:.2e} | L_BC: {metrics['L_BC']:.2e}")
         
+        # --- Early stopping check, windowed to avoid noise ---
+        window = args.lbfgs_check_window
+        if iteration >= args.lbfgs_min_iters and iteration % window == 0 and len(history['Total']) >= 2 * window:
+            recent = sum(history['Total'][-window:]) / window
+            prior = sum(history['Total'][-2*window:-window]) / window
+            rel_improvement = abs(prior - recent) / (abs(prior) + 1e-12)
+            if rel_improvement < args.lbfgs_rel_tol:
+                iteration += 1
+                raise LBFGSConverged(iteration)
+
         iteration += 1
         return total_loss
         
     # 4. Execute the optimization step
     model.train()
-    optimizer.step(closure)
+    try:
+        optimizer.step(closure)
+    except LBFGSConverged as e:
+        print(f"L-BFGS converged early at iteration {e.args[0]} (plateau detected).")
     
     return model, history
 
@@ -357,7 +377,7 @@ def plot_case_history(case_id, adam_hist, lbfgs_hist, save_dir):
     plt.axvspan(adam_len, total_len, color='orange', alpha=0.05, label='L-BFGS Phase')
     
     plt.yscale('log')
-    plt.xlabel('Optimization Steps')
+    plt.xlabel('Optimization Steps (Adam) / L-BFGS Closure Evaluations')
     plt.ylabel('Loss (Log Scale)')
     plt.title(f'Loss History for {case_id}')
     plt.legend(loc='upper right')
