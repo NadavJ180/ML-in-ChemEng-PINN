@@ -467,7 +467,7 @@ def main():
         case_data = torch.load(pt_path, map_location="cpu")
         
         # Initialize the fresh model for this case
-        model = BaselinePINN().to(args.device)
+        model = BaselinePINN(k=case["k"]).to(args.device)
         
         # Train
         model, criterion, adam_hist = train_adam(model, case_data, case, args)
