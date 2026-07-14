@@ -154,7 +154,7 @@ def train_adam(model, case_data, case_meta, args):
     optimizer = optim.Adam(model.parameters(), lr=1e-3) 
     
     # Dictionary to track loss history
-    history = {'Total': [], 'L_NS': [], 'L_div': [], 'L_IC': [], 'L_BC': []}
+    history = {'Total': [], 'L_NS': [], 'L_div': [], 'L_IC': [], 'L_BC': [], 'L_p': []}
     
     model.train()
     
@@ -183,12 +183,13 @@ def train_adam(model, case_data, case_meta, args):
         history['L_div'].append(metrics['L_div'])
         history['L_IC'].append(metrics['L_IC'])
         history['L_BC'].append(metrics['L_BC'])
+        history['L_p'].append(metrics['L_p'])   
         
         # 4. Progress logging
         if epoch % 100 == 0 or epoch == args.adam_epochs - 1:
             print(f"Epoch {epoch:04d}/{args.adam_epochs} | Total Loss: {total_loss.item():.4e} | "
                   f"L_NS(s): {metrics['L_NS']:.2e} | L_NS(raw): {metrics['L_NS_raw']:.2e} | L_div: {metrics['L_div']:.2e} | "
-                  f"L_IC: {metrics['L_IC']:.2e} | L_BC: {metrics['L_BC']:.2e}")
+                  f"L_IC: {metrics['L_IC']:.2e} | L_BC: {metrics['L_BC']:.2e} | L_p: {metrics['L_p']:.2e}")
                   
     return model, criterion, history
 
@@ -237,7 +238,7 @@ def train_lbfgs(model, criterion, case_data, case_meta, args, device, eval_inter
     )
     
     # Dictionary to track loss history
-    history = {'Total': [], 'L_NS': [], 'L_div': [], 'L_IC': [], 'L_BC': []}
+    history = {'Total': [], 'L_NS': [], 'L_div': [], 'L_IC': [], 'L_BC': [], 'L_p': []}
     rel_l2_history = []   # NEW: track (iteration, RelL2) pairs
     iteration = 0
     
@@ -256,12 +257,13 @@ def train_lbfgs(model, criterion, case_data, case_meta, args, device, eval_inter
         history['L_div'].append(metrics['L_div'])
         history['L_IC'].append(metrics['L_IC'])
         history['L_BC'].append(metrics['L_BC'])
+        history['L_p'].append(metrics['L_p'])
         
         # Logging (L-BFGS handles its own loop, so we log inside the closure)
         if iteration % 100 == 0:
             print(f"L-BFGS Iter {iteration:04d} | Total Loss: {total_loss.item():.4e} | "
                   f"L_NS(s): {metrics['L_NS']:.2e} | L_NS(raw): {metrics['L_NS_raw']:.2e} | L_div: {metrics['L_div']:.2e} | "
-                  f"L_IC: {metrics['L_IC']:.2e} | L_BC: {metrics['L_BC']:.2e}")
+                  f"L_IC: {metrics['L_IC']:.2e} | L_BC: {metrics['L_BC']:.2e} | L_p: {metrics['L_p']:.2e}")
         
         # --- NEW: periodic held-out RelL2 check ---
         if iteration > 0 and iteration % eval_interval == 0:
@@ -376,7 +378,7 @@ def evaluate_model(model, case_meta, eval_grid, device, chunk_size=5000, verbose
 
 def plot_case_history(case_id, adam_hist, lbfgs_hist, save_dir):
     """Generates and saves a logarithmic loss curve plot for a single case."""
-    keys = ['Total', 'L_NS', 'L_div', 'L_IC', 'L_BC']
+    keys = ['Total', 'L_NS', 'L_div', 'L_IC', 'L_BC', 'L_p']
     
     # Concatenate the Adam and LBFGS histories
     combined_hist = {k: adam_hist[k] + lbfgs_hist[k] for k in keys}
@@ -485,6 +487,12 @@ def main():
         plot_case_history(case_id, adam_hist, lbfgs_hist, plots_dir)
         print(f"📈 Saved loss history plot to {plots_dir.name}/{case_id}_loss_history.png")
         
+        # Export the history log as .json for future analysis
+        combined_hist = {k: adam_hist[k] + lbfgs_hist[k] for k in adam_hist.keys()}
+        history_file = plots_dir / f"{case_id}_loss_history.json"
+        with open(history_file, "w") as f:
+            json.dump(combined_hist, f)
+
         if rel_l2_hist:
             iters, rel_l2_vals = zip(*rel_l2_hist)
             plt.figure(figsize=(8, 5))
