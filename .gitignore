@@ -18,3 +18,15 @@ data/*
 # Testing
 .pytest_cache/
 __pycache__/
+
+# Training Logs
+*.log
+training_summary.log
+
+# Generated Plots and Figures
+plots/
+*.png
+
+# Generated PyTorch Tensors
+data/tensors/
+*.pt

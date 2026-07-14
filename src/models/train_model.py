@@ -16,6 +16,8 @@ import math
 import sys
 from pathlib import Path
 import torch.optim as optim
+import matplotlib.pyplot as plt
+import numpy as np
 
 # 1. Define the project root
 project_root = Path(__file__).parent.parent.parent
@@ -26,6 +28,7 @@ sys.path.append(str(project_root))
 # Import custom architecture and loss evaluator
 from src.models.pinn import BaselinePINN
 from src.models.loss import LossEvaluator
+from src.models.scaling import ResidualScaler
 from src.physics.taylor_green import compute_nu, compute_T # Needed for analytical equations
 from src.physics.navier_stokes import compute_residuals # Needed for evaluation
 
@@ -64,7 +67,7 @@ def parse_args():
     
     # Optimizer settings
     parser.add_argument("--adam_epochs", type=int, default=5000, help="Epochs for Adam optimizer")
-    parser.add_argument("--lbfgs_iters", type=int, default=1000, help="Max iterations for L-BFGS")
+    parser.add_argument("--lbfgs_iters", type=int, default=2500, help="Max iterations for L-BFGS")
     
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     
@@ -129,6 +132,7 @@ def train_adam(model, case_data, case_meta, args):
     Outputs:
         model (nn.Module): The trained model after Adam optimization.
         criterion (LossEvaluator): The initialized loss evaluator.
+        history (dict): A dictionary containing the loss history for each component.
     """
     print("\n--- Phase 1: Adam Optimization ---")
     
@@ -139,6 +143,9 @@ def train_adam(model, case_data, case_meta, args):
     )
     
     optimizer = optim.Adam(model.parameters(), lr=1e-3) 
+    
+    # Dictionary to track loss history
+    history = {'Total': [], 'L_NS': [], 'L_div': [], 'L_IC': [], 'L_BC': []}
     
     model.train()
     
@@ -161,13 +168,20 @@ def train_adam(model, case_data, case_meta, args):
         total_loss.backward()
         optimizer.step()
         
+        # Log metrics
+        history['Total'].append(total_loss.item())
+        history['L_NS'].append(metrics['L_NS'])
+        history['L_div'].append(metrics['L_div'])
+        history['L_IC'].append(metrics['L_IC'])
+        history['L_BC'].append(metrics['L_BC'])
+        
         # 4. Progress logging
         if epoch % 100 == 0 or epoch == args.adam_epochs - 1:
             print(f"Epoch {epoch:04d}/{args.adam_epochs} | Total Loss: {total_loss.item():.4e} | "
-                  f"L_NS: {metrics['L_NS']:.2e} | L_div: {metrics['L_div']:.2e} | "
+                  f"L_NS(s): {metrics['L_NS']:.2e} | L_NS(raw): {metrics['L_NS_raw']:.2e} | L_div: {metrics['L_div']:.2e} | "
                   f"L_IC: {metrics['L_IC']:.2e} | L_BC: {metrics['L_BC']:.2e}")
                   
-    return model, criterion
+    return model, criterion, history
 
 def train_lbfgs(model, criterion, case_data, args):
     """
@@ -183,6 +197,7 @@ def train_lbfgs(model, criterion, case_data, args):
         
     Outputs:
         model (nn.Module): The fully trained model.
+        history (dict): A dictionary containing the loss history for each component during L-BFGS.
     """
     print("\n--- Phase 2: L-BFGS Fine-Tuning ---")
     
@@ -205,6 +220,8 @@ def train_lbfgs(model, criterion, case_data, args):
         line_search_fn="strong_wolfe" 
     )
     
+    # Dictionary to track loss history
+    history = {'Total': [], 'L_NS': [], 'L_div': [], 'L_IC': [], 'L_BC': []}
     iteration = 0
     
     # 3. Define the closure function required by L-BFGS
@@ -216,10 +233,17 @@ def train_lbfgs(model, criterion, case_data, args):
         total_loss, metrics = criterion(model, batch, ic_true)
         total_loss.backward()
         
+        # Log metrics inside the closure since L-BFGS controls the step calls
+        history['Total'].append(total_loss.item())
+        history['L_NS'].append(metrics['L_NS'])
+        history['L_div'].append(metrics['L_div'])
+        history['L_IC'].append(metrics['L_IC'])
+        history['L_BC'].append(metrics['L_BC'])
+        
         # Logging (L-BFGS handles its own loop, so we log inside the closure)
         if iteration % 100 == 0:
             print(f"L-BFGS Iter {iteration:04d} | Total Loss: {total_loss.item():.4e} | "
-                  f"L_NS: {metrics['L_NS']:.2e} | L_div: {metrics['L_div']:.2e} | "
+                  f"L_NS(s): {metrics['L_NS']:.2e} | L_NS(raw): {metrics['L_NS_raw']:.2e} | L_div: {metrics['L_div']:.2e} | "
                   f"L_IC: {metrics['L_IC']:.2e} | L_BC: {metrics['L_BC']:.2e}")
         
         iteration += 1
@@ -229,7 +253,7 @@ def train_lbfgs(model, criterion, case_data, args):
     model.train()
     optimizer.step(closure)
     
-    return model
+    return model, history
 
 def evaluate_model(model, case_meta, eval_grid, device, chunk_size=5000):
     """
@@ -243,7 +267,11 @@ def evaluate_model(model, case_meta, eval_grid, device, chunk_size=5000):
     U0 = case_meta["U0"]
     k = case_meta["k"]
     nu = compute_nu(U0, Re, k)
+    nu = compute_nu(U0, Re, k)
     
+    # Initialize centralized scaler for consistent evaluation
+    scaler = ResidualScaler(U0, k)
+
     total_points = eval_grid.shape[0]
     
     # Accumulators for the metrics
@@ -264,9 +292,10 @@ def evaluate_model(model, case_meta, eval_grid, device, chunk_size=5000):
         preds = model(coords)
         u_pred, v_pred, p_pred = preds[:, 0:1], preds[:, 1:2], preds[:, 2:3]
         
-        # 1. Compute unscaled residuals
-        R_u, R_v, R_c = compute_residuals(u_pred, v_pred, p_pred, x, y, t, nu)
-        
+        # 1. Compute and scale residuals for consistent evaluation
+        R_u_raw, R_v_raw, R_c_raw = compute_residuals(u_pred, v_pred, p_pred, x, y, t, nu)
+        R_u, R_v, R_c = scaler.scale_residuals(R_u_raw, R_v_raw, R_c_raw)
+
         sum_mse_ru += torch.sum(R_u**2).item()
         sum_mse_rv += torch.sum(R_v**2).item()
         sum_mse_rc += torch.sum(R_c**2).item()
@@ -304,6 +333,40 @@ def evaluate_model(model, case_meta, eval_grid, device, chunk_size=5000):
     
     return passed_all, rel_l2, mse_rc, (mse_ru + mse_rv)
 
+def plot_case_history(case_id, adam_hist, lbfgs_hist, save_dir):
+    """Generates and saves a logarithmic loss curve plot for a single case."""
+    keys = ['Total', 'L_NS', 'L_div', 'L_IC', 'L_BC']
+    
+    # Concatenate the Adam and LBFGS histories
+    combined_hist = {k: adam_hist[k] + lbfgs_hist[k] for k in keys}
+    
+    adam_len = len(adam_hist['Total'])
+    total_len = len(combined_hist['Total'])
+    x_total = np.arange(total_len)
+    
+    plt.figure(figsize=(10, 6))
+    
+    # Plot each line
+    for k in keys:
+        linestyle = '--' if k == 'Total' else '-'
+        linewidth = 2 if k == 'Total' else 1.5
+        plt.plot(x_total, combined_hist[k], label=k, linestyle=linestyle, linewidth=linewidth)
+        
+    # Apply background colors to distinguish the phases
+    plt.axvspan(0, adam_len, color='blue', alpha=0.05, label='Adam Phase')
+    plt.axvspan(adam_len, total_len, color='orange', alpha=0.05, label='L-BFGS Phase')
+    
+    plt.yscale('log')
+    plt.xlabel('Optimization Steps')
+    plt.ylabel('Loss (Log Scale)')
+    plt.title(f'Loss History for {case_id}')
+    plt.legend(loc='upper right')
+    plt.grid(True, which='both', ls='-', alpha=0.2)
+    
+    plt.tight_layout()
+    plt.savefig(save_dir / f"{case_id}_loss_history.png")
+    plt.close()
+
 def sort_cases_by_difficulty(cases):
     """
     Sorts a list of case dictionaries from easiest to hardest physics.
@@ -321,6 +384,12 @@ def main():
     metadata_path = project_root / "data" / "cases_metadata.json"
     tensors_dir = project_root / "data" / "tensors"
     
+    plots_dir = project_root / "plots"
+    plots_dir.mkdir(exist_ok=True)
+
+    models_dir = project_root / "models"
+    models_dir.mkdir(exist_ok=True)
+
     if not metadata_path.exists():
         raise FileNotFoundError("cases_metadata.json not found.")
         
@@ -353,8 +422,11 @@ def main():
         model = BaselinePINN().to(args.device)
         
         # Train
-        model, criterion = train_adam(model, case_data, case, args)
-        model = train_lbfgs(model, criterion, case_data, args)
+        model, criterion, adam_hist = train_adam(model, case_data, case, args)
+        model, lbfgs_hist = train_lbfgs(model, criterion, case_data, args)
+        
+        plot_case_history(case_id, adam_hist, lbfgs_hist, plots_dir)
+        print(f"📈 Saved loss history plot to {plots_dir.name}/{case_id}_loss_history.png")
         
         # Evaluate
         eval_grid = case_data["eval_grid"]
@@ -367,7 +439,10 @@ def main():
                 f.write(f"PASSED: {case_id} | RelL2: {rel_l2:.4f}\n")
                 print(f"\n✅ Case {case_id} PASSED all usability criteria.")
                 # Save model
-                torch.save(model.state_dict(), project_root / "models" / f"{case_id}_best.pth")
+                try:
+                    torch.save(model.state_dict(), models_dir / f"{case_id}_best.pth")
+                except Exception as e:
+                    print(f"⚠️ Failed to save model for {case_id}: {e}")
             else:
                 f.write(f"FAILED: {case_id} | RelL2: {rel_l2:.4f}\n")
                 print(f"\n⚠️ Case {case_id} FAILED criteria. Tagging for Risk Mitigation.")
