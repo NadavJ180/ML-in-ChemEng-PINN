@@ -67,7 +67,7 @@ def parse_args():
     
     # Optimizer settings
     parser.add_argument("--adam_epochs", type=int, default=5000, help="Epochs for Adam optimizer")
-    parser.add_argument("--lbfgs_iters", type=int, default=1000, help="Max iterations for L-BFGS")
+    parser.add_argument("--lbfgs_iters", type=int, default=2500, help="Max iterations for L-BFGS")
     
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     
@@ -387,6 +387,9 @@ def main():
     plots_dir = project_root / "plots"
     plots_dir.mkdir(exist_ok=True)
 
+    models_dir = project_root / "models"
+    models_dir.mkdir(exist_ok=True)
+
     if not metadata_path.exists():
         raise FileNotFoundError("cases_metadata.json not found.")
         
@@ -436,7 +439,10 @@ def main():
                 f.write(f"PASSED: {case_id} | RelL2: {rel_l2:.4f}\n")
                 print(f"\n✅ Case {case_id} PASSED all usability criteria.")
                 # Save model
-                torch.save(model.state_dict(), project_root / "models" / f"{case_id}_best.pth")
+                try:
+                    torch.save(model.state_dict(), models_dir / f"{case_id}_best.pth")
+                except Exception as e:
+                    print(f"⚠️ Failed to save model for {case_id}: {e}")
             else:
                 f.write(f"FAILED: {case_id} | RelL2: {rel_l2:.4f}\n")
                 print(f"\n⚠️ Case {case_id} FAILED criteria. Tagging for Risk Mitigation.")
