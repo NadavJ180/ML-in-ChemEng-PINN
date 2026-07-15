@@ -98,3 +98,25 @@ Based on the project blueprint, the following components are implemented or acti
 
 ## 📝 Documentation
 Please refer to the `PINN suggestion-1.pdf` within the repository for the full academic roadmap, methodological details, and risk management strategies.
+
+## 🚀 Future Research Directions
+
+Having established a robust baseline pipeline and trained 30 independent Taylor-Green Vortex (TGV) models[cite: 3], the Physical Hallucination Score (PHS) framework opens up several exciting, high-impact avenues for subsequent academic research:
+
+---
+
+### 1. Adversarial Hallucination Generation (Automating the Fakes)
+* **Objective:** Replace manual mathematical perturbations with automated, target-driven fakes[cite: 3].
+* **Approach:** Implement an adversarial neural network (similar to a GAN generator) whose sole objective is to generate flow fields that successfully bypass the global PHS while minimizing visible spatial distortion[cite: 3]. This tests if the PHS framework can survive active adversarial "attacks" from an AI optimizing for physical evasion[cite: 3].
+
+### 2. Spatially Localized Hallucination Mapping (Finding Where It Broke)
+* **Objective:** Transition from a single, global diagnostic metric to a spatially resolved diagnostic tool[cite: 3].
+* **Approach:** Expand the global scalar PHS into a pixel-wise Spatial Hallucination Heatmap[cite: 3]. By plotting the localized residual fields of the Navier-Stokes and divergence equations[cite: 3], the auditor can pinpoint exactly *where* in the physical domain (e.g., near boundaries or vortex centers) the model is hallucinating[cite: 3].
+
+### 3. Robustness to Experimental and Sensor Noise
+* **Objective:** Validate the detector's capability under real-world, imperfect engineering conditions[cite: 3].
+* **Approach:** Inject varying levels of Gaussian white noise into the pristine validation and test datasets[cite: 3]. The research goal is to demonstrate that the PHS can mathematically distinguish between standard, expected experimental measurement noise and smooth, structurally incorrect deep-learning hallucinations[cite: 3].
+
+### 4. Cross-PDE Methodological Generalization
+* **Objective:** Prove that the normalization and thresholding framework is universally applicable to physics-informed models[cite: 3].
+* **Approach:** Port the exact PHS methodology (calculating component-wise residuals, normalizing them using clean validation cases, and establishing a unified detection threshold tau)[cite: 3] to entirely different partial differential equations, such as the Heat Equation, Burgers' Equation, or 3D flow systems.
