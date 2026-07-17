@@ -29,7 +29,7 @@ from pathlib import Path
 
 import torch
 
-# 1. Define the project root 
+# 1. Define the project root (mirrors the convention used elsewhere in the repo)
 project_root = Path(__file__).parent.parent.parent
 sys.path.append(str(project_root))
 
@@ -55,7 +55,7 @@ def parse_args():
         args (argparse.Namespace): Parsed arguments with fields
             case_id (str | None), device (str), chunk_size (int).
     """
-    parser = argparse.ArgumentParser(description="Generate the physical hallucination dataset.")
+    parser = argparse.ArgumentParser(description="Generate the physical hallucination dataset (Section 7).")
     parser.add_argument("--case_id", type=str, default=None,
                         help="Only generate hallucinations for this specific case_id.")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
@@ -69,18 +69,34 @@ def load_case_metadata(metadata_path: Path):
     Loads cases_metadata.json and flattens the train/validation/test splits
     into a single lookup dictionary keyed by case_id.
 
+    IMPORTANT: each case is tagged with a "split" field ("train", "validation",
+    or "test") indicating which of sampler.py's partitions it belongs to
+    (20 train / 5 validation / 5 test, per src/data/sampler.py). This field
+    is not used to change WHICH cases get processed here -- generating
+    hallucinations for all 30 is harmless data preparation. It exists so
+    downstream PHS threshold calibration/evaluation code can correctly
+    restrict itself to validation-split cases for calibration and test-split
+    cases for final, held-out evaluation reporting, per the README's stated
+    methodology ("normalizing them using clean validation cases, and
+    establishing a unified detection threshold tau"). Currently NOTHING in
+    the pipeline (training included) discriminates by split; without this
+    tag, that information is silently lost after this flattening step.
+
     Inputs:
         metadata_path (Path): Path to data/cases_metadata.json.
 
     Outputs:
         dict: Mapping of case_id (str) -> case metadata dict
-              (containing "Re", "U0", "k", "phi_x", "phi_y", "seed", etc.).
+              (containing "Re", "U0", "k", "phi_x", "phi_y", "seed", "split", etc.).
     """
     with open(metadata_path, "r") as f:
         dataset = json.load(f)
 
-    all_cases = dataset["train"] + dataset["validation"] + dataset["test"]
-    return {c["case_id"]: c for c in all_cases}
+    case_meta_by_id = {}
+    for split in ("train", "validation", "test"):
+        for c in dataset[split]:
+            case_meta_by_id[c["case_id"]] = {**c, "split": split}
+    return case_meta_by_id
 
 
 def get_evaluation_grid(case_id: str, T: float, tensors_dir: Path) -> torch.Tensor:
@@ -143,7 +159,7 @@ def generate_case_hallucinations(case_id, case_meta, project_root, device, chunk
     """
     Builds the full clean + 25-variant hallucination bundle for a single case:
     loads the trained model, runs one clean forward pass on the evaluation
-    grid, then applies all 5 perturbations at all 5 epsilon
+    grid, then applies all 5 Section 7 perturbations at all 5 epsilon
     strengths to produce the 25 hallucinated variants.
 
     Inputs:
@@ -156,14 +172,17 @@ def generate_case_hallucinations(case_id, case_meta, project_root, device, chunk
     Outputs:
         bundle (dict): Full data structure to be saved as
                         {case_id}_hallucinations.pt, containing "case_id",
+                        "split" ("train"/"validation"/"test", from
+                        cases_metadata.json -- see load_case_metadata()),
                         "Re", "U0", "k", "nu", "T", "coords", "clean", and
                         "perturbed" (nested by perturbation name -> epsilon key).
         index_rows (list[dict]): One row per (perturbation, epsilon) combo
                                   (plus one "clean" row), each with case_id,
-                                  perturbation_type, epsilon, Re, U0, k, T,
+                                  split, perturbation_type, epsilon, Re, U0, k, T,
                                   and label, for the global categorization index.
     """
     Re, U0, k = case_meta["Re"], case_meta["U0"], case_meta["k"]
+    split = case_meta.get("split", "unknown")
     nu = compute_nu(U0, Re, k)
     T = compute_T(U0, Re, k)
 
@@ -192,6 +211,7 @@ def generate_case_hallucinations(case_id, case_meta, project_root, device, chunk
 
     bundle = {
         "case_id": case_id,
+        "split": split,
         "Re": Re,
         "U0": U0,
         "k": k,
@@ -215,7 +235,7 @@ def generate_case_hallucinations(case_id, case_meta, project_root, device, chunk
                 # Run the shifted-time query on-device in chunks for VRAM safety,
                 # then bring the result back to CPU to match the rest of the bundle.
                 hallucinated = _temporal_mismatch_chunked(model, coords, params, epsilon, device, chunk_size)
-                # Only redefines (u, v) for this perturbation; pressure
+                # Section 7 only redefines (u, v) for this perturbation; pressure
                 # stays at its clean value.
                 hallucinated["p"] = fields["p"].clone()
             else:
@@ -228,6 +248,7 @@ def generate_case_hallucinations(case_id, case_meta, project_root, device, chunk
 
             index_rows.append({
                 "case_id": case_id,
+                "split": split,
                 "perturbation_type": perturbation_name,
                 "epsilon": epsilon,
                 "Re": Re,
@@ -240,6 +261,7 @@ def generate_case_hallucinations(case_id, case_meta, project_root, device, chunk
     # Also register the clean baseline in the index for completeness
     index_rows.append({
         "case_id": case_id,
+        "split": split,
         "perturbation_type": "none",
         "epsilon": 0.0,
         "Re": Re,
@@ -274,8 +296,8 @@ def _temporal_mismatch_chunked(model, coords, params, epsilon, device, chunk_siz
     Outputs:
         dict: {"u": hallucinated u (N, 1), "v": hallucinated v (N, 1)} on CPU.
               Does NOT include "p" — the caller is responsible for filling
-              it in with the clean pressure field, since only
-              redefined (u, v) for this perturbation.
+              it in with the clean pressure field, since Section 7 only
+              redefines (u, v) for this perturbation.
     """
     T = params["T"]
     x, y, t = coords["x"], coords["y"], coords["t"]
@@ -297,7 +319,7 @@ def _temporal_mismatch_chunked(model, coords, params, epsilon, device, chunk_siz
     v_tilde = torch.cat(v_chunks, dim=0)
 
     # "p" is intentionally omitted here; the caller fills it in with the clean
-    # pressure field, since only redefined (u, v) for this perturbation.
+    # pressure field, since Section 7 only redefines (u, v) for this perturbation.
     return {"u": u_tilde, "v": v_tilde}
 
 
@@ -338,7 +360,7 @@ def main():
     n_generated, n_skipped = 0, 0
 
     print("=" * 60)
-    print("🧪 GENERATING PHYSICAL HALLUCINATION DATASET")
+    print("🧪 GENERATING PHYSICAL HALLUCINATION DATASET (Section 7)")
     print(f"Perturbations: {PERTURBATION_NAMES}")
     print(f"Epsilon values: {EPSILON_VALUES}")
     print("=" * 60)
