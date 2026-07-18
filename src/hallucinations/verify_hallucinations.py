@@ -709,6 +709,138 @@ def plot_pressure_field_check(model, case_id: str, case_meta: dict, args, output
     print(f"🖼️  Saved {save_path.relative_to(project_root)}")
 
 
+def plot_vector_field_check(model, case_id: str, case_meta: dict, args, output_dir: Path,
+                              vector_res: int = 18, demo_epsilon: float = 0.1):
+    """
+    Generates quiver (vector) plots showing how each Section 7 perturbation
+    affects the DIRECTION of the velocity field, not just its magnitude.
+
+    WHY THIS IS A DIFFERENT CHECK FROM THE CONTOUR PLOTS: velocity-magnitude
+    contours (plot_visual_check, plot_full_sweep) show sqrt(u^2+v^2), which is
+    blind to pure rotation -- a perturbation could rotate every vector and
+    leave the magnitude field completely unchanged. This function makes the
+    directional effect visible directly, and the five perturbation types have
+    genuinely different signatures here:
+      - velocity_divergence only modifies u, so it TILTS vectors (breaks the
+        u/v balance continuity depends on), not just rescales them.
+      - momentum perturbs u and v independently, producing a more complex,
+        spatially varying rotation pattern.
+      - pressure should show EXACTLY zero vector change (u, v untouched by
+        design), same caveat as the pressure-space contour check.
+      - temporal_mismatch, if the model tracks the analytical TGV decay
+        reasonably, should mostly RESCALE vectors uniformly rather than
+        rotate them (the decay factor multiplies u and v identically), unlike
+        velocity_divergence/momentum which genuinely change direction.
+      - boundary tilts vectors, but only in a thin band near the periodic
+        x-edges, leaving the interior essentially untouched.
+
+    NOTE: unlike the imperceptibility check, this uses a large, clearly
+    visible epsilon (default 0.1) by design -- the goal here is showing the
+    MECHANISM of each perturbation, not re-testing whether it's invisible
+    (that's already covered by plot_visual_check at eps in {0.01, 0.02}).
+
+    Uses a coarse grid (vector_res x vector_res, default 18x18) since dense
+    quiver plots become unreadable clutter. Clean and perturbed columns
+    within each row share an identical arrow-length scale and color range
+    (derived from the clean field) so a fair visual comparison is possible;
+    the difference column gets its own scale since it's a much smaller quantity.
+
+    Inputs:
+        model (nn.Module): The trained BaselinePINN for this case.
+        case_id (str): The case identifier.
+        case_meta (dict): This case's metadata ("Re", "U0", "k").
+        args (argparse.Namespace): Parsed CLI arguments (uses device, time_frac).
+        output_dir (Path): Directory to save the figure into.
+        vector_res (int): Quiver grid resolution (vector_res x vector_res arrows).
+        demo_epsilon (float): Perturbation strength used for this demonstration.
+
+    Outputs:
+        None. Saves "vector_field_eps_{demo_epsilon}.png" to output_dir.
+    """
+    Re, U0, k = case_meta["Re"], case_meta["U0"], case_meta["k"]
+    T = compute_T(U0, Re, k)
+    params = {"U0": U0, "k": k, "T": T}
+
+    x, y, t = build_interior_grid(T, vector_res, args.time_frac, args.device)
+
+    fig, axes = plt.subplots(len(PERTURBATION_NAMES), 3, figsize=(12, 4 * len(PERTURBATION_NAMES)))
+    fig.suptitle(f"Vector Field Distortion Check: {case_id} (ε={demo_epsilon})", fontsize=16)
+
+    X = x.detach().reshape(vector_res, vector_res).cpu().numpy()
+    Y = y.detach().reshape(vector_res, vector_res).cpu().numpy()
+
+    for row_idx, perturbation_name in enumerate(PERTURBATION_NAMES):
+        clean, perturbed = compute_clean_and_perturbed(
+            model, x, y, t, params, perturbation_name, demo_epsilon, track_gradients=False
+        )
+        with torch.no_grad():
+            U_clean = clean["u"].detach().reshape(vector_res, vector_res).cpu().numpy()
+            V_clean = clean["v"].detach().reshape(vector_res, vector_res).cpu().numpy()
+            U_pert = perturbed["u"].detach().reshape(vector_res, vector_res).cpu().numpy()
+            V_pert = perturbed["v"].detach().reshape(vector_res, vector_res).cpu().numpy()
+            speed_clean = np.sqrt(U_clean ** 2 + V_clean ** 2)
+            speed_pert = np.sqrt(U_pert ** 2 + V_pert ** 2)
+            U_diff = U_pert - U_clean
+            V_diff = V_pert - V_clean
+            speed_diff = np.sqrt(U_diff ** 2 + V_diff ** 2)
+
+        vmin, vmax = speed_clean.min(), speed_clean.max()
+
+        ax_clean = axes[row_idx, 0]
+        Q_clean = ax_clean.quiver(X, Y, U_clean, V_clean, speed_clean, cmap="viridis", clim=(vmin, vmax))
+        shared_scale = Q_clean.scale
+
+        ax_pert = axes[row_idx, 1]
+        is_degenerate = speed_diff.max() < 1e-10
+        if is_degenerate:
+            # Perturbed vectors are identical to clean (e.g. "pressure"); plot
+            # them anyway so the panel isn't blank, but flag it explicitly
+            # rather than leaving an unexplained duplicate of column 1.
+            ax_pert.quiver(X, Y, U_pert, V_pert, speed_pert, cmap="viridis", clim=(vmin, vmax),
+                            scale=shared_scale, scale_units=Q_clean.scale_units)
+            ax_pert.text(np.pi, np.pi, "u, v unaffected\n(by design)", ha="center", va="center",
+                         fontsize=9, bbox=dict(boxstyle="round", facecolor="white", alpha=0.8))
+        else:
+            ax_pert.quiver(X, Y, U_pert, V_pert, speed_pert, cmap="viridis", clim=(vmin, vmax),
+                            scale=shared_scale, scale_units=Q_clean.scale_units)
+
+        ax_diff = axes[row_idx, 2]
+        if is_degenerate:
+            ax_diff.text(np.pi, np.pi, "no difference\n(by design)", ha="center", va="center",
+                         fontsize=9, bbox=dict(boxstyle="round", facecolor="white", alpha=0.8))
+            ax_diff.set_xlim(0, 2 * np.pi)
+            ax_diff.set_ylim(0, 2 * np.pi)
+        else:
+            # Explicit scale rather than matplotlib's auto-heuristic: some
+            # perturbations (e.g. "boundary") are spatially sparse/localized,
+            # and auto-scaling calibrated against a field of near-zero values
+            # with a few real outliers renders those outliers as misleadingly
+            # long streaks. Pinning the longest arrow to ~0.8 grid-cells keeps
+            # every row's diff panel honestly proportioned to where the
+            # perturbation actually has an effect.
+            grid_spacing = (2 * np.pi) / max(vector_res - 1, 1)
+            max_diff_speed = speed_diff.max()
+            diff_scale = max_diff_speed / (0.8 * grid_spacing) if max_diff_speed > 1e-12 else 1.0
+            ax_diff.quiver(X, Y, U_diff, V_diff, speed_diff, cmap="magma", scale=diff_scale, scale_units="xy")
+
+        for ax in (ax_clean, ax_pert, ax_diff):
+            ax.set_aspect("equal")
+            ax.set_xlim(0, 2 * np.pi)
+            ax.set_ylim(0, 2 * np.pi)
+
+        axes[row_idx, 0].set_ylabel(perturbation_name, fontsize=11, fontweight="bold")
+        if row_idx == 0:
+            axes[row_idx, 0].set_title("Clean")
+            axes[row_idx, 1].set_title(f"Perturbed ε={demo_epsilon}")
+            axes[row_idx, 2].set_title("Difference vectors")
+
+    plt.tight_layout(rect=[0, 0, 1, 0.97])
+    save_path = output_dir / f"vector_field_eps_{demo_epsilon}.png"
+    plt.savefig(save_path, dpi=200)
+    plt.close(fig)
+    print(f"🖼️  Saved {save_path.relative_to(project_root)}")
+
+
 def plot_full_sweep(model, case_id: str, case_meta: dict, args, output_dir: Path):
     """
     Generates the extra robustness figure: for every perturbation type, the
@@ -1004,6 +1136,9 @@ def main():
 
     print(f"[{primary_case_id}] Generating companion pressure-field check (pressure perturbation doesn't touch velocity)...")
     plot_pressure_field_check(model, primary_case_id, case_meta, args, case_output_dir)
+
+    print(f"[{primary_case_id}] Generating vector field distortion check...")
+    plot_vector_field_check(model, primary_case_id, case_meta, args, case_output_dir, demo_epsilon=1.0)
 
     print(f"[{primary_case_id}] Generating extra full-epsilon-sweep robustness plot...")
     plot_full_sweep(model, primary_case_id, case_meta, args, case_output_dir)
