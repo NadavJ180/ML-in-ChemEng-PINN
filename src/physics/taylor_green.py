@@ -1,3 +1,4 @@
+from __future__ import annotations
 import torch
 
 def compute_nu(U0: float, Re: float, k: int) -> float:

@@ -30,7 +30,3 @@ plots/
 # Generated PyTorch Tensors
 data/tensors/
 *.pt
-
-# Ignore the code to bundle the model for ai prompts
-bundle.py
-codebase.txt

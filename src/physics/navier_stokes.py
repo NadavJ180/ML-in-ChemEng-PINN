@@ -1,3 +1,4 @@
+from __future__ import annotations
 import torch
 
 def fwd_gradient(y: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
