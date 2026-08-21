@@ -43,16 +43,16 @@ Outputs:
   plots/phs_evaluation/phs_vs_epsilon.png
       Mean PHS vs. epsilon per perturbation type (all splits pooled) --
       sanity check that PHS increases with perturbation strength.
+  plots/phs_evaluation/raw_components_vs_epsilon.png
+      Smom, Sdiv, Sbc, SE (raw, pre-normalization) vs. epsilon, one panel
+      per perturbation type -- shows exactly which component(s) each
+      perturbation type activates (e.g. makes the Sbc "boundary" blind
+      spot visible directly).
+  plots/phs_evaluation/scores_vs_epsilon.png
+      Score1 / Score2 / Score3 (PHS) vs. epsilon, one panel per
+      perturbation type -- shows how adding each successive component
+      changes the detection signal.
 
-CAVEAT (as of this writing): the 30 currently-committed models predate the
-phase-bug fix identified during Issue #9's audit (see
-verify_hallucinations.py's phase_amplitude_fit_diagnostic -- clean
-predictions were found to match the analytical TGV solution at the WRONG
-phase). This script still runs correctly against them: Smom/Sdiv/Sbc are
-phase-invariant PDE/BC residuals, and SE's reference curve is explicitly
-phase-invariant by construction (see phs.py's compute_energy_violation).
-Detection numbers from a run against these models are a PIPELINE SMOKE
-TEST, not final results -- re-run after retraining for report-ready numbers.
 
 Usage:
     python src/detection/evaluate_phs.py
@@ -375,30 +375,129 @@ def plot_phs_vs_epsilon(df: pd.DataFrame, output_dir: Path):
     evaluation) -- confirms the "PHS increases with perturbation strength"
     success criterion.
 
+    Epsilon=0 (the clean baseline) is NOT plotted as a sixth x-position:
+    it isn't a value in EPSILON_VALUES for any perturbation type -- it's a
+    separate label="clean" row with no perturbation_type at all -- and
+    log(0) is undefined regardless, so it could never sit on this axis.
+    Instead, the clean-split mean PHS is drawn as a horizontal reference
+    line, so you can see where the curves would be heading as epsilon
+    shrinks toward it.
+
     Inputs:
         df (pd.DataFrame): Must have "perturbation_type", "epsilon",
-            "Score3_PHS_full" columns.
+            "label", "Score3_PHS_full" columns.
         output_dir (Path): Where to save phs_vs_epsilon.png.
 
     Outputs:
         None. Saves plots/phs_evaluation/phs_vs_epsilon.png.
     """
     halluc_df = df[df["label"] == "hallucinated"]
+    clean_mean = df.loc[df["label"] == "clean", "Score3_PHS_full"].mean()
 
     plt.figure(figsize=(7, 5))
     for perturbation_name, group in halluc_df.groupby("perturbation_type"):
         by_eps = group.groupby("epsilon")["Score3_PHS_full"].mean().sort_index()
         plt.plot(by_eps.index, by_eps.values, marker="o", label=perturbation_name)
 
+    plt.axhline(clean_mean, color="gray", linestyle="--", alpha=0.7,
+                label=f"clean baseline (mean={clean_mean:.2f})")
     plt.xscale("log")
     plt.yscale("log")
-    plt.xlabel("Epsilon (perturbation strength)")
-    plt.ylabel("Mean PHS")
+    plt.xlabel("Epsilon (perturbation strength, log scale)")
+    plt.ylabel("Mean PHS (log scale)")
     plt.title("PHS vs. Epsilon by Perturbation Type (all splits)")
     plt.legend()
     plt.grid(True, which="both", alpha=0.3)
     plt.tight_layout()
     plt.savefig(output_dir / "phs_vs_epsilon.png", dpi=150)
+    plt.close()
+
+
+def plot_raw_components_vs_epsilon(df: pd.DataFrame, output_dir: Path):
+    """
+    Plots all 4 RAW components (Smom, Sdiv, Sbc, SE -- before normalization)
+    vs. epsilon, one subplot per perturbation type, so you can see exactly
+    which component(s) each perturbation type activates. This is the
+    figure that makes the Sbc "boundary" blind spot visible directly: the
+    "boundary" panel's bc line should sit flat while its mom/div lines
+    climb.
+
+    Inputs:
+        df (pd.DataFrame): Must have "perturbation_type", "epsilon",
+            "label", and the 4 raw component columns ("mom", "div", "bc", "E").
+        output_dir (Path): Where to save raw_components_vs_epsilon.png.
+
+    Outputs:
+        None. Saves plots/phs_evaluation/raw_components_vs_epsilon.png.
+    """
+    halluc_df = df[df["label"] == "hallucinated"]
+    perturbation_types = sorted(halluc_df["perturbation_type"].unique())
+
+    fig, axes = plt.subplots(2, 3, figsize=(15, 9))
+    axes = axes.flatten()
+
+    for ax, perturbation_name in zip(axes, perturbation_types):
+        group = halluc_df[halluc_df["perturbation_type"] == perturbation_name]
+        for component in PHS_COMPONENT_NAMES:
+            by_eps = group.groupby("epsilon")[component].mean().sort_index()
+            ax.plot(by_eps.index, by_eps.values, marker="o", label=f"S_{component}")
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_title(perturbation_name)
+        ax.set_xlabel("Epsilon")
+        ax.set_ylabel("Raw component value")
+        ax.grid(True, which="both", alpha=0.3)
+        ax.legend(fontsize=8)
+
+    for ax in axes[len(perturbation_types):]:
+        ax.axis("off")
+
+    fig.suptitle("Raw PHS Components vs. Epsilon, by Perturbation Type (all splits)")
+    plt.tight_layout()
+    plt.savefig(output_dir / "raw_components_vs_epsilon.png", dpi=150)
+    plt.close()
+
+
+def plot_all_scores_vs_epsilon(df: pd.DataFrame, output_dir: Path):
+    """
+    Plots Score1 (momentum-only), Score2 (+divergence), and Score3/PHS
+    (+boundary +energy) vs. epsilon, one subplot per perturbation type, so
+    you can see how adding each successive component changes the
+    detection signal's shape and magnitude for each perturbation type.
+
+    Inputs:
+        df (pd.DataFrame): Must have "perturbation_type", "epsilon",
+            "label", and the 3 score columns (post evaluate_detection()).
+        output_dir (Path): Where to save scores_vs_epsilon.png.
+
+    Outputs:
+        None. Saves plots/phs_evaluation/scores_vs_epsilon.png.
+    """
+    halluc_df = df[df["label"] == "hallucinated"]
+    perturbation_types = sorted(halluc_df["perturbation_type"].unique())
+
+    fig, axes = plt.subplots(2, 3, figsize=(15, 9))
+    axes = axes.flatten()
+
+    for ax, perturbation_name in zip(axes, perturbation_types):
+        group = halluc_df[halluc_df["perturbation_type"] == perturbation_name]
+        for score_name in BASELINE_DEFINITIONS:
+            by_eps = group.groupby("epsilon")[score_name].mean().sort_index()
+            ax.plot(by_eps.index, by_eps.values, marker="o", label=score_name)
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_title(perturbation_name)
+        ax.set_xlabel("Epsilon")
+        ax.set_ylabel("Mean score")
+        ax.grid(True, which="both", alpha=0.3)
+        ax.legend(fontsize=7)
+
+    for ax in axes[len(perturbation_types):]:
+        ax.axis("off")
+
+    fig.suptitle("Score1 / Score2 / Score3 (PHS) vs. Epsilon, by Perturbation Type (all splits)")
+    plt.tight_layout()
+    plt.savefig(output_dir / "scores_vs_epsilon.png", dpi=150)
     plt.close()
 
 
@@ -480,8 +579,10 @@ def main():
     plot_roc_curves(df, output_dir)
     plot_score_distributions(df, thresholds, output_dir)
     plot_phs_vs_epsilon(df, output_dir)
-    print(f"🖼️  Wrote roc_curves.png, score_distributions.png, phs_vs_epsilon.png to "
-          f"{output_dir.relative_to(project_root)}")
+    plot_raw_components_vs_epsilon(df, output_dir)
+    plot_all_scores_vs_epsilon(df, output_dir)
+    print(f"🖼️  Wrote roc_curves.png, score_distributions.png, phs_vs_epsilon.png, "
+          f"raw_components_vs_epsilon.png, scores_vs_epsilon.png to {output_dir.relative_to(project_root)}")
 
     print("\n" + "=" * 60)
     print("✅ Detection summary (test split):")
