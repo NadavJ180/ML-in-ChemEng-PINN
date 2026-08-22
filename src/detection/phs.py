@@ -58,6 +58,27 @@ bump still shows up in u_x, u_xx feeding the momentum/divergence residuals.
 PHS's sum therefore still increases for every one of the 5 perturbation
 types; it just isn't Sbc doing the work for this particular one.
 
+IMPORTANT: this blind spot is NOT fixable by comparing a higher-order
+derivative at the boundary pair instead of the raw value -- m(x) is built
+as f(x) + f(2*pi - x) for a smooth f, so m and EVERY derivative of m match
+at x=0 vs x=2*pi (checked numerically up to 2nd order; this follows
+generally since d^n/dx^n [f(2*pi-x)] at x=0 equals (-1)^n * f^(n)(2*pi),
+which pairs exactly with f^(n)(0) at x=2*pi by the same symmetry). No
+VALUE-COMPARISON check evaluated exactly at the boundary pair, of any
+order, can ever separate this perturbation from a clean field. Catching it
+requires a spatially-LOCALIZED check instead (does the field behave
+anomalously in a neighborhood of the edges, not just exactly on them) --
+see compute_boundary_localization_violation below, an optional 5th
+component (S_bc_local) added after this blind spot was raised in review,
+adapted from Issue #9's boundary_localization_ratio diagnostic. It is
+NOT part of PHS_COMPONENT_NAMES / the official Section 8 sum by default,
+since Sbc-as-specified still does its own job correctly (see above) and
+Smom/Sdiv already made the "boundary" type fully detectable (100% recall
+in the Issue #10 evaluation run) -- S_bc_local is offered as an optional,
+separately-normalized addition for whoever wants a component whose name
+matches its target more literally, or extra robustness against a future
+perturbation type Smom/Sdiv might not happen to cover.
+
 Every function below takes an already-loaded, eval-mode BaselinePINN and
 computes one thing at a time, mirroring the split used throughout
 src/hallucinations/verify_hallucinations.py (small, single-purpose,
@@ -83,10 +104,18 @@ PHS_COMPONENT_NAMES = ["mom", "div", "bc", "E"]
 # components each one sums. Score3_PHS_full IS the Physical Hallucination
 # Score; Score1/Score2 are the residual-only baselines it is compared
 # against for the AUC(PHS) > AUC(Smom + Sdiv) acceptance criterion.
+# Score4 is NOT part of Section 8 -- it's an optional comparison baseline
+# for evaluating whether S_bc_local (see compute_boundary_localization_violation)
+# is worth adopting; only computed/scored when evaluate_phs.py is run with
+# --include_bc_local.
 BASELINE_DEFINITIONS = {
     "Score1_momentum_only": ["mom"],
     "Score2_momentum_divergence": ["mom", "div"],
     "Score3_PHS_full": ["mom", "div", "bc", "E"],
+}
+BASELINE_DEFINITIONS_WITH_BC_LOCAL = {
+    **BASELINE_DEFINITIONS,
+    "Score4_PHS_plus_bc_local": ["mom", "div", "bc", "E", "bc_local"],
 }
 
 
@@ -276,6 +305,85 @@ def compute_boundary_violation(model, T: float, params: dict, perturbation_name:
     return Sbc_x + Sbc_y
 
 
+def compute_boundary_localization_violation(model, T: float, params: dict, perturbation_name: str, epsilon: float,
+                                             nu: float, scaler, band_width: float = 0.3,
+                                             n_points: int = 20000, chunk_size: int = 8000,
+                                             device: str = "cpu") -> tuple[float, int]:
+    """
+    S_bc_local: an OPTIONAL, spatially-localized companion to Sbc (see the
+    "IMPORTANT" paragraph in this module's docstring for why Sbc itself
+    cannot be patched to catch the "boundary" perturbation type -- its
+    envelope is smooth-periodic to every derivative order at the seam, so
+    no value comparison evaluated exactly at x=0/x=2pi can ever separate
+    it from a clean field).
+
+    Instead of comparing two exact lines, this samples the SAME interior
+    collocation distribution used for Smom/Sdiv (sample_interior_points)
+    and splits it by a simple geometric mask into a "near-boundary band"
+    (points within band_width of x=0, x=2*pi, y=0, or y=2*pi) and
+    everything else, then computes MSE(Ru)+MSE(Rv) using ONLY the
+    near-band points. A hallucination concentrated near the edges (like
+    "boundary") inflates this near-band residual while a clean field (or
+    a perturbation NOT concentrated near the edges) does not -- directly
+    adapted from Issue #9's boundary_localization_ratio diagnostic in
+    verify_hallucinations.py, which found this exact ratio jumped from
+    ~10x to ~3150x across the epsilon sweep for the "boundary" type.
+
+    S_bc_local is a raw component, meant to be normalized against clean
+    validation fields exactly like the other 4 (see normalize_components)
+    if you choose to fold it into a score -- see evaluate_phs.py's
+    --include_bc_local flag.
+
+    Inputs:
+        model (nn.Module): The trained, eval-mode BaselinePINN.
+        T (float): This case's final simulation time.
+        params (dict): Case-specific physical constants ("U0", "k", "T").
+        perturbation_name (str): One of PERTURBATION_NAMES, or "none".
+        epsilon (float): Perturbation strength.
+        nu (float): Kinematic viscosity for this case.
+        scaler (ResidualScaler): This case's residual scaler.
+        band_width (float): Distance from an edge (in x or y) counted as
+            "near-boundary". Default 0.3 gives some margin beyond the
+            "boundary" perturbation's own sigma=0.2 envelope width.
+        n_points (int): Total interior points sampled before the
+            near/far split; with band_width=0.3 on a [0, 2*pi] domain,
+            roughly a third of uniformly sampled points fall in the band.
+        chunk_size (int): Points per forward/backward pass (VRAM safety).
+        device (str): Target hardware device ('cuda' or 'cpu').
+
+    Outputs:
+        (S_bc_local, n_near): S_bc_local (float), n_near (int, how many
+            sampled points fell in the band -- callers can use this to
+            sanity-check band_width isn't too narrow/wide; not needed for
+            scoring itself).
+    """
+    interior = sample_interior_points(T, n_points)
+    x_all, y_all = interior[:, 0], interior[:, 1]
+    two_pi = 2 * np.pi
+    near_mask = ((x_all < band_width) | (x_all > two_pi - band_width) |
+                 (y_all < band_width) | (y_all > two_pi - band_width))
+    near_points = interior[near_mask]
+    n_near = near_points.shape[0]
+    if n_near == 0:
+        return 0.0, 0
+
+    sum_Ru2, sum_Rv2, n_done = 0.0, 0.0, 0
+    for i in range(0, n_near, chunk_size):
+        chunk = near_points[i:i + chunk_size]
+        x, y, t = _leaf(chunk, 0, device), _leaf(chunk, 1, device), _leaf(chunk, 2, device)
+
+        field = _field_at(model, x, y, t, params, perturbation_name, epsilon, no_grad=False)
+        R_u, R_v, R_c = compute_residuals(field["u"], field["v"], field["p"], x, y, t, nu)
+        R_u_s, R_v_s, _ = scaler.scale_residuals(R_u, R_v, R_c)  # R_c's scaled form is unused here
+
+        sum_Ru2 += torch.sum(R_u_s ** 2).item()
+        sum_Rv2 += torch.sum(R_v_s ** 2).item()
+        n_done += chunk.shape[0]
+
+    S_bc_local = (sum_Ru2 / n_done) + (sum_Rv2 / n_done)
+    return S_bc_local, n_near
+
+
 def compute_energy_violation(model, T: float, params: dict, perturbation_name: str, epsilon: float,
                               U0: float, k: int, phi_x: float, phi_y: float, nu: float,
                               n_time: int = 20, energy_res: int = 32, device: str = "cpu") -> float:
@@ -339,9 +447,10 @@ def compute_phs_components(model, case_meta: dict, nu: float, T: float, scaler,
                             perturbation_name: str, epsilon: float,
                             n_interior: int = 20000, n_bc_per_axis: int = 1000,
                             n_time: int = 20, energy_res: int = 32, chunk_size: int = 8000,
-                            device: str = "cpu") -> dict:
+                            device: str = "cpu", include_bc_local: bool = False,
+                            bc_local_band_width: float = 0.3, bc_local_n_points: int = 20000) -> dict:
     """
-    Computes all 4 raw PHS components for ONE (case, perturbation, epsilon)
+    Computes the raw PHS components for ONE (case, perturbation, epsilon)
     field. This is the single entry point evaluate_phs.py calls per row of
     the hallucination index.
 
@@ -360,9 +469,15 @@ def compute_phs_components(model, case_meta: dict, nu: float, T: float, scaler,
             grids where a direct equivalent exists (64x64x20 total points
             informed n_interior/n_time; see evaluate_phs.py's parse_args).
         device (str): Target hardware device ('cuda' or 'cpu').
+        include_bc_local (bool): If True, also computes the optional
+            S_bc_local component (see compute_boundary_localization_violation).
+            Off by default -- Section 8 defines exactly 4 components.
+        bc_local_band_width, bc_local_n_points: Forwarded to
+            compute_boundary_localization_violation if include_bc_local is True.
 
     Outputs:
-        dict: {"mom": Smom, "div": Sdiv, "bc": Sbc, "E": SE}, all float.
+        dict: {"mom": Smom, "div": Sdiv, "bc": Sbc, "E": SE}, all float,
+            plus "bc_local" if include_bc_local is True.
     """
     params = {"U0": case_meta["U0"], "k": case_meta["k"], "T": T}
 
@@ -377,62 +492,84 @@ def compute_phs_components(model, case_meta: dict, nu: float, T: float, scaler,
         case_meta["U0"], case_meta["k"], case_meta["phi_x"], case_meta["phi_y"], nu,
         n_time, energy_res, device,
     )
-    return {"mom": Smom, "div": Sdiv, "bc": Sbc, "E": SE}
+    components = {"mom": Smom, "div": Sdiv, "bc": Sbc, "E": SE}
+
+    if include_bc_local:
+        S_bc_local, _ = compute_boundary_localization_violation(
+            model, T, params, perturbation_name, epsilon, nu, scaler,
+            bc_local_band_width, bc_local_n_points, chunk_size, device,
+        )
+        components["bc_local"] = S_bc_local
+
+    return components
 
 
-def compute_normalizers(valid_validation_rows: pd.DataFrame) -> dict:
+def compute_normalizers(valid_validation_rows: pd.DataFrame, component_names: list = None) -> dict:
     """
-    Computes the 4 per-component normalizers: mean(Sj) over clean
+    Computes the per-component normalizers: mean(Sj) over clean
     (label == "clean") fields from the VALIDATION split only [Section 8:
     "normalized using valid validation fields"].
 
     Inputs:
         valid_validation_rows (pd.DataFrame): Rows already filtered to
-            split == "validation" and label == "clean", with columns
-            "mom", "div", "bc", "E".
+            split == "validation" and label == "clean", with a column for
+            each name in component_names.
+        component_names (list[str] | None): Which raw columns to
+            normalize. Defaults to PHS_COMPONENT_NAMES (the official 4);
+            pass PHS_COMPONENT_NAMES + ["bc_local"] to also calibrate the
+            optional S_bc_local component (see
+            compute_boundary_localization_violation).
 
     Outputs:
         dict: {component_name: normalizer (float)}.
     """
+    component_names = component_names or PHS_COMPONENT_NAMES
     if len(valid_validation_rows) == 0:
         raise ValueError("No clean validation-split rows provided -- cannot compute normalizers.")
-    return {c: float(valid_validation_rows[c].mean()) for c in PHS_COMPONENT_NAMES}
+    return {c: float(valid_validation_rows[c].mean()) for c in component_names}
 
 
-def normalize_components(df: pd.DataFrame, normalizers: dict, eps: float = 1e-12) -> pd.DataFrame:
+def normalize_components(df: pd.DataFrame, normalizers: dict, eps: float = 1e-12,
+                          component_names: list = None) -> pd.DataFrame:
     """
-    Adds one "{component}_bar" column per PHS_COMPONENT_NAMES entry:
+    Adds one "{component}_bar" column per requested component:
     S_bar_j = Sj / (mean(Sj_valid) + eps) [Section 8].
 
     Inputs:
-        df (pd.DataFrame): Must contain raw "mom", "div", "bc", "E" columns.
+        df (pd.DataFrame): Must contain a raw column for each name in
+            component_names.
         normalizers (dict): Output of compute_normalizers().
         eps (float): Numerical floor preventing division by zero.
+        component_names (list[str] | None): Defaults to PHS_COMPONENT_NAMES.
 
     Outputs:
-        pd.DataFrame: `df` with 4 new columns appended (copy, not in-place).
+        pd.DataFrame: `df` with new columns appended (copy, not in-place).
     """
+    component_names = component_names or PHS_COMPONENT_NAMES
     out = df.copy()
-    for c in PHS_COMPONENT_NAMES:
+    for c in component_names:
         out[f"{c}_bar"] = out[c] / (normalizers[c] + eps)
     return out
 
 
-def compute_baseline_scores(df: pd.DataFrame) -> pd.DataFrame:
+def compute_baseline_scores(df: pd.DataFrame, baseline_definitions: dict = None) -> pd.DataFrame:
     """
-    Adds one column per BASELINE_DEFINITIONS entry (Score1_momentum_only,
-    Score2_momentum_divergence, Score3_PHS_full): the sum of that
+    Adds one column per baseline_definitions entry: the sum of that
     baseline's normalized ("_bar") components.
 
     Inputs:
-        df (pd.DataFrame): Must already have the 4 "*_bar" columns from
-                            normalize_components().
+        df (pd.DataFrame): Must already have the relevant "*_bar" columns
+                            from normalize_components().
+        baseline_definitions (dict | None): Defaults to BASELINE_DEFINITIONS
+            (the official Score1/Score2/Score3); pass
+            BASELINE_DEFINITIONS_WITH_BC_LOCAL to also compute Score4.
 
     Outputs:
-        pd.DataFrame: `df` with 3 new score columns appended (copy).
+        pd.DataFrame: `df` with new score columns appended (copy).
     """
+    baseline_definitions = baseline_definitions or BASELINE_DEFINITIONS
     out = df.copy()
-    for score_name, components in BASELINE_DEFINITIONS.items():
+    for score_name, components in baseline_definitions.items():
         out[score_name] = sum(out[f"{c}_bar"] for c in components)
     return out
 

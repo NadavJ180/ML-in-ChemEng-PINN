@@ -29,6 +29,7 @@ from src.models.scaling import ResidualScaler
 from src.detection.phs import (
     compute_momentum_divergence_violation,
     compute_boundary_violation,
+    compute_boundary_localization_violation,
     compute_phs_components,
     compute_normalizers,
     normalize_components,
@@ -174,6 +175,32 @@ def test_boundary_perturbation_blind_to_sbc_but_not_smom(perfect_case):
     assert Sbc_perturbed == pytest.approx(Sbc_clean, abs=1e-6)
     assert Smom_perturbed > 1e-4
     assert Smom_perturbed > Smom_clean
+
+
+def test_boundary_localization_violation_catches_what_sbc_misses(perfect_case):
+    """
+    Companion to the test above: verifies S_bc_local (the optional,
+    spatially-localized component added specifically because Sbc cannot
+    see the "boundary" perturbation, see phs.py's module docstring)
+    DOES rise substantially for that same perturbation, confirming the fix
+    actually closes the gap it was built for.
+
+    Inputs:
+        perfect_case (tuple): The (model, case_meta, nu, T, scaler) fixture.
+
+    Outputs:
+        None (raises via assert on failure).
+    """
+    model, case_meta, nu, T, scaler = perfect_case
+    params = {"U0": case_meta["U0"], "k": case_meta["k"], "T": T}
+
+    S_bc_local_clean, n_near = compute_boundary_localization_violation(
+        model, T, params, "none", 0.0, nu, scaler, band_width=0.3, n_points=5000, chunk_size=5000)
+    S_bc_local_perturbed, _ = compute_boundary_localization_violation(
+        model, T, params, "boundary", 0.1, nu, scaler, band_width=0.3, n_points=5000, chunk_size=5000)
+
+    assert n_near > 0, "band_width=0.3 should capture some points from a 5000-point interior sample"
+    assert S_bc_local_perturbed > 10 * max(S_bc_local_clean, 1e-12)
 
 
 # ---------------------------------------------------------------------

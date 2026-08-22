@@ -53,12 +53,12 @@ Outputs:
       perturbation type -- shows how adding each successive component
       changes the detection signal.
 
-
 Usage:
     python src/detection/evaluate_phs.py
     python src/detection/evaluate_phs.py --device cpu
     python src/detection/evaluate_phs.py --case_id case_00 --case_id case_25
     python src/detection/evaluate_phs.py --n_interior 4000 --n_time 8 --energy_res 16   # fast smoke test
+    python src/detection/evaluate_phs.py --include_bc_local   # also compute/score S_bc_local, Score4
 """
 
 import argparse
@@ -88,6 +88,7 @@ from src.detection.phs import (
     select_threshold,
     PHS_COMPONENT_NAMES,
     BASELINE_DEFINITIONS,
+    BASELINE_DEFINITIONS_WITH_BC_LOCAL,
 )
 
 
@@ -126,6 +127,15 @@ def parse_args():
                         help="Chunk size for the interior Smom/Sdiv pass (VRAM safety).")
     parser.add_argument("--percentile", type=float, default=95.0,
                         help="Threshold percentile tau is drawn from, per Section 8.")
+    parser.add_argument("--include_bc_local", action="store_true",
+                        help="Also compute the optional S_bc_local component (see phs.py's "
+                             "compute_boundary_localization_violation) and a 4th comparison score, "
+                             "Score4_PHS_plus_bc_local. Off by default -- Section 8 defines exactly 4 "
+                             "components; this is for A/B-comparing whether S_bc_local is worth adopting.")
+    parser.add_argument("--bc_local_band_width", type=float, default=0.3,
+                        help="Distance from an edge counted as 'near-boundary' for S_bc_local.")
+    parser.add_argument("--bc_local_n_points", type=int, default=20000,
+                        help="Interior points sampled before the near/far split for S_bc_local.")
     parser.add_argument("--output_dir", type=str, default=None,
                         help="Root output directory for plots. Defaults to <project_root>/plots/phs_evaluation.")
     return parser.parse_args()
@@ -203,6 +213,9 @@ def score_all_fields(index_rows: list, case_meta_by_id: dict, models_dir: Path, 
                 n_interior=args.n_interior, n_bc_per_axis=args.n_bc,
                 n_time=args.n_time, energy_res=args.energy_res,
                 chunk_size=args.chunk_size, device=args.device,
+                include_bc_local=args.include_bc_local,
+                bc_local_band_width=args.bc_local_band_width,
+                bc_local_n_points=args.bc_local_n_points,
             )
             results.append({**row, **components})
 
@@ -213,15 +226,19 @@ def score_all_fields(index_rows: list, case_meta_by_id: dict, models_dir: Path, 
     return pd.DataFrame(results)
 
 
-def evaluate_detection(df: pd.DataFrame, percentile: float) -> tuple[dict, dict, list, pd.DataFrame]:
+def evaluate_detection(df: pd.DataFrame, percentile: float, include_bc_local: bool = False) -> tuple[dict, dict, list, pd.DataFrame]:
     """
     Runs the full normalize -> score -> threshold -> evaluate pipeline on
     an already-scored DataFrame.
 
     Inputs:
         df (pd.DataFrame): Output of score_all_fields(); must contain
-            "split", "label", "mom", "div", "bc", "E" columns.
+            "split", "label", "mom", "div", "bc", "E" columns (plus
+            "bc_local" if include_bc_local is True).
         percentile (float): Threshold percentile, per Section 8 (95.0).
+        include_bc_local (bool): If True, also normalizes/scores the
+            optional S_bc_local component and Score4_PHS_plus_bc_local
+            (see phs.py's compute_boundary_localization_violation).
 
     Outputs:
         normalizers (dict): {component_name: normalizer (float)}.
@@ -231,6 +248,9 @@ def evaluate_detection(df: pd.DataFrame, percentile: float) -> tuple[dict, dict,
         df (pd.DataFrame): The input df with normalized ("_bar") and score
             columns appended.
     """
+    component_names = PHS_COMPONENT_NAMES + (["bc_local"] if include_bc_local else [])
+    baseline_definitions = BASELINE_DEFINITIONS_WITH_BC_LOCAL if include_bc_local else BASELINE_DEFINITIONS
+
     valid_val_mask = (df["split"] == "validation") & (df["label"] == "clean")
     if valid_val_mask.sum() == 0:
         raise RuntimeError(
@@ -239,13 +259,13 @@ def evaluate_detection(df: pd.DataFrame, percentile: float) -> tuple[dict, dict,
             "validation-split case is included, or omit --case_id to process every case."
         )
 
-    normalizers = compute_normalizers(df.loc[valid_val_mask])
-    df = normalize_components(df, normalizers)
-    df = compute_baseline_scores(df)
+    normalizers = compute_normalizers(df.loc[valid_val_mask], component_names)
+    df = normalize_components(df, normalizers, component_names=component_names)
+    df = compute_baseline_scores(df, baseline_definitions)
 
     thresholds = {
         score_name: select_threshold(df.loc[valid_val_mask, score_name].values, percentile)
-        for score_name in BASELINE_DEFINITIONS
+        for score_name in baseline_definitions
     }
 
     test_mask = df["split"] == "test"
@@ -257,7 +277,7 @@ def evaluate_detection(df: pd.DataFrame, percentile: float) -> tuple[dict, dict,
     y_true = (df.loc[test_mask, "label"] == "hallucinated").astype(int).values
 
     metrics_rows = []
-    for score_name in BASELINE_DEFINITIONS:
+    for score_name in baseline_definitions:
         y_score = df.loc[test_mask, score_name].values
         y_pred = (y_score > thresholds[score_name]).astype(int)
 
@@ -270,7 +290,7 @@ def evaluate_detection(df: pd.DataFrame, percentile: float) -> tuple[dict, dict,
 
         metrics_rows.append({
             "score_name": score_name,
-            "components": "+".join(BASELINE_DEFINITIONS[score_name]),
+            "components": "+".join(baseline_definitions[score_name]),
             "threshold_tau": thresholds[score_name],
             "roc_auc": auc,
             "precision": float(precision_score(y_true, y_pred, zero_division=0)),
@@ -304,7 +324,8 @@ def plot_roc_curves(df: pd.DataFrame, output_dir: Path):
         return
 
     plt.figure(figsize=(6.5, 6))
-    for score_name in BASELINE_DEFINITIONS:
+    score_names = [s for s in BASELINE_DEFINITIONS_WITH_BC_LOCAL if s in df.columns]
+    for score_name in score_names:
         y_score = df.loc[test_mask, score_name].values
         fpr, tpr, _ = roc_curve(y_true, y_score)
         auc = roc_auc_score(y_true, y_score)
@@ -368,6 +389,74 @@ def plot_score_distributions(df: pd.DataFrame, thresholds: dict, output_dir: Pat
     plt.close()
 
 
+def evaluate_detection_by_perturbation_type(df: pd.DataFrame, thresholds: dict) -> pd.DataFrame:
+    """
+    Breaks recall down by (perturbation_type, epsilon) on the test split,
+    at the already-calibrated thresholds -- i.e. "of the hallucinated
+    fields of THIS type at THIS epsilon, what fraction did each score
+    correctly flag as positive?" Unlike the pooled AUC/Precision/Recall/F1
+    in evaluate_detection(), this exposes whether one perturbation type is
+    systematically harder to detect than the others, rather than averaging
+    that difference away.
+
+    Inputs:
+        df (pd.DataFrame): Post evaluate_detection() -- must have "split",
+            "label", "perturbation_type", "epsilon", and the 3 score columns.
+        thresholds (dict): Output of evaluate_detection() -- {score_name: tau}.
+
+    Outputs:
+        pd.DataFrame: One row per (perturbation_type, epsilon, score_name),
+            with columns "n", "n_detected", "recall".
+    """
+    test_halluc = df[(df["split"] == "test") & (df["label"] == "hallucinated")]
+
+    rows = []
+    for (perturbation_name, epsilon), group in test_halluc.groupby(["perturbation_type", "epsilon"]):
+        for score_name, tau in thresholds.items():
+            n_detected = int((group[score_name] > tau).sum())
+            rows.append({
+                "perturbation_type": perturbation_name,
+                "epsilon": epsilon,
+                "score_name": score_name,
+                "n": len(group),
+                "n_detected": n_detected,
+                "recall": n_detected / len(group),
+            })
+    return pd.DataFrame(rows)
+
+
+def plot_recall_by_type(recall_df: pd.DataFrame, output_dir: Path):
+    """
+    Plots per-perturbation-type recall (Score3_PHS_full only, at tau) vs.
+    epsilon, so any systematically under-detected perturbation type is
+    immediately visible as a curve sitting below the others rather than
+    hidden inside a single pooled recall number.
+
+    Inputs:
+        recall_df (pd.DataFrame): Output of evaluate_detection_by_perturbation_type().
+        output_dir (Path): Where to save recall_by_type.png.
+
+    Outputs:
+        None. Saves plots/phs_evaluation/recall_by_type.png.
+    """
+    phs_recall = recall_df[recall_df["score_name"] == "Score3_PHS_full"]
+
+    plt.figure(figsize=(7, 5))
+    for perturbation_name, group in phs_recall.groupby("perturbation_type"):
+        group = group.sort_values("epsilon")
+        plt.plot(group["epsilon"], group["recall"], marker="o", label=perturbation_name)
+
+    plt.xlabel("Epsilon")
+    plt.ylabel("Recall (PHS, at tau)")
+    plt.title("Detection Recall by Perturbation Type and Epsilon (test split)")
+    plt.ylim(-0.05, 1.05)
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(output_dir / "recall_by_type.png", dpi=150)
+    plt.close()
+
+
 def plot_phs_vs_epsilon(df: pd.DataFrame, output_dir: Path):
     """
     Plots mean PHS vs. epsilon, one line per perturbation type (all splits
@@ -375,13 +464,17 @@ def plot_phs_vs_epsilon(df: pd.DataFrame, output_dir: Path):
     evaluation) -- confirms the "PHS increases with perturbation strength"
     success criterion.
 
+    Uses a semi-log axis (linear epsilon, log PHS) per project preference.
+    Note EPSILON_VALUES = [0.005, 0.01, 0.02, 0.05, 0.1] is itself an
+    approximately geometric sequence (consecutive ratios of ~2-2.5), so
+    the 5 points still land closer together at the low-epsilon end on a
+    linear x-axis than a log-log reader might expect -- that clustering is
+    inherent to the sweep design, not a plotting artifact.
+
     Epsilon=0 (the clean baseline) is NOT plotted as a sixth x-position:
     it isn't a value in EPSILON_VALUES for any perturbation type -- it's a
-    separate label="clean" row with no perturbation_type at all -- and
-    log(0) is undefined regardless, so it could never sit on this axis.
-    Instead, the clean-split mean PHS is drawn as a horizontal reference
-    line, so you can see where the curves would be heading as epsilon
-    shrinks toward it.
+    separate label="clean" row with no perturbation_type at all. Instead,
+    the clean-split mean PHS is drawn as a horizontal reference line.
 
     Inputs:
         df (pd.DataFrame): Must have "perturbation_type", "epsilon",
@@ -401,9 +494,8 @@ def plot_phs_vs_epsilon(df: pd.DataFrame, output_dir: Path):
 
     plt.axhline(clean_mean, color="gray", linestyle="--", alpha=0.7,
                 label=f"clean baseline (mean={clean_mean:.2f})")
-    plt.xscale("log")
     plt.yscale("log")
-    plt.xlabel("Epsilon (perturbation strength, log scale)")
+    plt.xlabel("Epsilon (perturbation strength, linear scale)")
     plt.ylabel("Mean PHS (log scale)")
     plt.title("PHS vs. Epsilon by Perturbation Type (all splits)")
     plt.legend()
@@ -420,7 +512,7 @@ def plot_raw_components_vs_epsilon(df: pd.DataFrame, output_dir: Path):
     which component(s) each perturbation type activates. This is the
     figure that makes the Sbc "boundary" blind spot visible directly: the
     "boundary" panel's bc line should sit flat while its mom/div lines
-    climb.
+    climb. Semi-log axis (linear epsilon, log value), matching phs_vs_epsilon.
 
     Inputs:
         df (pd.DataFrame): Must have "perturbation_type", "epsilon",
@@ -432,16 +524,16 @@ def plot_raw_components_vs_epsilon(df: pd.DataFrame, output_dir: Path):
     """
     halluc_df = df[df["label"] == "hallucinated"]
     perturbation_types = sorted(halluc_df["perturbation_type"].unique())
+    component_names = PHS_COMPONENT_NAMES + (["bc_local"] if "bc_local" in df.columns else [])
 
     fig, axes = plt.subplots(2, 3, figsize=(15, 9))
     axes = axes.flatten()
 
     for ax, perturbation_name in zip(axes, perturbation_types):
         group = halluc_df[halluc_df["perturbation_type"] == perturbation_name]
-        for component in PHS_COMPONENT_NAMES:
+        for component in component_names:
             by_eps = group.groupby("epsilon")[component].mean().sort_index()
             ax.plot(by_eps.index, by_eps.values, marker="o", label=f"S_{component}")
-        ax.set_xscale("log")
         ax.set_yscale("log")
         ax.set_title(perturbation_name)
         ax.set_xlabel("Epsilon")
@@ -464,6 +556,7 @@ def plot_all_scores_vs_epsilon(df: pd.DataFrame, output_dir: Path):
     (+boundary +energy) vs. epsilon, one subplot per perturbation type, so
     you can see how adding each successive component changes the
     detection signal's shape and magnitude for each perturbation type.
+    Semi-log axis (linear epsilon, log value), matching phs_vs_epsilon.
 
     Inputs:
         df (pd.DataFrame): Must have "perturbation_type", "epsilon",
@@ -475,16 +568,16 @@ def plot_all_scores_vs_epsilon(df: pd.DataFrame, output_dir: Path):
     """
     halluc_df = df[df["label"] == "hallucinated"]
     perturbation_types = sorted(halluc_df["perturbation_type"].unique())
+    score_names = [s for s in BASELINE_DEFINITIONS_WITH_BC_LOCAL if s in df.columns]
 
     fig, axes = plt.subplots(2, 3, figsize=(15, 9))
     axes = axes.flatten()
 
     for ax, perturbation_name in zip(axes, perturbation_types):
         group = halluc_df[halluc_df["perturbation_type"] == perturbation_name]
-        for score_name in BASELINE_DEFINITIONS:
+        for score_name in score_names:
             by_eps = group.groupby("epsilon")[score_name].mean().sort_index()
             ax.plot(by_eps.index, by_eps.values, marker="o", label=score_name)
-        ax.set_xscale("log")
         ax.set_yscale("log")
         ax.set_title(perturbation_name)
         ax.set_xlabel("Epsilon")
@@ -552,7 +645,7 @@ def main():
     if df.empty:
         raise RuntimeError("No fields were scored -- check that models/ contains the matching *_best.pth files.")
 
-    normalizers, thresholds, metrics_rows, df = evaluate_detection(df, args.percentile)
+    normalizers, thresholds, metrics_rows, df = evaluate_detection(df, args.percentile, args.include_bc_local)
 
     # --- Persist raw + normalized + scored table ---
     raw_csv_path = data_dir / "phs_components_raw.csv"
@@ -575,14 +668,21 @@ def main():
         json.dump(metrics_rows, f, indent=2)
     print(f"💾 Wrote {(output_dir / 'detection_metrics_summary.csv').relative_to(project_root)}")
 
+    # --- Detection metrics broken down by perturbation type ---
+    recall_by_type_df = evaluate_detection_by_perturbation_type(df, thresholds)
+    recall_by_type_df.to_csv(output_dir / "recall_by_perturbation_type.csv", index=False)
+    print(f"💾 Wrote {(output_dir / 'recall_by_perturbation_type.csv').relative_to(project_root)}")
+
     # --- Plots ---
     plot_roc_curves(df, output_dir)
     plot_score_distributions(df, thresholds, output_dir)
     plot_phs_vs_epsilon(df, output_dir)
     plot_raw_components_vs_epsilon(df, output_dir)
     plot_all_scores_vs_epsilon(df, output_dir)
+    plot_recall_by_type(recall_by_type_df, output_dir)
     print(f"🖼️  Wrote roc_curves.png, score_distributions.png, phs_vs_epsilon.png, "
-          f"raw_components_vs_epsilon.png, scores_vs_epsilon.png to {output_dir.relative_to(project_root)}")
+          f"raw_components_vs_epsilon.png, scores_vs_epsilon.png, recall_by_type.png to "
+          f"{output_dir.relative_to(project_root)}")
 
     print("\n" + "=" * 60)
     print("✅ Detection summary (test split):")
