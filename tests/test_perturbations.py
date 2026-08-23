@@ -32,7 +32,13 @@ def sample_fields_and_coords():
         tuple:
             fields (dict): {"u", "v", "p"} clean tensors, each shape (256, 1).
             coords (dict): {"x", "y", "t"} coordinate tensors, each shape (256, 1).
-            params (dict): {"U0": 1.0, "k": 1, "T": 1.0} physical constants.
+            params (dict): {"U0": 1.0, "k": 1, "T": 1.0, "tau_decay": 3.0}
+                physical constants. tau_decay=3.0 (> T=1.0) mimics the real
+                dataset, where every case's natural decay timescale exceeds
+                its capped simulation window (see the README's Findings
+                section) -- this is what makes temporal_mismatch's
+                clamp-to-T behavior exercised by this fixture rather than
+                a no-op.
     """
     torch.manual_seed(0)
     N = 256
@@ -46,7 +52,7 @@ def sample_fields_and_coords():
 
     fields = {"u": u, "v": v, "p": p}
     coords = {"x": x, "y": y, "t": t}
-    params = {"U0": 1.0, "k": 1, "T": 1.0}
+    params = {"U0": 1.0, "k": 1, "T": 1.0, "tau_decay": 3.0}
     return fields, coords, params
 
 
@@ -202,33 +208,73 @@ def test_temporal_mismatch_requires_model(sample_fields_and_coords):
         apply_perturbation("temporal_mismatch", fields, coords, params, epsilon=0.05, model=None)
 
 
-def test_temporal_mismatch_matches_shifted_model_query(sample_fields_and_coords):
+def test_temporal_mismatch_matches_shifted_model_query_when_unclamped(sample_fields_and_coords):
     """
-    Verifies that the temporal_mismatch perturbation's (u, v) output exactly
-    matches an independently-computed forward pass of the model at the
-    shifted time (t + epsilon*T), and that p is left equal to the clean
-    pressure field.
+    Verifies temporal_mismatch's (u, v) output exactly matches an
+    independently-computed forward pass at t + epsilon*tau_decay, restricted
+    to the points where that shift does NOT exceed T (so the clamp is a
+    no-op there) -- isolating the "normal" unclamped code path from the
+    boundary-saturation path tested separately below. The fixture's t is
+    drawn uniformly over the full [0, T] range, so for any nonzero shift
+    SOME points near t=T will always need clamping regardless of epsilon;
+    masking to the unclamped subset is what makes this claim correct
+    rather than assuming a single epsilon avoids clamping for every point.
 
     Inputs:
-        sample_fields_and_coords (tuple): The (fields, coords, params) fixture.
+        sample_fields_and_coords (tuple): The (fields, coords, params) fixture
+            (T=1.0, tau_decay=3.0).
 
     Outputs:
         None (raises via assert on failure).
     """
     fields, coords, params = sample_fields_and_coords
     model = DummyModel()
-    epsilon = 0.1
+    epsilon = 0.1  # shift = 0.3; unclamped only for t <= T - 0.3 = 0.7
 
     out = apply_perturbation("temporal_mismatch", fields, coords, params, epsilon, model=model)
 
     x, y, t = coords["x"], coords["y"], coords["t"]
-    t_shifted = t + epsilon * params["T"]
-    expected = model(torch.cat([x, y, t_shifted], dim=1))
+    unclamped_shift = t + epsilon * params["tau_decay"]
+    within_bounds = unclamped_shift <= params["T"]
+    assert within_bounds.any(), "test setup error: need at least some unclamped points to test the unclamped path"
 
-    assert torch.allclose(out["u"], expected[:, 0:1])
-    assert torch.allclose(out["v"], expected[:, 1:2])
+    expected = model(torch.cat([x, y, unclamped_shift], dim=1))
+
+    assert torch.allclose(out["u"][within_bounds], expected[:, 0:1][within_bounds])
+    assert torch.allclose(out["v"][within_bounds], expected[:, 1:2][within_bounds])
     # p is untouched by this perturbation per the Section 7 spec
     assert torch.allclose(out["p"], fields["p"])
+
+
+def test_temporal_mismatch_clamps_at_domain_boundary(sample_fields_and_coords):
+    """
+    Verifies temporal_mismatch clamps the shifted time to T rather than
+    querying the model outside the domain it was trained on, for an epsilon
+    large enough that epsilon*tau_decay alone would overshoot T. This is the
+    behavior perturb_temporal_mismatch's docstring specifically calls out as
+    intentional (see its "WITHOUT this clamp..." paragraph) -- this test
+    guards it from silently regressing into unclamped extrapolation.
+
+    Inputs:
+        sample_fields_and_coords (tuple): The (fields, coords, params) fixture
+            (T=1.0, tau_decay=3.0).
+
+    Outputs:
+        None (raises via assert on failure).
+    """
+    fields, coords, params = sample_fields_and_coords
+    model = DummyModel()
+    epsilon = 0.9  # epsilon * tau_decay = 2.7, far beyond T=1.0 -- must clamp
+
+    out = apply_perturbation("temporal_mismatch", fields, coords, params, epsilon, model=model)
+
+    x, y, t = coords["x"], coords["y"], coords["t"]
+    unclamped_shift = t + epsilon * params["tau_decay"]
+    assert (unclamped_shift > params["T"]).all(), "test setup error: this epsilon should trigger clamping"
+
+    expected_at_T = model(torch.cat([x, y, torch.full_like(t, params["T"])], dim=1))
+    assert torch.allclose(out["u"], expected_at_T[:, 0:1])
+    assert torch.allclose(out["v"], expected_at_T[:, 1:2])
 
 
 @pytest.mark.parametrize("epsilon", EPSILON_VALUES)

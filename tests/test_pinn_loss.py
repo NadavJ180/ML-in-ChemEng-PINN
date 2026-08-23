@@ -10,7 +10,7 @@ def test_pinn_architecture_and_loss_graph():
     without breaking the computational graph.
     """
     # 1. Initialize the model and loss evaluator
-    model = BaselinePINN()
+    model = BaselinePINN(k=1.0)
     criterion = LossEvaluator(Re=100.0, U0=1.0, k=1.0)
     
     # 2. Generate dummy Float64 data

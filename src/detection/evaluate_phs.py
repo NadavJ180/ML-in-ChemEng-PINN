@@ -53,6 +53,15 @@ Outputs:
       perturbation type -- shows how adding each successive component
       changes the detection signal.
 
+CAVEAT (historical): models committed before commit `be9b8ff` predated a phase-mismatch
+bug identified during Issue #9's audit (see verify_hallucinations.py's
+phase_amplitude_fit_diagnostic -- clean predictions matched the analytical TGV solution at
+the WRONG phase). Retrained, phase-corrected models have since been committed. This script
+was unaffected by that bug either way: Smom/Sdiv/Sbc are phase-invariant PDE/BC residuals,
+and SE's reference curve is explicitly phase-invariant by construction (see phs.py's
+compute_energy_violation) -- but Relative-L2-vs-analytical numbers from that era were not
+representative and should not be cited.
+
 Usage:
     python src/detection/evaluate_phs.py
     python src/detection/evaluate_phs.py --device cpu
@@ -91,6 +100,38 @@ from src.detection.phs import (
     BASELINE_DEFINITIONS_WITH_BC_LOCAL,
 )
 
+# Cycled through (by index, wrapping) for every multi-line plot in this module. Relying on color
+# alone breaks down whenever two lines sit close together or land exactly on top of each other (e.g.
+# several perturbation types legitimately tied at recall=1.0) -- distinct (linestyle, marker) pairs
+# stay distinguishable even in that case, including in grayscale/colorblind-unfriendly renders.
+_LINE_STYLES = [
+    ("-", "o"), ("--", "s"), ("-.", "^"), (":", "D"), ("-", "v"), ("--", "P"), ("-.", "X"),
+]
+
+
+def _styled_line(ax, x, y, index: int, label: str, **kwargs):
+    """
+    Plots one line using this module's shared (linestyle, marker) cycle
+    (see _LINE_STYLES) plus a semi-transparent, slightly thick default
+    style, so that lines which are close together -- or, for bounded
+    metrics like recall, land exactly on top of each other -- stay visually
+    distinguishable instead of collapsing into a single color blob.
+
+    Inputs:
+        ax: A matplotlib Axes (or the `plt` module itself) with a .plot method.
+        x, y (array-like): Data to plot.
+        index (int): Which entry of _LINE_STYLES to use (wraps via modulo).
+        label (str): Legend label.
+        **kwargs: Forwarded to .plot(), overriding the defaults below.
+
+    Outputs:
+        None (draws on `ax`).
+    """
+    linestyle, marker = _LINE_STYLES[index % len(_LINE_STYLES)]
+    style = dict(linestyle=linestyle, marker=marker, markersize=6, linewidth=2, alpha=0.85)
+    style.update(kwargs)
+    ax.plot(x, y, label=label, **style)
+
 
 def parse_args():
     """
@@ -127,6 +168,11 @@ def parse_args():
                         help="Chunk size for the interior Smom/Sdiv pass (VRAM safety).")
     parser.add_argument("--percentile", type=float, default=95.0,
                         help="Threshold percentile tau is drawn from, per Section 8.")
+    parser.add_argument("--no_seed_points", action="store_true",
+                        help="Disable per-case point-sampling seeding (default: ON -- every field of a "
+                             "case, clean and perturbed, is evaluated at identical random points, "
+                             "removing an unnecessary noise source; see phs.py's _seeded() docstring). "
+                             "Only useful for reproducing pre-seeding behavior/results.")
     parser.add_argument("--include_bc_local", action="store_true",
                         help="Also compute the optional S_bc_local component (see phs.py's "
                              "compute_boundary_localization_violation) and a 4th comparison score, "
@@ -205,6 +251,13 @@ def score_all_fields(index_rows: list, case_meta_by_id: dict, models_dir: Path, 
         scaler = ResidualScaler(U0, k)
         model = load_model(case_id, k, args.device)
 
+        # Same seed for every field of this case (clean + all perturbed variants) so they are
+        # compared at IDENTICAL random (x, y, t) points -- see phs.py's _seeded() docstring for why
+        # this removes an unnecessary source of noise between a field and its clean baseline.
+        # Derived from the numeric part of case_id (e.g. "case_07" -> 1007) so it's deterministic
+        # and unique per case without depending on cases_metadata.json's own (shared) "seed" field.
+        case_seed = 1000 + int(case_id.split("_")[1]) if not args.no_seed_points else None
+
         print(f"[{case_id}] scoring {len(rows)} fields ({case_meta.get('split', 'unknown')} split)...")
         for row in rows:
             components = compute_phs_components(
@@ -216,6 +269,7 @@ def score_all_fields(index_rows: list, case_meta_by_id: dict, models_dir: Path, 
                 include_bc_local=args.include_bc_local,
                 bc_local_band_width=args.bc_local_band_width,
                 bc_local_n_points=args.bc_local_n_points,
+                seed=case_seed,
             )
             results.append({**row, **components})
 
@@ -341,6 +395,44 @@ def plot_roc_curves(df: pd.DataFrame, output_dir: Path):
     plt.close()
 
 
+def diagnose_misclassifications(df: pd.DataFrame, thresholds: dict, score_name: str = "Score3_PHS_full") -> pd.DataFrame:
+    """
+    Builds a diagnostic table of every TEST-split field the given score got
+    wrong at its calibrated threshold: hallucinated fields that "slipped
+    through" (scored below tau -- false negatives) and clean fields that
+    were flagged anyway (false positives). Sorted by margin-to-tau
+    (closest call first) so the most-instructive borderline cases are at
+    the top.
+
+    Inputs:
+        df (pd.DataFrame): Post evaluate_detection() -- must have "split",
+            "label", "case_id", "perturbation_type", "epsilon", and the
+            requested score column.
+        thresholds (dict): Output of evaluate_detection() -- {score_name: tau}.
+        score_name (str): Which score to diagnose. Defaults to Score3_PHS_full.
+
+    Outputs:
+        pd.DataFrame: Columns "case_id", "perturbation_type", "epsilon",
+            "label", score_name, "tau", "margin" (score - tau; negative
+            for false negatives, positive for false positives), and
+            "error_type" ("false_negative" or "false_positive"), sorted by
+            |margin| ascending.
+    """
+    tau = thresholds[score_name]
+    test_df = df[df["split"] == "test"]
+
+    fn = test_df[(test_df["label"] == "hallucinated") & (test_df[score_name] < tau)].copy()
+    fn["error_type"] = "false_negative"
+    fp = test_df[(test_df["label"] == "clean") & (test_df[score_name] > tau)].copy()
+    fp["error_type"] = "false_positive"
+
+    cols = ["case_id", "perturbation_type", "epsilon", "label", score_name, "error_type"]
+    out = pd.concat([fn[cols], fp[cols]], ignore_index=True)
+    out["tau"] = tau
+    out["margin"] = out[score_name] - tau
+    return out.reindex(out["margin"].abs().sort_values().index).reset_index(drop=True)
+
+
 def plot_score_distributions(df: pd.DataFrame, thresholds: dict, output_dir: Path):
     """
     Plots the PHS (Score3_PHS_full) distribution for clean vs. hallucinated
@@ -432,6 +524,26 @@ def plot_recall_by_type(recall_df: pd.DataFrame, output_dir: Path):
     immediately visible as a curve sitting below the others rather than
     hidden inside a single pooled recall number.
 
+    Lines are plotted at their TRUE, unmodified recall values -- no
+    vertical offset -- so multiple perturbation types legitimately tied at
+    recall=1.0 for every epsilon land exactly on top of one another and
+    only one is visible by color/style alone. To keep every type
+    identifiable without misrepresenting the data, each type gets a plain
+    colored label (matching that type's exact line color, same as a
+    legend swatch would) with a thin leader line pointing to one real
+    point on that type's actual curve.
+
+    Labels are stacked in a single vertical column (fixed left edge, one
+    row per type) rather than spread horizontally, so overlap between
+    labels is avoided by construction regardless of how long any given
+    type's name is: rows are separated by a fixed vertical gap chosen to
+    exceed one row's text height, so two labels can only collide if that
+    gap is too small for the current label count -- never because one
+    label happened to be wide. Each label's leader line points to a
+    DIFFERENT epsilon along its curve (cycling through the available
+    epsilon values by index) purely so the arrow tips fan out instead of
+    converging on one spot -- the tip always lands on a genuine data point.
+
     Inputs:
         recall_df (pd.DataFrame): Output of evaluate_detection_by_perturbation_type().
         output_dir (Path): Where to save recall_by_type.png.
@@ -440,18 +552,52 @@ def plot_recall_by_type(recall_df: pd.DataFrame, output_dir: Path):
         None. Saves plots/phs_evaluation/recall_by_type.png.
     """
     phs_recall = recall_df[recall_df["score_name"] == "Score3_PHS_full"]
+    perturbation_types = sorted(phs_recall["perturbation_type"].unique())
+    colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    n_types = len(perturbation_types)
 
-    plt.figure(figsize=(7, 5))
-    for perturbation_name, group in phs_recall.groupby("perturbation_type"):
-        group = group.sort_values("epsilon")
-        plt.plot(group["epsilon"], group["recall"], marker="o", label=perturbation_name)
+    fig, ax = plt.subplots(figsize=(9, 5.5 + 0.35 * n_types))
 
-    plt.xlabel("Epsilon")
-    plt.ylabel("Recall (PHS, at tau)")
-    plt.title("Detection Recall by Perturbation Type and Epsilon (test split)")
-    plt.ylim(-0.05, 1.05)
-    plt.legend()
-    plt.grid(True, alpha=0.3)
+    series_by_type = {}
+    for i, perturbation_name in enumerate(perturbation_types):
+        group = phs_recall[phs_recall["perturbation_type"] == perturbation_name].sort_values("epsilon")
+        color = colors[i % len(colors)]
+        _styled_line(ax, group["epsilon"], group["recall"], i, perturbation_name, color=color)
+        series_by_type[perturbation_name] = (group["epsilon"].values, group["recall"].values, color)
+
+    # Headroom above the data reserved for the label column: recall can't exceed 1.0, so this
+    # space is always empty of real data, regardless of how many types there are.
+    row_height = 1.0 / max(n_types, 1)
+    label_band_top = 1.05 + row_height * n_types
+    ax.set_xlabel("Epsilon")
+    ax.set_ylabel("Recall (PHS, at tau) -- TRUE values, lines may overlap exactly")
+    ax.set_title("Detection Recall by Perturbation Type and Epsilon (test split)")
+    ax.set_ylim(-0.05, label_band_top + 0.05)
+    ax.grid(True, alpha=0.3)
+
+    # Single vertical column of labels, one per row, all left-anchored at the same x -- this is
+    # what guarantees no label-to-label overlap regardless of text length (a wide label just
+    # extends further right into its OWN row; it can never intrude into a neighboring row's space).
+    all_epsilons = sorted(phs_recall["epsilon"].unique())
+    label_x = 0.02  # axes fraction, shared left edge for every row
+    for i, perturbation_name in enumerate(perturbation_types):
+        eps_vals, recall_vals, color = series_by_type[perturbation_name]
+        landing_eps = all_epsilons[i % len(all_epsilons)]
+        landing_idx = np.argmin(np.abs(eps_vals - landing_eps))
+        landing_x, landing_y = eps_vals[landing_idx], recall_vals[landing_idx]
+
+        label_y_data = label_band_top - row_height * (i + 0.5)  # data coords, one row per type
+
+        ax.annotate(
+            perturbation_name,
+            xy=(landing_x, landing_y), xycoords="data",
+            xytext=(label_x, label_y_data), textcoords=("axes fraction", "data"),
+            color="white", fontsize=9, fontweight="bold", ha="left", va="center",
+            bbox=dict(boxstyle="round,pad=0.35", facecolor=color, edgecolor=color, alpha=0.95),
+            arrowprops=dict(arrowstyle="-", color=color, lw=1.3, alpha=0.8,
+                             connectionstyle="arc3,rad=0.1"),
+        )
+
     plt.tight_layout()
     plt.savefig(output_dir / "recall_by_type.png", dpi=150)
     plt.close()
@@ -486,11 +632,13 @@ def plot_phs_vs_epsilon(df: pd.DataFrame, output_dir: Path):
     """
     halluc_df = df[df["label"] == "hallucinated"]
     clean_mean = df.loc[df["label"] == "clean", "Score3_PHS_full"].mean()
+    perturbation_types = sorted(halluc_df["perturbation_type"].unique())
 
     plt.figure(figsize=(7, 5))
-    for perturbation_name, group in halluc_df.groupby("perturbation_type"):
+    for i, perturbation_name in enumerate(perturbation_types):
+        group = halluc_df[halluc_df["perturbation_type"] == perturbation_name]
         by_eps = group.groupby("epsilon")["Score3_PHS_full"].mean().sort_index()
-        plt.plot(by_eps.index, by_eps.values, marker="o", label=perturbation_name)
+        _styled_line(plt, by_eps.index, by_eps.values, i, perturbation_name)
 
     plt.axhline(clean_mean, color="gray", linestyle="--", alpha=0.7,
                 label=f"clean baseline (mean={clean_mean:.2f})")
@@ -531,9 +679,9 @@ def plot_raw_components_vs_epsilon(df: pd.DataFrame, output_dir: Path):
 
     for ax, perturbation_name in zip(axes, perturbation_types):
         group = halluc_df[halluc_df["perturbation_type"] == perturbation_name]
-        for component in component_names:
+        for i, component in enumerate(component_names):
             by_eps = group.groupby("epsilon")[component].mean().sort_index()
-            ax.plot(by_eps.index, by_eps.values, marker="o", label=f"S_{component}")
+            _styled_line(ax, by_eps.index, by_eps.values, i, f"S_{component}")
         ax.set_yscale("log")
         ax.set_title(perturbation_name)
         ax.set_xlabel("Epsilon")
@@ -575,9 +723,9 @@ def plot_all_scores_vs_epsilon(df: pd.DataFrame, output_dir: Path):
 
     for ax, perturbation_name in zip(axes, perturbation_types):
         group = halluc_df[halluc_df["perturbation_type"] == perturbation_name]
-        for score_name in score_names:
+        for i, score_name in enumerate(score_names):
             by_eps = group.groupby("epsilon")[score_name].mean().sort_index()
-            ax.plot(by_eps.index, by_eps.values, marker="o", label=score_name)
+            _styled_line(ax, by_eps.index, by_eps.values, i, score_name)
         ax.set_yscale("log")
         ax.set_title(perturbation_name)
         ax.set_xlabel("Epsilon")
@@ -645,7 +793,8 @@ def main():
     if df.empty:
         raise RuntimeError("No fields were scored -- check that models/ contains the matching *_best.pth files.")
 
-    normalizers, thresholds, metrics_rows, df = evaluate_detection(df, args.percentile, args.include_bc_local)
+    normalizers, thresholds, metrics_rows, df = evaluate_detection(
+        df, args.percentile, args.include_bc_local)
 
     # --- Persist raw + normalized + scored table ---
     raw_csv_path = data_dir / "phs_components_raw.csv"
@@ -673,6 +822,17 @@ def main():
     recall_by_type_df.to_csv(output_dir / "recall_by_perturbation_type.csv", index=False)
     print(f"💾 Wrote {(output_dir / 'recall_by_perturbation_type.csv').relative_to(project_root)}")
 
+    # --- Diagnostic: which specific fields did PHS get wrong, and by how much? ---
+    misclass_df = diagnose_misclassifications(df, thresholds)
+    misclass_df.to_csv(output_dir / "misclassified_fields.csv", index=False)
+    print(f"💾 Wrote {(output_dir / 'misclassified_fields.csv').relative_to(project_root)}")
+    if len(misclass_df) > 0:
+        print(f"\n🔎 {len(misclass_df)} misclassified test field(s) at tau={thresholds['Score3_PHS_full']:.3f} "
+              f"(closest calls first):")
+        print(misclass_df.to_string(index=False))
+    else:
+        print("\n🔎 No misclassified test fields at the calibrated threshold.")
+
     # --- Plots ---
     plot_roc_curves(df, output_dir)
     plot_score_distributions(df, thresholds, output_dir)
@@ -691,8 +851,6 @@ def main():
         print(f"  {m['score_name']:28s} AUC={auc_str:>18s}  "
               f"P={m['precision']:.3f}  R={m['recall']:.3f}  F1={m['f1']:.3f}")
     print("=" * 60)
-    print("⚠️  If the currently-loaded models predate the Issue #9 phase-bug fix, treat the numbers "
-          "above as a pipeline smoke test, not final results (see this module's CAVEAT docstring).")
 
 
 if __name__ == "__main__":

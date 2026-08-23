@@ -184,7 +184,7 @@ def perturb_pressure(fields, coords, params, epsilon, model=None, **kwargs):
 
 # ---------------------------------------------------------------------------
 # 4. Temporal Mismatch Perturbation
-#    ũ(t) = u(t + εT), ṽ(t) = v(t + εT)
+#    ũ(t) = u(t + ε*tau_decay), ṽ(t) = v(t + ε*tau_decay), clamped to [0, T]
 #    This one is NOT a value-space perturbation: it re-queries the trained
 #    model at a shifted time and reports that as the "prediction" at the
 #    original grid time t. Requires the model itself.
@@ -194,21 +194,55 @@ def perturb_temporal_mismatch(fields, coords, params, epsilon, model=None, no_gr
     """
     Injects a temporal-consistency hallucination by re-querying the trained
     model at a shifted time and reporting that as the prediction at the
-    original grid time: ũ(t) = u(t + εT), ṽ(t) = v(t + εT). Unlike the other
-    4 perturbations, this is NOT a value-space transformation of `fields` —
-    it requires a second forward pass through `model`, since the shifted-time
-    prediction cannot be derived from the clean (u, v) values alone.
+    original grid time: ũ(t) = u(clamp(t + ε*tau_decay, 0, T)),
+    ṽ(t) = v(clamp(t + ε*tau_decay, 0, T)). Unlike the other 4 perturbations,
+    this is NOT a value-space transformation of `fields` — it requires a
+    second forward pass through `model`, since the shifted-time prediction
+    cannot be derived from the clean (u, v) values alone.
+
+    WHY THE SHIFT IS epsilon * tau_decay, NOT epsilon * T: an earlier version
+    of this perturbation shifted by epsilon * T, where T = min(2.0, tau_decay)
+    is the (possibly capped) training/evaluation window. Issue #10's PHS
+    evaluation found this version intrinsically weak -- checked against all
+    30 cases in the dataset, EVERY case has tau_decay > 2.0 (median 8.8x
+    longer, up to 114x), so even the largest epsilon only nudged time by a
+    small fraction of how long the flow actually takes to evolve, for every
+    case. Recall for this perturbation type was 72% vs. 100% for the other 4,
+    concentrated entirely at the smallest epsilons. Shifting by
+    epsilon * tau_decay -- the flow's own UNCAPPED natural decay timescale
+    (see src.physics.taylor_green.compute_decay_timescale) -- instead means a
+    given epsilon represents roughly the same PHYSICAL fraction of evolution
+    for every case, not a fraction of an artificial, sometimes much shorter,
+    cap. Measured result on the same 14-case evaluation: 100% recall at
+    every epsilon, including the smallest (0.005). See the README's Findings
+    section for the full before/after comparison.
+
+    The result is clamped to [0, T] before querying the model. WITHOUT this
+    clamp, epsilon * tau_decay could land far outside [0, T] for
+    slow-decaying cases (up to 114x T), asking the model about a time it was
+    never trained on -- pure extrapolation, which tends to produce wildly
+    unphysical output. That would make this perturbation trivially easy to
+    detect (any check would flag obvious garbage), defeating the point of a
+    SUBTLE hallucination benchmark. Clamping means the largest epsilon
+    values may saturate at exactly t=T for the slowest-decaying cases
+    (multiple epsilons producing the identical shift) -- this is an
+    intentional, physically-motivated ceiling ("as far as we can push this
+    without leaving the domain the model actually knows"), not a bug.
 
     Args:
         fields (dict): Clean predictions with keys "u", "v", "p", each a
                         torch.Tensor of shape (N, 1). Only "p" is reused
-                        here (returned unchanged); "u"/"v" are not used since
-                        they are regenerated from `model` at the shifted time.
+                        here (returned unchanged); "u"/"v" are regenerated
+                        from `model` at the shifted time.
         coords (dict): Evaluation grid coordinates with keys "x", "y", "t",
                         each a torch.Tensor of shape (N, 1).
-        params (dict): Case-specific physical constants; requires "T", the
-                        case's final simulation time.
-        epsilon (float): Perturbation strength; the time shift is epsilon * T.
+        params (dict): Case-specific physical constants; requires "T" (for
+                        clamping) and "tau_decay" (the shift scale -- see
+                        src.physics.taylor_green.compute_decay_timescale;
+                        callers compute this once from (nu, k) and pass it
+                        through, the same way "T" itself is precomputed).
+        epsilon (float): Perturbation strength; the (pre-clamp) time shift
+                          is epsilon * tau_decay.
         model (nn.Module): The trained PINN to re-query at the shifted time.
                             Required for this perturbation (raises otherwise).
         no_grad (bool): If True (default, used during dataset generation),
@@ -221,8 +255,8 @@ def perturb_temporal_mismatch(fields, coords, params, epsilon, model=None, no_gr
                    a uniform call signature via apply_perturbation().
 
     Returns:
-        dict: {"u": model prediction at t + epsilon*T (N, 1),
-               "v": model prediction at t + epsilon*T (N, 1),
+        dict: {"u": model prediction at clamp(t + epsilon*tau_decay, 0, T) (N, 1),
+               "v": same (N, 1),
                "p": clean p (N, 1) unchanged, since Section 7 only
                redefines (u, v) for this perturbation}.
 
@@ -231,12 +265,14 @@ def perturb_temporal_mismatch(fields, coords, params, epsilon, model=None, no_gr
                     be computed without it.
     """
     if model is None:
-        raise ValueError("perturb_temporal_mismatch requires the trained model to re-query at t + epsilon*T.")
+        raise ValueError("perturb_temporal_mismatch requires the trained model to re-query "
+                          "at the shifted time.")
 
     T = params["T"]
+    tau_decay = params["tau_decay"]
     x, y, t = coords["x"], coords["y"], coords["t"]
 
-    t_shifted = t + epsilon * T
+    t_shifted = torch.clamp(t + epsilon * tau_decay, min=0.0, max=T)
     shifted_coords = torch.cat([x, y, t_shifted], dim=1)
 
     if no_grad:

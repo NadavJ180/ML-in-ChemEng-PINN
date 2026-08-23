@@ -88,12 +88,14 @@ is left to the calling script, evaluate_phs.py).
 
 from __future__ import annotations
 
+import contextlib
+
 import numpy as np
 import pandas as pd
 import torch
 
 from src.physics.navier_stokes import compute_residuals
-from src.physics.taylor_green import generate_tgv
+from src.physics.taylor_green import generate_tgv, compute_decay_timescale
 from src.data.point_samplers import sample_interior_points, sample_periodic_boundaries
 from src.hallucinations.perturbations import apply_perturbation
 
@@ -117,6 +119,40 @@ BASELINE_DEFINITIONS_WITH_BC_LOCAL = {
     **BASELINE_DEFINITIONS,
     "Score4_PHS_plus_bc_local": ["mom", "div", "bc", "E", "bc_local"],
 }
+
+
+@contextlib.contextmanager
+def _seeded(seed: int | None):
+    """
+    Context manager: if seed is not None, temporarily sets torch's GLOBAL
+    RNG to `seed` for the duration of the `with` block, restoring whatever
+    state it had beforehand on exit. If seed is None, does nothing (the
+    original, unseeded behavior).
+
+    WHY THIS EXISTS: sample_interior_points / sample_periodic_boundaries
+    (src.data.point_samplers) draw from torch's global RNG with no seed
+    argument of their own, so two separate calls -- e.g. one for a case's
+    clean field and one for the same case's epsilon=0.1 "momentum" variant
+    -- land on completely different random (x, y, t) points. That's an
+    unnecessary extra source of noise on top of genuine small-sample
+    calibration noise: comparing "did the residual go up" between two
+    DIFFERENT point clouds is noisier than comparing it at the SAME
+    points. evaluate_phs.py passes the SAME seed (derived from case_id
+    alone, not perturbation/epsilon) into every field of a given case, so
+    all of that case's fields -- clean and every hallucinated variant --
+    are evaluated at identical coordinates. Restoring the prior RNG state
+    on exit keeps this fully side-effect-free for anything else in the
+    process that relies on unseeded randomness.
+    """
+    if seed is None:
+        yield
+        return
+    prior_state = torch.get_rng_state()
+    torch.manual_seed(seed)
+    try:
+        yield
+    finally:
+        torch.set_rng_state(prior_state)
 
 
 def _leaf(coords_tensor: torch.Tensor, col: int, device: str) -> torch.Tensor:
@@ -186,7 +222,7 @@ def _field_at(model, x: torch.Tensor, y: torch.Tensor, t: torch.Tensor,
 def compute_momentum_divergence_violation(model, T: float, params: dict, perturbation_name: str,
                                            epsilon: float, nu: float, scaler,
                                            n_interior: int = 20000, chunk_size: int = 8000,
-                                           device: str = "cpu") -> tuple[float, float]:
+                                           device: str = "cpu", seed: int = None) -> tuple[float, float]:
     """
     Computes Smom = MSE(Ru) + MSE(Rv) and Sdiv = MSE(Rc) [Section 8] for one
     (perturbation, epsilon) field, on a fresh interior collocation sample
@@ -206,11 +242,17 @@ def compute_momentum_divergence_violation(model, T: float, params: dict, perturb
         n_interior (int): Total number of interior points to sample.
         chunk_size (int): Points per forward/backward pass (VRAM safety).
         device (str): Target hardware device ('cuda' or 'cpu').
+        seed (int | None): If provided, all sampled points are drawn
+            reproducibly from this seed via _seeded() -- pass the SAME
+            seed (e.g. derived from case_id) across a case's clean field
+            and every one of its perturbed variants so they share
+            identical (x, y, t) points (see _seeded's docstring).
 
     Outputs:
         (Smom, Sdiv): both float.
     """
-    interior = sample_interior_points(T, n_interior)
+    with _seeded(seed):
+        interior = sample_interior_points(T, n_interior)
 
     sum_Ru2, sum_Rv2, sum_Rc2, n_done = 0.0, 0.0, 0.0, 0
     for i in range(0, n_interior, chunk_size):
@@ -272,7 +314,7 @@ def _boundary_pair_mismatch(model, side_a: torch.Tensor, side_b: torch.Tensor, p
 
 def compute_boundary_violation(model, T: float, params: dict, perturbation_name: str, epsilon: float,
                                 U0: float, scale_p: float, n_bc_per_axis: int = 1000,
-                                device: str = "cpu") -> float:
+                                device: str = "cpu", seed: int = None) -> float:
     """
     Computes Sbc = MSE(s|x=0 - s|x=2pi) + MSE(s|y=0 - s|y=2pi) [Section 8]
     for one (perturbation, epsilon) field, on paired periodic-boundary
@@ -292,11 +334,13 @@ def compute_boundary_violation(model, T: float, params: dict, perturbation_name:
         scale_p (float): This case's pressure scale (scaler.scale_p).
         n_bc_per_axis (int): Number of paired points sampled per boundary axis.
         device (str): Target hardware device ('cuda' or 'cpu').
+        seed (int | None): See compute_momentum_divergence_violation's docstring.
 
     Outputs:
         float: Sbc.
     """
-    bounds = sample_periodic_boundaries(T, n_bc_per_axis)
+    with _seeded(seed):
+        bounds = sample_periodic_boundaries(T, n_bc_per_axis)
     x_left, x_right = bounds["x_bounds"]
     y_bottom, y_top = bounds["y_bounds"]
 
@@ -308,7 +352,7 @@ def compute_boundary_violation(model, T: float, params: dict, perturbation_name:
 def compute_boundary_localization_violation(model, T: float, params: dict, perturbation_name: str, epsilon: float,
                                              nu: float, scaler, band_width: float = 0.3,
                                              n_points: int = 20000, chunk_size: int = 8000,
-                                             device: str = "cpu") -> tuple[float, int]:
+                                             device: str = "cpu", seed: int = None) -> tuple[float, int]:
     """
     S_bc_local: an OPTIONAL, spatially-localized companion to Sbc (see the
     "IMPORTANT" paragraph in this module's docstring for why Sbc itself
@@ -350,6 +394,7 @@ def compute_boundary_localization_violation(model, T: float, params: dict, pertu
             roughly a third of uniformly sampled points fall in the band.
         chunk_size (int): Points per forward/backward pass (VRAM safety).
         device (str): Target hardware device ('cuda' or 'cpu').
+        seed (int | None): See compute_momentum_divergence_violation's docstring.
 
     Outputs:
         (S_bc_local, n_near): S_bc_local (float), n_near (int, how many
@@ -357,7 +402,8 @@ def compute_boundary_localization_violation(model, T: float, params: dict, pertu
             sanity-check band_width isn't too narrow/wide; not needed for
             scoring itself).
     """
-    interior = sample_interior_points(T, n_points)
+    with _seeded(seed):
+        interior = sample_interior_points(T, n_points)
     x_all, y_all = interior[:, 0], interior[:, 1]
     two_pi = 2 * np.pi
     near_mask = ((x_all < band_width) | (x_all > two_pi - band_width) |
@@ -448,7 +494,8 @@ def compute_phs_components(model, case_meta: dict, nu: float, T: float, scaler,
                             n_interior: int = 20000, n_bc_per_axis: int = 1000,
                             n_time: int = 20, energy_res: int = 32, chunk_size: int = 8000,
                             device: str = "cpu", include_bc_local: bool = False,
-                            bc_local_band_width: float = 0.3, bc_local_n_points: int = 20000) -> dict:
+                            bc_local_band_width: float = 0.3, bc_local_n_points: int = 20000,
+                            seed: int = None) -> dict:
     """
     Computes the raw PHS components for ONE (case, perturbation, epsilon)
     field. This is the single entry point evaluate_phs.py calls per row of
@@ -474,18 +521,25 @@ def compute_phs_components(model, case_meta: dict, nu: float, T: float, scaler,
             Off by default -- Section 8 defines exactly 4 components.
         bc_local_band_width, bc_local_n_points: Forwarded to
             compute_boundary_localization_violation if include_bc_local is True.
+        seed (int | None): If provided, passed through to every component
+            function so this field's random points are reproducible. Pass
+            the SAME seed (derived from case_id, not perturbation/epsilon)
+            for a case's clean field and all its perturbed variants so
+            they are compared at identical (x, y, t) points -- see
+            _seeded's docstring for why this matters.
 
     Outputs:
         dict: {"mom": Smom, "div": Sdiv, "bc": Sbc, "E": SE}, all float,
             plus "bc_local" if include_bc_local is True.
     """
-    params = {"U0": case_meta["U0"], "k": case_meta["k"], "T": T}
+    params = {"U0": case_meta["U0"], "k": case_meta["k"], "T": T,
+              "tau_decay": compute_decay_timescale(nu, case_meta["k"])}
 
     Smom, Sdiv = compute_momentum_divergence_violation(
-        model, T, params, perturbation_name, epsilon, nu, scaler, n_interior, chunk_size, device,
+        model, T, params, perturbation_name, epsilon, nu, scaler, n_interior, chunk_size, device, seed,
     )
     Sbc = compute_boundary_violation(
-        model, T, params, perturbation_name, epsilon, case_meta["U0"], scaler.scale_p, n_bc_per_axis, device,
+        model, T, params, perturbation_name, epsilon, case_meta["U0"], scaler.scale_p, n_bc_per_axis, device, seed,
     )
     SE = compute_energy_violation(
         model, T, params, perturbation_name, epsilon,
@@ -497,7 +551,7 @@ def compute_phs_components(model, case_meta: dict, nu: float, T: float, scaler,
     if include_bc_local:
         S_bc_local, _ = compute_boundary_localization_violation(
             model, T, params, perturbation_name, epsilon, nu, scaler,
-            bc_local_band_width, bc_local_n_points, chunk_size, device,
+            bc_local_band_width, bc_local_n_points, chunk_size, device, seed,
         )
         components["bc_local"] = S_bc_local
 

@@ -56,7 +56,7 @@ sys.path.append(str(project_root))
 from src.models.pinn import BaselinePINN
 from src.models.scaling import ResidualScaler
 from src.physics.navier_stokes import compute_residuals
-from src.physics.taylor_green import compute_nu, compute_T, generate_tgv
+from src.physics.taylor_green import compute_nu, compute_T, compute_decay_timescale, generate_tgv
 from src.hallucinations.perturbations import (
     apply_perturbation,
     EPSILON_VALUES,
@@ -501,7 +501,7 @@ def build_residual_table(model, case_id: str, case_meta: dict, args):
     nu = compute_nu(U0, Re, k)
     T = compute_T(U0, Re, k)
     scaler = ResidualScaler(U0, k)
-    params = {"U0": U0, "k": k, "T": T}
+    params = {"U0": U0, "k": k, "T": T, "tau_decay": compute_decay_timescale(nu, k)}
 
     x, y, t = build_interior_grid(T, args.res, args.time_frac, args.device)
     x_left, x_right, y_b, t_b = build_boundary_pair_grid(T, args.n_bc, args.time_frac, args.device)
@@ -597,7 +597,7 @@ def plot_visual_check(model, case_id: str, case_meta: dict, args, output_dir: Pa
     """
     Re, U0, k = case_meta["Re"], case_meta["U0"], case_meta["k"]
     T = compute_T(U0, Re, k)
-    params = {"U0": U0, "k": k, "T": T}
+    params = {"U0": U0, "k": k, "T": T, "tau_decay": compute_decay_timescale(compute_nu(U0, Re, k), k)}
     res = args.res
 
     x, y, t = build_interior_grid(T, res, args.time_frac, args.device)
@@ -669,7 +669,7 @@ def plot_pressure_field_check(model, case_id: str, case_meta: dict, args, output
     """
     Re, U0, k = case_meta["Re"], case_meta["U0"], case_meta["k"]
     T = compute_T(U0, Re, k)
-    params = {"U0": U0, "k": k, "T": T}
+    params = {"U0": U0, "k": k, "T": T, "tau_decay": compute_decay_timescale(compute_nu(U0, Re, k), k)}
     res = args.res
 
     x, y, t = build_interior_grid(T, res, args.time_frac, args.device)
@@ -759,7 +759,7 @@ def plot_vector_field_check(model, case_id: str, case_meta: dict, args, output_d
     """
     Re, U0, k = case_meta["Re"], case_meta["U0"], case_meta["k"]
     T = compute_T(U0, Re, k)
-    params = {"U0": U0, "k": k, "T": T}
+    params = {"U0": U0, "k": k, "T": T, "tau_decay": compute_decay_timescale(compute_nu(U0, Re, k), k)}
 
     x, y, t = build_interior_grid(T, vector_res, args.time_frac, args.device)
 
@@ -866,7 +866,7 @@ def plot_full_sweep(model, case_id: str, case_meta: dict, args, output_dir: Path
     """
     Re, U0, k = case_meta["Re"], case_meta["U0"], case_meta["k"]
     T = compute_T(U0, Re, k)
-    params = {"U0": U0, "k": k, "T": T}
+    params = {"U0": U0, "k": k, "T": T, "tau_decay": compute_decay_timescale(compute_nu(U0, Re, k), k)}
     res = args.res
 
     x, y, t = build_interior_grid(T, res, args.time_frac, args.device)

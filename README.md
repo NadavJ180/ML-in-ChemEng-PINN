@@ -161,7 +161,8 @@ Based on the project blueprint, the following components are implemented or acti
 - [x] **Baseline PINN Architecture:** Configurable neural network (`src/models/pinn.py`).
 - [x] **Baseline PINN Training:** 30 trained TGV models (`src/models/train_model.py`, `models/*.pth`).
 - [x] **Hallucinated Flow Fields (Issue #8):** 5 controlled perturbation types — spatial (velocity-divergence,
-      momentum, pressure), temporal, and boundary — with a shared `apply_perturbation` dispatcher
+      momentum, pressure), temporal (`temporal_mismatch`, now shifting by a physically-scaled amount — see
+      Findings below), and boundary — with a shared `apply_perturbation` dispatcher
       (`src/hallucinations/perturbations.py`, `generate_hallucinations.py`).
 - [x] **Perturbation Verification (Issue #9):** Visual-plausibility and violation-activation audit against
       WP4's acceptance criteria (`src/hallucinations/verify_hallucinations.py`).
@@ -206,25 +207,59 @@ climbed from `2e-5` to `3.4e-3` across the epsilon sweep, a ~170x increase, whil
 `~2.9e-7`). It is off by default (Section 8 defines exactly 4 components) — enable with
 `evaluate_phs.py --include_bc_local` to also compute `Score4_PHS_plus_bc_local` for comparison.
 
-### `temporal_mismatch` is the hardest perturbation type to detect
-Across a 14-case evaluation run, `temporal_mismatch` had **72% recall** vs. **100%** for the other 4
-perturbation types (all misses at the 3 smallest epsilons; 100% recall by ε=0.1). Root cause: this
-perturbation shifts time by `epsilon * T`, where `T = min(2.0, τ_decay)` and `τ_decay = 1/(2νk²)` is the
-flow's natural decay timescale (`src/physics/taylor_green.py::compute_T`). Checked against all 30 cases'
-sampled `(Re, U0, k)`: **every single case** has `τ_decay > 2.0`, i.e. `T` is capped, with
-`τ_decay / T` ranging from **1.67x to 114x** (median **8.8x**). So even the largest canonical epsilon
-(0.1) only shifts time by `0.1 × 2.0 = 0.2s` of real time — a small fraction of how long these flows
-actually take to evolve, for every case in the ensemble. This is a property of how `epsilon` is defined
-for this perturbation type (`src/hallucinations/perturbations.py::perturb_temporal_mismatch`, an Issue #8
-file) combined with the WP2 case-sampling ranges, not a scoring bug — `phs.py`'s normalization was
-verified by hand against stored values and matches Section 8 exactly for every component, including this
-one. Options going forward, not yet decided: (a) report as a limitation (this perturbation type is
-intrinsically subtle for the current case ensemble — arguably a legitimate finding, not just a weakness);
-(b) redefine the perturbation's epsilon to scale with `τ_decay` instead of the capped `T`, which would
-need Issue #8 sign-off since it changes `perturbations.py`; (c) narrow WP2's `Re` sampling range so
-`τ_decay` stays closer to `T`. `evaluate_phs.py`'s `evaluate_detection_by_perturbation_type` /
-`recall_by_type.png` make this breakdown visible any time the pipeline is re-run, rather than only
-showing up as a slightly-lower pooled recall number.
+### `temporal_mismatch` was the hardest perturbation type to detect — fixed in place
+Across a 14-case evaluation run, the original `temporal_mismatch` definition had **72% recall** vs.
+**100%** for the other perturbation types (all misses at the 3 smallest epsilons; 100% recall by ε=0.1).
+Root cause: this perturbation shifted time by `epsilon * T`, where `T = min(2.0, τ_decay)` and
+`τ_decay = 1/(2νk²)` is the flow's natural decay timescale (`src/physics/taylor_green.py::compute_decay_timescale`).
+Checked against all 30 cases' sampled `(Re, U0, k)`: **every single case** has `τ_decay > 2.0`, i.e. `T` is
+capped, with `τ_decay / T` ranging from **1.67x to 114x** (median **8.8x**). So even the largest canonical
+epsilon (0.1) only shifted time by `0.1 × 2.0 = 0.2s` of real time — a small fraction of how long these
+flows actually take to evolve, for every case in the ensemble. This was a property of how `epsilon` was
+defined for this perturbation type, not a scoring bug — `phs.py`'s normalization was verified by hand
+against stored values and matches Section 8 exactly.
+
+**Fix:** `perturb_temporal_mismatch` (`src/hallucinations/perturbations.py`) now shifts time by
+`epsilon * τ_decay` — the flow's own *uncapped* natural timescale — instead of the capped `T`, so a given
+epsilon represents roughly the same physical fraction of evolution for every case. The result is clamped
+to `[0, T]` before querying the model: without this, `epsilon * τ_decay` could land far outside `[0, T]`
+for slow-decaying cases (up to 114x `T`), asking the model about a time it was never trained on — pure
+extrapolation, which tends to produce obviously-wrong output and would make the perturbation trivially
+easy to detect (defeating the point of a *subtle* hallucination benchmark). For the slowest-decaying
+cases, the largest epsilon values may saturate at exactly `t=T` (multiple epsilons producing the identical
+shift) — this is an intentional physical ceiling ("as far as we can push this without leaving the domain
+the model actually knows"), not a bug. This is a direct, in-place fix, not an added alternative —
+`PERTURBATION_NAMES` still lists exactly 5 types. **Existing generated data/plots predating this change
+are stale for `temporal_mismatch` specifically and should be regenerated**
+(`generate_hallucinations.py` → `verify_hallucinations.py` / `evaluate_phs.py`).
+
+**Result, on the same 14-case run:** recall for `temporal_mismatch` went from 72% to **100% at every
+epsilon**, including the smallest (0.005). Detection overall improved from AUC=0.966 to a clean
+**AUC=1.000** for both `Score2_momentum_divergence` and `Score3_PHS_full` on the test split — the single
+weakest perturbation type had been capping overall performance, and fixing it directly lifted the whole
+evaluation to perfect separation.
+
+### Diagnostic tooling added: per-type recall breakdown and misclassification table
+Two additions to `evaluate_phs.py` make cross-cutting detection issues (like the `temporal_mismatch`
+finding above) visible without manually slicing the raw CSV: `evaluate_detection_by_perturbation_type` /
+`recall_by_type.png` break recall down by `(perturbation_type, epsilon)` instead of pooling everything
+into one number (labels are stacked in a single vertical column with distinct, legend-matched colors, so
+lines that fully overlap — a common outcome once several types hit 100% recall — stay individually
+identifiable via a leader line to a real point on each curve, without misrepresenting any value), and
+`diagnose_misclassifications` prints and saves `plots/phs_evaluation/misclassified_fields.csv` — every
+field on the wrong side of `tau`, sorted by how close the call was, with its margin. Point sampling
+(`sample_interior_points`, `sample_periodic_boundaries` calls inside `phs.py`) is also seeded per-case by
+default (`--no_seed_points` to disable) after measuring ~4% run-to-run swings in `Smom` from unseeded
+resampling alone — enough to flip a genuinely borderline case between runs.
+
+### A pre-existing, unrelated test bug: `tests/test_pinn_loss.py`
+`test_pinn_architecture_and_loss_graph` calls `BaselinePINN()` with no arguments and fails with
+`TypeError: missing 1 required positional argument: 'k'`. This predates all Issue #9/#10 work: the test
+was added in commit `39f7bc0` (2026-07-12), and `k` became a required constructor argument two days later
+in `d957ff3` (2026-07-14, adding Fourier feature input encoding) — that commit's own message says it
+"updated the training file accordingly," but this test file was never updated to match, so it has been
+silently broken since. One-line fix (pass `k=1`, matching the `LossEvaluator(... k=1.0)` already in the
+same test) whenever someone gets to it — left alone here since it's unrelated to this session's work.
 
 ## 🚀 Future Research Directions
 
