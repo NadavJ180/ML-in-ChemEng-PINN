@@ -37,9 +37,10 @@ Outputs:
       Per-score AUC / Precision / Recall / F1 on the test split.
   plots/phs_evaluation/roc_curves.png
       ROC curves for all 3 scores overlaid (test split).
-  plots/phs_evaluation/score_distributions.png
-      PHS distribution for clean vs. hallucinated fields (test split),
-      with tau marked.
+  plots/phs_evaluation/score_distributions_comparison.png
+      Clean vs. hallucinated distribution for every score (Score1/2/3, and
+      Score4 if --include_bc_local), side by side with a shared x-axis, so
+      separation quality can be compared directly across baselines.
   plots/phs_evaluation/phs_vs_epsilon.png
       Mean PHS vs. epsilon per perturbation type (all splits pooled) --
       sanity check that PHS increases with perturbation strength.
@@ -433,51 +434,70 @@ def diagnose_misclassifications(df: pd.DataFrame, thresholds: dict, score_name: 
     return out.reindex(out["margin"].abs().sort_values().index).reset_index(drop=True)
 
 
-def plot_score_distributions(df: pd.DataFrame, thresholds: dict, output_dir: Path):
+def plot_score_distributions_comparison(df: pd.DataFrame, thresholds: dict, output_dir: Path):
     """
-    Plots the PHS (Score3_PHS_full) distribution for clean vs. hallucinated
-    fields on the test split, with tau marked, so a reviewer can see the
-    separation the AUC number is summarizing.
+    Plots clean vs. hallucinated score distributions for ALL baseline
+    scores (Score1, Score2, Score3/PHS, and Score4 if present) side by
+    side in one figure, sharing a common log-x axis range across every
+    panel so the DEGREE of separation can be compared directly panel to
+    panel, not just inferred from the AUC numbers.
+
+    This intentionally replaces having one near-identical full-size
+    distribution plot per score (three or four separate files would be
+    largely redundant with each other, and with the ROC curve, which
+    already summarizes comparative rank-order separation numerically) --
+    one compact side-by-side figure shows the same "does PHS separate
+    better than the simpler baselines" story as an actual score gap you
+    can see, which is complementary to the ROC curve's abstract
+    TPR/FPR view rather than a duplicate of it.
 
     Inputs:
-        df (pd.DataFrame): Must have "split", "label", "Score3_PHS_full" columns.
-        thresholds (dict): Output of evaluate_detection(); uses tau for "Score3_PHS_full".
-        output_dir (Path): Where to save score_distributions.png.
+        df (pd.DataFrame): Must have "split", "label", and every score
+            column in BASELINE_DEFINITIONS_WITH_BC_LOCAL that is present.
+        thresholds (dict): Output of evaluate_detection(); tau per score.
+        output_dir (Path): Where to save score_distributions_comparison.png.
 
     Outputs:
-        None. Saves plots/phs_evaluation/score_distributions.png.
+        None. Saves plots/phs_evaluation/score_distributions_comparison.png.
     """
     test_df = df[df["split"] == "test"]
-    clean_scores = test_df.loc[test_df["label"] == "clean", "Score3_PHS_full"].values
-    halluc_scores = test_df.loc[test_df["label"] == "hallucinated", "Score3_PHS_full"].values
+    score_names = [s for s in BASELINE_DEFINITIONS_WITH_BC_LOCAL if s in df.columns]
+    if not score_names:
+        print("⏭️  Skipping score_distributions_comparison.png: no score columns found.")
+        return
 
-    # PHS is a sum of ratios to a near-zero clean-field normalizer, so it
-    # commonly spans several orders of magnitude between clean and heavily
-    # hallucinated fields -- log-spaced bins make the separation (and tau)
-    # visible; a linear axis compresses everything into the first bin.
-    all_scores = np.concatenate([clean_scores, halluc_scores])
+    all_scores = np.concatenate([test_df[s].values for s in score_names])
     all_scores_positive = all_scores[all_scores > 0]
     if len(all_scores_positive) == 0:
-        print("⏭️  Skipping score_distributions.png: all scores are zero.")
+        print("⏭️  Skipping score_distributions_comparison.png: all scores are zero.")
         return
     log_min = np.log10(max(all_scores_positive.min(), 1e-6))
     log_max = np.log10(max(all_scores_positive.max(), 10 ** (log_min + 1)))
-    bins = np.logspace(log_min, log_max, 40)
+    bins = np.logspace(log_min, log_max, 30)
 
-    plt.figure(figsize=(7, 5))
-    plt.hist(np.clip(clean_scores, all_scores_positive.min(), None), bins=bins, alpha=0.6,
-              label=f"Clean (n={len(clean_scores)})", color="tab:blue")
-    plt.hist(np.clip(halluc_scores, all_scores_positive.min(), None), bins=bins, alpha=0.6,
-              label=f"Hallucinated (n={len(halluc_scores)})", color="tab:red")
-    plt.axvline(max(thresholds["Score3_PHS_full"], all_scores_positive.min()), color="black", linestyle="--",
-                label=f"tau = {thresholds['Score3_PHS_full']:.2f}")
-    plt.xscale("log")
-    plt.xlabel("PHS (Score3_PHS_full, log scale)")
-    plt.ylabel("Count")
-    plt.title("PHS Distribution: Clean vs. Hallucinated (test split)")
-    plt.legend()
+    fig, axes = plt.subplots(1, len(score_names), figsize=(5.5 * len(score_names), 5), sharey=True)
+    axes = np.atleast_1d(axes)
+
+    for ax, score_name in zip(axes, score_names):
+        clean_scores = test_df.loc[test_df["label"] == "clean", score_name].values
+        halluc_scores = test_df.loc[test_df["label"] == "hallucinated", score_name].values
+
+        ax.hist(np.clip(clean_scores, all_scores_positive.min(), None), bins=bins, alpha=0.6,
+                label=f"Clean (n={len(clean_scores)})", color="tab:blue")
+        ax.hist(np.clip(halluc_scores, all_scores_positive.min(), None), bins=bins, alpha=0.6,
+                label=f"Hallucinated (n={len(halluc_scores)})", color="tab:red")
+        ax.axvline(max(thresholds[score_name], all_scores_positive.min()), color="black", linestyle="--",
+                   label=f"tau={thresholds[score_name]:.2f}")
+        ax.set_xscale("log")
+        ax.set_xlabel(f"{score_name} (log scale)")
+        ax.set_title(score_name, fontsize=10)
+        ax.legend(fontsize=8)
+
+    axes[0].set_ylabel("Count")
+    fig.suptitle("Score Distributions: Clean vs. Hallucinated, All Baselines Compared (test split)")
     plt.tight_layout()
-    plt.savefig(output_dir / "score_distributions.png", dpi=150)
+    plt.savefig(output_dir / "score_distributions_comparison.png", dpi=150)
+    plt.close()
     plt.close()
 
 
@@ -835,12 +855,12 @@ def main():
 
     # --- Plots ---
     plot_roc_curves(df, output_dir)
-    plot_score_distributions(df, thresholds, output_dir)
+    plot_score_distributions_comparison(df, thresholds, output_dir)
     plot_phs_vs_epsilon(df, output_dir)
     plot_raw_components_vs_epsilon(df, output_dir)
     plot_all_scores_vs_epsilon(df, output_dir)
     plot_recall_by_type(recall_by_type_df, output_dir)
-    print(f"🖼️  Wrote roc_curves.png, score_distributions.png, phs_vs_epsilon.png, "
+    print(f"🖼️  Wrote roc_curves.png, score_distributions_comparison.png, phs_vs_epsilon.png, "
           f"raw_components_vs_epsilon.png, scores_vs_epsilon.png, recall_by_type.png to "
           f"{output_dir.relative_to(project_root)}")
 
