@@ -489,6 +489,92 @@ def compute_energy_violation(model, T: float, params: dict, perturbation_name: s
     return float(np.mean(squared_errors))
 
 
+def compute_relative_error(model, T: float, params: dict, perturbation_name: str, epsilon: float,
+                            n_points: int = 5000, seed: int = None, device: str = "cpu") -> float:
+    """
+    Computes the relative L2 magnitude of the change a perturbation makes
+    to the FULL field (u, v, p) -- non-dimensionalized consistently with
+    the rest of this module (u, v divided by U0; p divided by scale_p =
+    U0^2, matching compute_boundary_violation's convention) before
+    pooling, so the three quantities contribute on a comparable footing
+    rather than whichever has the largest raw magnitude dominating the sum.
+
+    DELIBERATELY DIFFERENT FROM verify_hallucinations.py's visual_deviation
+    (Issue #9), which compares (u, v) ONLY -- that metric's purpose is "does
+    this look different in a velocity contour plot," matching what Issue
+    9's plots actually show. This function's purpose is different: "how
+    much did the full field change, in a way that's comparable across
+    every perturbation type" -- and "pressure" only modifies p, leaving
+    (u, v) completely untouched, so a velocity-only version of this metric
+    would be EXACTLY 0 for every epsilon of that one perturbation type
+    (confirmed: this was tried first and broke the log-space interpolation
+    in detection_sensitivity.py's find_boundary_crossings with a literal
+    zero). Including p fixes that and is arguably the more honest
+    "how much did this change" measure for this function's purpose anyway.
+
+    Unlike Smom/Sdiv/Sbc/SE, this needs no gradients (it's a plain value
+    comparison), and it is NOT one of PHS's 4 official Section 8
+    components -- it exists purely to express "how much does epsilon
+    actually change the field" as a single, physically interpretable
+    number that's comparable ACROSS perturbation types. Epsilon itself is
+    not directly comparable between perturbation types (a fraction of U0
+    for "momentum", a fraction of a domain-edge bump amplitude for
+    "boundary", a fraction of a decay timescale for "temporal_mismatch"),
+    so "at epsilon=0.002 detection starts to fail" is a claim specific to
+    whichever perturbation type generated it, while "at ~X% relative
+    error detection starts to fail" is not.
+
+    Inputs:
+        model (nn.Module): The trained, eval-mode BaselinePINN.
+        T (float): This case's final simulation time.
+        params (dict): Case-specific physical constants; requires "U0",
+                        "k", "T" (and "tau_decay" if perturbation_name is
+                        "temporal_mismatch").
+        perturbation_name (str): One of PERTURBATION_NAMES, or "none"
+                                  (returns 0.0 trivially).
+        epsilon (float): Perturbation strength.
+        n_points (int): Interior points to sample.
+        seed (int | None): Passed to _seeded() for reproducibility (see
+            its docstring) -- pass the same per-case seed used elsewhere
+            for this case to compare against the identical point cloud;
+            None leaves sampling unseeded.
+        device (str): Target hardware device ('cuda' or 'cpu').
+
+    Outputs:
+        float: Relative L2 error, or float("inf") if the clean field has
+        zero norm on the sampled points (a degenerate case not expected
+        in practice).
+    """
+    if perturbation_name == "none":
+        return 0.0
+
+    U0 = params["U0"]
+    scale_p = U0 ** 2
+
+    with _seeded(seed):
+        interior = sample_interior_points(T, n_points)
+    x = interior[:, 0:1].to(device=device, dtype=torch.float64)
+    y = interior[:, 1:2].to(device=device, dtype=torch.float64)
+    t = interior[:, 2:3].to(device=device, dtype=torch.float64)
+
+    with torch.no_grad():
+        clean_field = _field_at(model, x, y, t, params, "none", 0.0, no_grad=True)
+        perturbed_field = _field_at(model, x, y, t, params, perturbation_name, epsilon, no_grad=True)
+
+        du = (perturbed_field["u"] - clean_field["u"]) / U0
+        dv = (perturbed_field["v"] - clean_field["v"]) / U0
+        dp = (perturbed_field["p"] - clean_field["p"]) / scale_p
+        num = torch.sum(du ** 2 + dv ** 2 + dp ** 2)
+
+        u_ref = clean_field["u"] / U0
+        v_ref = clean_field["v"] / U0
+        p_ref = clean_field["p"] / scale_p
+        den = torch.sum(u_ref ** 2 + v_ref ** 2 + p_ref ** 2)
+
+        rel_l2 = torch.sqrt(num / den).item() if den.item() > 0 else float("inf")
+    return rel_l2
+
+
 def compute_phs_components(model, case_meta: dict, nu: float, T: float, scaler,
                             perturbation_name: str, epsilon: float,
                             n_interior: int = 20000, n_bc_per_axis: int = 1000,
