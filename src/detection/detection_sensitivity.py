@@ -1,14 +1,23 @@
 """
-Detection Sensitivity Analysis (probes the boundary AUC=1.000 hides)
+Detection Sensitivity Analysis (extends below the canonical epsilon floor)
 
-The standard evaluate_phs.py run reports AUC=1.000 on the canonical
-epsilon sweep (EPSILON_VALUES = [0.005, 0.01, 0.02, 0.05, 0.1)) -- but a
-perfect AUC there only says the smallest CANONICAL epsilon is already past
-the point where detection is reliable, not that it sits at the edge of it.
-This script finds that edge directly: it re-uses an EXISTING calibration
-(normalizers + tau, from a prior evaluate_phs.py run) and sweeps much
-smaller epsilon values against it, reporting detection rate as a function
-of both epsilon AND relative L2 error (src.detection.phs.compute_relative_error).
+HISTORY: this script originally existed because the canonical epsilon sweep
+(then [0.005, 0.01, 0.02, 0.05, 0.1]) gave a flat AUC=1.000 that didn't say
+where detection actually became unreliable. That finding led directly to
+EPSILON_VALUES itself being replaced (see perturbations.py) with a range
+centered on the real detection boundary (roughly eps=0.0003-0.0016, per the
+50%/90% recall crossings this script found). So the canonical
+evaluate_phs.py run NOW produces the sensitivity curve directly, as part of
+its standard output (recall_by_type.png, scores_vs_epsilon.png, etc. all
+already span the boundary) -- this script is no longer the only place that
+information exists.
+
+What it's still for: probing EVEN LOWER than the new canonical floor
+(0.0001), or checking specific epsilon values that aren't part of the
+standard sweep, using an EXISTING calibration rather than recomputing one.
+It never recalibrates anything -- normalizers and tau are loaded from disk
+(from a prior evaluate_phs.py run), so this never touches validation or
+test data in a way that could leak into the numbers it reports.
 
 Epsilon itself is not a fair cross-perturbation-type axis: it means "a
 fraction of U0" for one perturbation type, "a fraction of a boundary bump
@@ -21,31 +30,24 @@ method's precision" -- e.g. "PHS reliably detects hallucinations once they
 change the field by more than X% in relative L2 terms," a claim that
 means the same thing regardless of which perturbation produced them.
 
-This is intentionally a SEPARATE script from evaluate_phs.py, not a mode
-of it: it answers a different question (where does an already-calibrated
-detector's sensitivity run out) rather than "how does detection perform
-on the standard benchmark." It does not recalibrate anything -- normalizers
-and tau are loaded from disk, not recomputed, so this never touches
-validation or test data in a way that could leak into the numbers it is
-probing.
-
 Outputs:
   data/phs_scores/sensitivity_probe_raw.csv
       One row per (case, perturbation, epsilon): raw components, the
-      normalized Score3_PHS_full (using the LOADED calibration), relative
+      normalized Score4_PHS_full (using the LOADED calibration), relative
       L2 error, and whether it was detected.
   plots/phs_evaluation/sensitivity_recall_vs_epsilon.png
-      Fine-grained recall vs. epsilon, one line per perturbation type --
-      complements (does not replace) evaluate_phs.py's coarser
-      recall_by_type.png, which only covers the canonical epsilon values.
+      Recall vs. epsilon, one line per perturbation type, for whatever
+      grid this script was run with.
   plots/phs_evaluation/sensitivity_recall_vs_relative_error.png
       Recall vs. relative L2 error, one line per perturbation type PLUS an
       overall pooled line -- the cross-type-comparable precision curve.
   plots/phs_evaluation/sensitivity_boundary_summary.csv / .json
       The epsilon and relative-error values where recall crosses 50% and
-      90% (linear interpolation in log-space), overall and per
-      perturbation type -- the actual numbers behind "precision of this
-      method."
+      90% (linear interpolation in log-space, over QUANTILE bins -- see
+      _binned_recall's docstring for why equal-width log bins produced
+      visibly "jerky" curves with occasional single-point bins reading a
+      hard 0% or 100%, and why equal-COUNT bins fix that), overall and
+      per perturbation type.
 
 Usage:
     python src/detection/detection_sensitivity.py
@@ -73,10 +75,10 @@ from src.hallucinations.generate_hallucinations import load_case_metadata
 from src.hallucinations.perturbations import PERTURBATION_NAMES
 from src.detection.phs import compute_phs_components, compute_relative_error, PHS_COMPONENT_NAMES
 
-# Fine, log-spaced epsilon grid spanning well below the smallest canonical
-# value (0.005) up through it, so the resulting curve connects smoothly to
-# the standard evaluate_phs.py results rather than leaving a gap.
-SENSITIVITY_EPSILON_VALUES = [0.0001, 0.0002, 0.0005, 0.001, 0.0015, 0.002, 0.003, 0.005, 0.0075, 0.01]
+# Extends BELOW the canonical EPSILON_VALUES floor (0.0001, per perturbations.py) rather than
+# overlapping it -- the canonical sweep already covers 0.0001-0.01, so this picks up from there
+# downward, for anyone curious whether the boundary moves further once epsilon gets smaller still.
+SENSITIVITY_EPSILON_VALUES = [0.00001, 0.00002, 0.00005, 0.0001, 0.0002, 0.0005, 0.001]
 
 # Recall levels to report boundary crossings for.
 BOUNDARY_LEVELS = [0.5, 0.9]
@@ -214,24 +216,24 @@ def score_against_existing_calibration(df: pd.DataFrame, normalizers: dict, tau:
             "mom", "div", "bc", "E" columns.
         normalizers (dict): {component_name: normalizer}, loaded from a
             prior evaluate_phs.py run's normalizers_and_thresholds.json.
-        tau (float): Score3_PHS_full's threshold, from the same file.
+        tau (float): Score4_PHS_full's threshold, from the same file.
 
     Outputs:
-        pd.DataFrame: `df` with "Score3_PHS_full" and "detected" columns
+        pd.DataFrame: `df` with "Score4_PHS_full" and "detected" columns
             appended (copy).
     """
     out = df.copy()
     for c in PHS_COMPONENT_NAMES:
         out[f"{c}_bar"] = out[c] / (normalizers[c] + 1e-12)
-    out["Score3_PHS_full"] = sum(out[f"{c}_bar"] for c in PHS_COMPONENT_NAMES)
-    out["detected"] = out["Score3_PHS_full"] > tau
+    out["Score4_PHS_full"] = sum(out[f"{c}_bar"] for c in PHS_COMPONENT_NAMES)
+    out["detected"] = out["Score4_PHS_full"] > tau
     return out
 
 
-def _binned_recall(df: pd.DataFrame, x_col: str, n_bins: int = 15) -> tuple:
+def _binned_recall(df: pd.DataFrame, x_col: str, n_bins: int = 15, min_points_per_bin: int = 4) -> tuple:
     """
-    Bins `df` by `x_col` into log-spaced bins and returns each bin's mean
-    detection rate against its own mean x-value, sorted by x.
+    Bins `df` by `x_col` into EQUAL-COUNT (quantile) bins and returns each
+    bin's mean detection rate against its own mean x-value, sorted by x.
 
     WHY THIS EXISTS: "epsilon" is a small, shared, discrete grid (the same
     SENSITIVITY_EPSILON_VALUES for every perturbation type), so grouping by
@@ -247,18 +249,49 @@ def _binned_recall(df: pd.DataFrame, x_col: str, n_bins: int = 15) -> tuple:
     find_boundary_crossings meaningless (confirmed: the first version of
     this analysis reported the same relative-error value for both 50% and
     90% recall, which should be impossible for a monotonic-ish curve --
-    tracing it back showed this exact-groupby issue). Binning in log-x
-    space first, THEN averaging recall within each bin, gives an actual
-    smoothed dose-response curve to interpolate against, for either axis.
+    tracing it back showed this exact-groupby issue).
+
+    WHY EQUAL-COUNT BINS, NOT EQUAL-WIDTH LOG BINS (a second, later fix):
+    the first binned version used equal-width bins in log-x space, which
+    fixed the grouping problem above but introduced a new, subtler one --
+    equal-width bins have no knowledge of where the data actually
+    clusters, so they occasionally slice through a tight cluster of
+    near-identical x-values and isolate one point alone in its own bin.
+    Confirmed directly: one such bin contained exactly n=1 point (case_26,
+    "boundary", eps=0.0002) whose relative_error (4.5e-5) was almost
+    identical to 4 OTHER rows (the same perturbation/epsilon for the other
+    4 test cases, at 3.8e-5 to 4.1e-5) that landed in the adjacent bin
+    purely because of where the fixed bin edge happened to fall -- with
+    n=1, that bin could only ever read 0% or 100%, producing a visible
+    "jerk" in the curve that had nothing to do with a real detection
+    effect. Equal-COUNT bins (splitting the SORTED data into n_bins
+    contiguous, similarly-sized chunks) make a lone-point bin possible
+    only when there are fewer total rows than n_bins, not as a routine
+    side effect of wherever bin edges happen to land.
 
     Inputs:
         df (pd.DataFrame): Must have `x_col` and "detected" columns.
         x_col (str): Either "epsilon" or "relative_error".
-        n_bins (int): Number of log-spaced bins across the observed range.
+        n_bins (int): Maximum number of equal-count bins. The actual
+            number used is capped so each bin averages at least
+            min_points_per_bin rows -- see min_points_per_bin.
+        min_points_per_bin (int): Minimum average rows per bin. A group
+            with few rows (e.g. one perturbation type's own subset, 1/5th
+            of "overall"'s row count) automatically gets fewer, wider bins
+            instead of reusing n_bins=15 regardless of how little data
+            backs each one -- confirmed necessary in practice: even after
+            switching to equal-count bins (see the docstring above), a
+            single perturbation type's ~35 rows split into 15 bins still
+            averaged ~2 rows/bin, which reads as a near-coin-flip 0%/33%/
+            50%/67%/100% by chance alone and produced a visibly jagged
+            per-type curve even though the pooled "overall" curve (5x the
+            rows) was smooth. This ties bin width to how much data is
+            actually available, per group, rather than a single fixed count.
 
     Outputs:
         (bin_centers, mean_recall): both np.ndarray, sorted by bin_centers.
-        Empty bins are skipped, not zero-filled.
+        Returns fewer than n_bins points if there isn't enough data to
+        fill them all.
     """
     x = df[x_col].values
     detected = df["detected"].values
@@ -267,20 +300,18 @@ def _binned_recall(df: pd.DataFrame, x_col: str, n_bins: int = 15) -> tuple:
     if len(x) == 0:
         return np.array([]), np.array([])
 
-    log_x = np.log10(x)
-    bin_edges = np.linspace(log_x.min(), log_x.max(), n_bins + 1)
-    bin_idx = np.clip(np.digitize(log_x, bin_edges[1:-1]), 0, n_bins - 1)
+    order = np.argsort(x)
+    x_sorted, detected_sorted = x[order], detected[order]
+    n_bins = max(1, min(n_bins, len(x_sorted) // min_points_per_bin))
 
     centers, means = [], []
-    for b in range(n_bins):
-        mask = bin_idx == b
-        if mask.sum() == 0:
+    for chunk_x, chunk_detected in zip(np.array_split(x_sorted, n_bins), np.array_split(detected_sorted, n_bins)):
+        if len(chunk_x) == 0:
             continue
-        centers.append(10 ** np.mean(log_x[mask]))
-        means.append(detected[mask].mean())
+        centers.append(10 ** np.mean(np.log10(chunk_x)))
+        means.append(chunk_detected.mean())
 
-    order = np.argsort(centers)
-    return np.array(centers)[order], np.array(means)[order]
+    return np.array(centers), np.array(means)
 
 
 def find_boundary_crossings(df: pd.DataFrame, x_col: str, levels: list, n_bins: int = 15) -> dict:
@@ -395,7 +426,7 @@ def main():
     with open(calibration_path, "r") as f:
         calibration = json.load(f)
     normalizers = calibration["normalizers"]
-    tau = calibration["thresholds"]["Score3_PHS_full"]
+    tau = calibration["thresholds"]["Score4_PHS_full"]
 
     metadata_path = project_root / "data" / "cases_metadata.json"
     case_meta_by_id = load_case_metadata(metadata_path)

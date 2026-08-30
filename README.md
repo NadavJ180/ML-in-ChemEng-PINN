@@ -54,7 +54,7 @@ This project does not aim to create a new PINN architecture or a faster CFD solv
 │   │   ├── generate_hallucinations.py  # Builds data/hallucinations/*.pt + hallucination_index.csv/json
 │   │   └── verify_hallucinations.py    # WP4 audit: visual plausibility + violation-activation checks
 │   ├── detection/                   # Issue #10: Physical Hallucination Score (Section 8, WP5)
-│   │   ├── phs.py                   # Pure formula module: Smom/Sdiv/Sbc/SE, normalization, scoring
+│   │   ├── phs.py                   # Pure formula module: Smom/Sdiv/Sbc/S_bc_local/SE, normalization, scoring
 │   │   └── evaluate_phs.py          # Full detection pipeline: scores every field, calibrates tau, evaluates
 │   └── utils/                       # Utility functions (e.g., seeding)
 │       └── seed.py
@@ -142,17 +142,18 @@ Writes per-case contour comparisons, a full epsilon-sweep, a high-epsilon (ε=1.
 demo, and a quantitative residual/violation table to `plots/hallucination_verification/{case_id}/`.
 
 ### Evaluating the Physical Hallucination Score (Issue #10)
-Computes the 4 Section 8 components (Smom, Sdiv, Sbc, SE) for every field in the hallucination index,
+Computes 5 components (Smom, Sdiv, Sbc, S_bc_local, SE) for every field in the hallucination index,
 calibrates normalizers/threshold from the validation split, and evaluates detection (ROC-AUC,
-Precision, Recall, F1) on the held-out test split against 2 residual-only baselines:
+Precision, Recall, F1) on the held-out test split against 3 baselines (Score1/2/3 -- Score4 is PHS itself):
 ```bash
 python src/detection/evaluate_phs.py                              # full run, all cases
 python src/detection/evaluate_phs.py --n_interior 3000 --n_time 8 --energy_res 16   # fast smoke test
-python src/detection/evaluate_phs.py --include_bc_local           # also score the optional S_bc_local (see below)
 ```
 Writes the scored dataset to `data/phs_scores/`, and ROC curves, score distributions, per-type recall,
 and epsilon-response plots to `plots/phs_evaluation/`. See `src/detection/phs.py`'s module docstring for
-the exact formulas and every deliberate deviation from the write-up's literal notation.
+the exact formulas and every deliberate deviation from the write-up's literal notation (including the
+5th component, `bc_local` -- promoted from an optional add-on to a permanent part of PHS; see the
+Findings section below for why, and for an honest look at what it does and doesn't improve).
 
 ## 🎯 Key Deliverables & Roadmap
 Based on the project blueprint, the following components are implemented or actively being developed:
@@ -166,10 +167,10 @@ Based on the project blueprint, the following components are implemented or acti
       (`src/hallucinations/perturbations.py`, `generate_hallucinations.py`).
 - [x] **Perturbation Verification (Issue #9):** Visual-plausibility and violation-activation audit against
       WP4's acceptance criteria (`src/hallucinations/verify_hallucinations.py`).
-- [x] **Physical Hallucination Score (Issue #10):** Smom/Sdiv/Sbc/SE components, validation-split
+- [x] **Physical Hallucination Score (Issue #10):** Smom/Sdiv/Sbc/S_bc_local/SE components, validation-split
       normalization, and threshold calibration (`src/detection/phs.py`).
-- [x] **Detection Metrics & Baseline Comparison:** ROC-AUC/Precision/Recall/F1 for PHS vs. 2 residual-only
-      baselines, plus a per-perturbation-type recall breakdown (`src/detection/evaluate_phs.py`).
+- [x] **Detection Metrics & Baseline Comparison:** ROC-AUC/Precision/Recall/F1 for PHS vs. 3 baselines,
+      plus a per-perturbation-type recall breakdown (`src/detection/evaluate_phs.py`).
 
 ## 📝 Documentation
 Please refer to the `PINN suggestion-1.pdf` within the repository for the full academic roadmap, methodological details, and risk management strategies.
@@ -199,13 +200,35 @@ a value comparison, per Section 8 — cannot distinguish it from a clean field a
 tweaking a boundary-*value*-comparison check can fix this; it requires a spatially-localized check
 instead. `Smom`/`Sdiv` already detect this perturbation type fine (100% recall in practice, since the
 envelope's narrow curvature spikes the momentum residual near the edges even though the value matches),
-so `PHS` as a whole is unaffected. An optional 5th component, **`S_bc_local`**
-(`compute_boundary_localization_violation` in `phs.py`), was added to close this gap directly: it
-compares near-boundary-band residuals against the same interior collocation sample used for `Smom`/`Sdiv`
-rather than comparing exact edge values, and does rise for this perturbation type (confirmed: raw value
-climbed from `2e-5` to `3.4e-3` across the epsilon sweep, a ~170x increase, while `Sbc` stayed flat at
-`~2.9e-7`). It is off by default (Section 8 defines exactly 4 components) — enable with
-`evaluate_phs.py --include_bc_local` to also compute `Score4_PHS_plus_bc_local` for comparison.
+so `PHS` as a whole was never broken by this — but `Sbc`'s own name didn't match what it could actually
+catch for one of the 5 perturbation types it's nominally responsible for. **`S_bc_local`**
+(`compute_boundary_localization_violation` in `phs.py`) closes this directly: it compares near-boundary-band
+residuals against the same interior collocation sample used for `Smom`/`Sdiv` rather than comparing exact
+edge values, and does rise for this perturbation type (confirmed: raw value climbed from `2e-5` to `3.4e-3`
+across the epsilon sweep, a ~170x increase, while `Sbc` stayed flat at `~2.9e-7`).
+
+**Current configuration: `S_bc_local` is a permanent 5th component of the official PHS.**
+`PHS_COMPONENT_NAMES = ["mom", "div", "bc", "bc_local", "E"]`, and `Score4_PHS_full` (all 5, summed after
+independent normalization) is now what "PHS" means throughout this project — a deliberate departure from
+Section 8's literal 4-term formula, made after `S_bc_local` was confirmed to close a real, structural gap
+`Sbc` cannot close by construction (not a casual drift from the spec). `Score3_without_bc_local` (the
+original 4-term formula) is kept as a standing ablation baseline specifically so the two can still be
+compared directly.
+
+**An honest result from that comparison, once `EPSILON_VALUES` was widened to the harder range described
+below:** on the new, much harder epsilon sweep, `Score4_PHS_full` (AUC=0.850) does **not** clearly
+outperform `Score3_without_bc_local` (AUC=0.855) — the two are statistically indistinguishable at this
+sample size (5 test cases), and `Score4` even reads marginally *lower* in this particular run. This isn't
+a contradiction of the "boundary" finding above: `bc_local` still visibly helps that ONE perturbation
+type specifically (confirmed in `raw_components_vs_epsilon.png` — `S_bc_local` is the only component that
+separates "boundary" from the pack at low epsilon). What this shows instead is that adding a 5th
+independently-calibrated term — itself estimated from only 5 validation cases — introduces its own
+calibration noise into the pooled sum, and at this harder epsilon range (where every score's AUC dropped
+well below the old 1.000, so signal-to-noise matters more) that added noise roughly cancels out the
+added signal in the *overall* pooled number, even though it's a clear net positive for the specific
+perturbation type it targets. Reported here rather than smoothed over, since it's a genuinely useful
+caveat for the paper: `bc_local`'s value is best understood per-perturbation-type, not from the pooled
+AUC alone.
 
 ### `temporal_mismatch` was the hardest perturbation type to detect — fixed in place
 Across a 14-case evaluation run, the original `temporal_mismatch` definition had **72% recall** vs.
@@ -235,9 +258,12 @@ are stale for `temporal_mismatch` specifically and should be regenerated**
 
 **Result, on the same 14-case run:** recall for `temporal_mismatch` went from 72% to **100% at every
 epsilon**, including the smallest (0.005). Detection overall improved from AUC=0.966 to a clean
-**AUC=1.000** for both `Score2_momentum_divergence` and `Score3_PHS_full` on the test split — the single
+**AUC=1.000** for both `Score2_momentum_divergence` and `Score4_PHS_full` on the test split — the single
 weakest perturbation type had been capping overall performance, and fixing it directly lifted the whole
-evaluation to perfect separation.
+evaluation to perfect separation. (This AUC=1.000 was measured under the *old* `EPSILON_VALUES` range
+described in the next section, before it was replaced with the harder, boundary-centered range —
+included here for the historical record of what fixing `temporal_mismatch` itself achieved, holding
+everything else constant. It is not the current headline number; see below for that.)
 
 ### Diagnostic tooling added: per-type recall breakdown and misclassification table
 Two additions to `evaluate_phs.py` make cross-cutting detection issues (like the `temporal_mismatch`
@@ -247,10 +273,14 @@ into one number (labels are stacked in a single vertical column with distinct, l
 lines that fully overlap — a common outcome once several types hit 100% recall — stay individually
 identifiable via a leader line to a real point on each curve, without misrepresenting any value), and
 `diagnose_misclassifications` prints and saves `plots/phs_evaluation/misclassified_fields.csv` — every
-field on the wrong side of `tau`, sorted by how close the call was, with its margin. Point sampling
-(`sample_interior_points`, `sample_periodic_boundaries` calls inside `phs.py`) is also seeded per-case by
-default (`--no_seed_points` to disable) after measuring ~4% run-to-run swings in `Smom` from unseeded
-resampling alone — enough to flip a genuinely borderline case between runs.
+field on the wrong side of `tau`, sorted by how close the call was, with its margin.
+
+**Current configuration: point sampling is seeded per-case by default.** `sample_interior_points` /
+`sample_periodic_boundaries` calls inside `phs.py` use a deterministic seed derived from each case_id, so
+every field belonging to one case (clean and all its perturbed variants) is scored at identical random
+points — this is always on unless `evaluate_phs.py` is run with `--no_seed_points`. Added after measuring
+~4% run-to-run swings in `Smom` from unseeded resampling alone — enough to flip a genuinely borderline case
+between runs.
 
 ### A pre-existing, unrelated test bug: `tests/test_pinn_loss.py`
 `test_pinn_architecture_and_loss_graph` calls `BaselinePINN()` with no arguments and fails with
@@ -261,24 +291,64 @@ in `d957ff3` (2026-07-14, adding Fourier feature input encoding) — that commit
 silently broken since. One-line fix (pass `k=1`, matching the `LossEvaluator(... k=1.0)` already in the
 same test) whenever someone gets to it — left alone here since it's unrelated to this session's work.
 
-### AUC=1.000 is not the whole story — the real detection boundary sits far below the canonical epsilon range
-An AUC of 1.000 on the canonical epsilon sweep (0.005–0.1) is real, but doesn't mean the method has been
-pushed to its limit — it means the smallest canonical epsilon (0.005) is already comfortably past the
-point where detection becomes reliable, not that it sits at the edge of it. Two different notions of
-"subtle" are at play: WP4's "visually imperceptible" and "hard for PHS to detect" are not the same
-threshold — PDE residuals amplify small, especially high-frequency, perturbations far more than the human
-eye does, so a change invisible in a contour plot can still be trivially separable in residual space.
+### The canonical epsilon range was rebuilt around the actual detection boundary
+An earlier version of this project used `EPSILON_VALUES = [0.005, 0.01, 0.02, 0.05, 0.1]`, matching the
+write-up's own Section 11 example values. That range gave a flat AUC=1.000 that didn't say where detection
+actually became unreliable — it meant the smallest value (0.005) was already comfortably past the point
+where detection is reliable, not that it sat at the edge of it. Two different notions of "subtle" were
+being conflated: WP4's "visually imperceptible" and "hard for PHS to detect" are not the same threshold —
+PDE residuals amplify small, especially high-frequency, perturbations far more than the human eye does, so
+a change invisible in a contour plot can still be trivially separable in residual space.
 
-Checked directly: computing PHS at much smaller epsilons (0.0002–0.005) using the same real,
-validation-calibrated tau, recall climbs smoothly rather than staying flat: **0.44 → 0.56 → 0.80 → 0.96 →
-1.00** at ε = 0.0002, 0.0005, 0.001, 0.002, 0.003 respectively, consistent across all 5 perturbation types.
-So the actual detection boundary for this setup sits around ε ≈ 0.002–0.003 — roughly 2-3x smaller than
-the current smallest canonical value. If a genuine sensitivity curve (not a flat "AUC=1.0 always") is
-wanted for the paper, extending `EPSILON_VALUES` downward toward this range would show it directly, rather
-than only reporting performance safely inside the easy regime. Also worth flagging for context: AUC=1.000
-computed from only 5 clean test fields is a real result, but a small one — it says "no clean field
-outranked any hallucinated field observed," which is a much narrower guarantee than the same AUC computed
-from thousands of examples.
+Probed directly with `src/detection/detection_sensitivity.py` (loads an *existing* calibration, never
+refits it, so it can't leak into the numbers it checks): pooled across all 5 perturbation types, recall
+crossed **50% at ε≈0.0003 / relative L2 error ≈0.004%**, and **90% at ε≈0.0016 / relative L2 error
+≈0.079%** — both well below the old smallest canonical value. Relative L2 error
+(`compute_relative_error` in `phs.py`) matters here because `epsilon` itself isn't comparable across
+perturbation types — a fraction of `U0` means something different from a fraction of a boundary-bump
+amplitude or a fraction of a decay timescale — so it's reported as a second, physically comparable axis:
+"how much did this change the field," in the same units regardless of mechanism. (That function pools
+`(u, v, p)` together, not just `(u, v)` — the `pressure` perturbation only touches `p`, so a velocity-only
+version would be identically zero for every one of its epsilons.)
+
+**Decision made from this finding: `EPSILON_VALUES` was rebuilt around the boundary itself** —
+`[0.0001, 0.0002, 0.0005, 0.001, 0.0015, 0.002, 0.003, 0.005, 0.0075, 0.01]` — rather than keeping the
+higher values, which added no information once detection was already saturated there. This was a
+deliberate call that the write-up's Section 11 example values are a starting point, not a constraint:
+smaller epsilon is *harder* to detect, not easier, so a sweep weighted toward the boundary is a more
+demanding test of PHS, not a relaxed one, and finding that boundary is closer to the actual point of this
+project than reproducing the write-up's specific numeric examples. `VISUAL_CHECK_EPSILONS = [0.01, 0.02]`
+in `verify_hallucinations.py` (the required visual-plausibility plot) is independently fixed and untouched
+by this change — it doesn't read from `EPSILON_VALUES`.
+
+**Consequence: the headline AUC is no longer 1.000, and that's the point.** On the new range,
+Score1=0.810, Score2=0.888, Score3=0.855, Score4/PHS=0.850 (test split, one representative run) — a real,
+informative spread rather than every score maxing out together. `evaluate_phs.py`'s standard output
+(`recall_by_type.png`, `scores_vs_epsilon.png`, etc.) now shows the actual sensitivity curve directly, as
+part of the normal pipeline, rather than needing a separate probe to see it. `detection_sensitivity.py`
+still exists for going even lower than the new floor (0.0001) — its own `SENSITIVITY_EPSILON_VALUES` now
+starts at 0.00001 — or for checking specific values outside the standard grid without regenerating the
+whole dataset.
+
+One caveat worth keeping in mind when reading the sensitivity curves: at the very smallest epsilons the
+pooled curve floors around ~40% rather than 0%, which traces back to the k-imbalance false positives
+below — 2 of the 5 test cases already sit above tau at their *clean* baseline, so a barely-perturbed
+version of those two also reads as "detected," which is really the case's own baseline showing through,
+not genuine sensitivity to that particular epsilon. A second, purely presentational issue was found and
+fixed along the way: the sensitivity plots originally binned relative-error into equal-*width* log bins,
+which occasionally sliced through a tight cluster of near-identical values and isolated one point alone in
+its own bin — with n=1, that bin could only read a hard 0% or 100%, producing a visible "jerk" in the curve
+that had nothing to do with a real detection effect (traced to one exact case: `case_26`'s "boundary" row
+at ε=0.0002, whose relative error was 4.5e-5 versus 3.8e-5–4.1e-5 for the same perturbation/epsilon on the
+other 4 test cases — essentially the same measurement, split apart by where a fixed bin edge happened to
+fall). Switched to equal-*count* bins, with bin width additionally scaled down for the lower-sample
+per-perturbation-type lines specifically (each has 1/5th the rows of the pooled curve) — see
+`_binned_recall`'s docstring in `detection_sensitivity.py` for the full mechanism.
+
+Also worth flagging for context regardless of binning: AUC computed from only 5 clean test fields is a
+real result, but a small one — it says "no clean field outranked any hallucinated field observed" (when
+AUC=1.0) or reflects the ranking of a 5-vs-125-field comparison, both narrower guarantees than the same
+statistic computed from thousands of examples.
 
 A related, more conceptual point for the paper's Discussion/Limitations: PHS was designed to check
 momentum, divergence, boundary, and energy consistency, and Section 7's 5 perturbations were designed to
@@ -290,14 +360,26 @@ something to fix now, but worth naming as a scope boundary rather than leaving i
 
 ### One clean field can still score well above tau — traced to a real, fixable calibration gap
 Even with `temporal_mismatch` fixed and 100% recall, one or two clean test fields still land above tau by
-a wide margin (~1.0–1.4, not a borderline sliver). Investigated directly rather than guessed at: all 4
+a wide margin (~1.0–1.4, not a borderline sliver). Investigated directly rather than guessed at: all
 normalized components are elevated fairly uniformly for the affected fields (not one outlier check), and
 tracing it against case parameters turned up a clean, non-coincidental cause — **wavenumber `k` correlates
-with natural residual scale even for well-trained, clean fields** (mean raw `Smom` across 14 sampled cases:
-k=1 → 9.0e-6, k=2 → 7.0e-6, k=3 → 5.0e-6, monotonically decreasing), and the random 20/5/5 split happened
-to allocate `k` unevenly: **validation is 20% k=1 (1 of 5 cases), test is 60% k=1 (3 of 5 cases)**. The
-threshold was calibrated mostly from the "quieter" k=2/k=3 family and then applied to a test split skewed
-toward the "naturally noisier" k=1 family — a real, mechanistic explanation, not calibration noise.
+with natural residual scale even for well-trained, clean fields** (mean *scaled* `Smom` across 14 sampled
+cases: k=1 → 8.8e-6, k=2 → 6.8e-6, k=3 → 4.5e-6, monotonically decreasing), and the random 20/5/5 split
+happened to allocate `k` unevenly: **validation is 20% k=1 (1 of 5 cases), test is 60% k=1 (3 of 5 cases)**.
+The threshold was calibrated mostly from the "quieter" k=2/k=3 family and then applied to a test split
+skewed toward the "naturally noisier" k=1 family — a real, mechanistic explanation, not calibration noise.
+
+**Root mechanism, checked directly rather than assumed:** the *raw*, un-scaled residual runs the OPPOSITE
+direction — it *increases* with k (higher spatial frequency is genuinely harder to fit to the same absolute
+precision, consistent with the well-documented "spectral bias" of neural networks, see Rahaman et al. 2019
+and the Fourier-feature literature this project's own `k`-parameterized input encoding is designed to
+counteract). `ResidualScaler`'s non-dimensionalization divides by `scale_ns = U0² · k`, which grows with k
+*faster* than the raw fitting error does here, so after scaling the direction flips: k=1 ends up looking
+like the "noisiest" family, even though in absolute physical terms it's actually the easiest to fit. So
+this isn't "k=1 systems are intrinsically dirtier" — it's that a scaling formula motivated by making
+residuals *physically* dimensionless (the right goal for interpreting a residual's physical meaning) ends
+up over-correcting for a *fitting-difficulty* effect it wasn't designed to address, and the resulting net
+effect happens to point the "wrong" way for calibration purposes.
 
 Options for generalizing past this (not implemented here — flagging as ideas, roughly in order of effort):
 - **Stratify the train/validation/test split by `k`** (and ideally by `Re`/`U0` too) so each split gets
@@ -306,15 +388,36 @@ Options for generalizing past this (not implemented here — flagging as ideas, 
   regardless of case parameters, normalize each field against an expected baseline that accounts for its
   own `(Re, U0, k)` — e.g. a simple regression of "expected clean Sj" against case parameters — so the
   normalizer reflects that case's own natural scale rather than an average that can be skewed by which
-  parameter values happened to land in the calibration set.
+  parameter values happened to land in the calibration set. Given the mechanism above, a **separate
+  threshold per k** (as directly suggested during this investigation) is a reasonable, simple special case
+  of this — one normalizer/tau per k value, rather than pooling k=1/2/3 into a single number — though with
+  only 1-2 validation cases per k in the current split, each k-specific estimate would itself be a fragile,
+  single-sample number until the split is also rebalanced.
 - **Cross-validation across many random splits** rather than trusting one particular 20/5/5 partition —
   would directly reveal how much detection performance and false-positive rate depend on split luck, and
   give a more honest, averaged estimate of both.
-- **Investigate why `k` affects residual scale at all** — worth checking whether `ResidualScaler`'s
-  non-dimensionalization (which uses `L = 1/k`) fully equalizes fitting difficulty across wavenumbers, or
-  whether higher-`k` (higher spatial frequency) targets are systematically easier for this architecture to
-  fit exactly. If the latter, this may be a property of the PINN itself worth understanding on its own
-  terms, independent of PHS.
+- **Revisit `ResidualScaler`'s scaling exponent for this purpose specifically.** The current
+  `scale_ns = U0² · k` is correct for the physics (non-dimensionalizing the Navier-Stokes momentum
+  equation), but nothing requires PHS's calibration to use the *same* scaling a training loss uses — a
+  scaling empirically fit to equalize *clean-field fitting error* across k (rather than one derived from
+  the equations' own dimensional analysis) would address the root cause directly rather than working around
+  it downstream via per-k thresholds.
+
+**A broader hypothesis worth naming in the paper's Discussion, even if out of scope here:** is `k`
+controlling "chaos"? Not quite, technically — this specific 2D TGV solution is exactly, analytically
+solvable and non-chaotic in the dynamical-systems sense (no sensitive dependence on initial conditions) at
+any `k` tested here, so "chaos" isn't the precise term. But the *spirit* of the hypothesis holds up well
+under the mechanism found above: `k` is a physical parameter that genuinely controls something the network
+finds harder or easier to represent exactly (spatial frequency / spectral complexity), and this shows up
+measurably in fitting quality even for a well-trained model. The generalizable version of this idea is
+probably the more interesting one for a Discussion section: **for any family of physical systems spanning
+a parameter space, the "natural noise floor" of a well-converged solution is unlikely to be uniform across
+that space** — some parameter regions may be intrinsically harder for a given architecture to fit to the
+same precision, independent of training quality. A physics-informed anomaly/hallucination detector
+calibrated by pooling across such a space (as PHS currently does) implicitly assumes that floor is roughly
+constant; where it isn't, the calibration inherits whatever covariate imbalance happens to exist between
+however the calibration and evaluation data were split. This is a general caution for any PINN-family
+detector spanning a physical parameter space, not specific to Taylor-Green vortices or to `k`.
 
 ## 🚀 Future Research Directions
 

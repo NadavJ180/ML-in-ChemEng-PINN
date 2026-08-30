@@ -179,8 +179,8 @@ def test_boundary_perturbation_blind_to_sbc_but_not_smom(perfect_case):
 
 def test_boundary_localization_violation_catches_what_sbc_misses(perfect_case):
     """
-    Companion to the test above: verifies S_bc_local (the optional,
-    spatially-localized component added specifically because Sbc cannot
+    Companion to the test above: verifies S_bc_local (the permanent,
+    spatially-localized 5th component added specifically because Sbc cannot
     see the "boundary" perturbation, see phs.py's module docstring)
     DOES rise substantially for that same perturbation, confirming the fix
     actually closes the gap it was built for.
@@ -211,7 +211,7 @@ def test_normalize_and_baseline_scores_match_hand_computed_values():
     """
     Verifies compute_normalizers / normalize_components / compute_baseline_scores
     against hand-computed expected values on a tiny synthetic DataFrame,
-    confirming the bookkeeping matches Section 8's formula exactly:
+    confirming the bookkeeping matches the formula exactly:
     S_bar_j = Sj / mean(Sj over clean validation fields), and each
     baseline score is the sum of its listed components' S_bar values.
 
@@ -227,12 +227,13 @@ def test_normalize_and_baseline_scores_match_hand_computed_values():
         "mom": [1.0, 3.0, 2.0, 20.0],
         "div": [2.0, 2.0, 2.0, 40.0],
         "bc": [4.0, 4.0, 4.0, 4.0],
+        "bc_local": [5.0, 5.0, 5.0, 5.0],
         "E": [1.0, 1.0, 1.0, 1.0],
     })
     valid_val = df[(df["split"] == "validation") & (df["label"] == "clean")]
 
     normalizers = compute_normalizers(valid_val)
-    assert normalizers == pytest.approx({"mom": 2.0, "div": 2.0, "bc": 4.0, "E": 1.0})
+    assert normalizers == pytest.approx({"mom": 2.0, "div": 2.0, "bc": 4.0, "bc_local": 5.0, "E": 1.0})
 
     scored = compute_baseline_scores(normalize_components(df, normalizers))
     halluc_row = scored[(scored["split"] == "test") & (scored["label"] == "hallucinated")].iloc[0]
@@ -240,10 +241,12 @@ def test_normalize_and_baseline_scores_match_hand_computed_values():
     assert halluc_row["mom_bar"] == pytest.approx(10.0)  # 20 / 2
     assert halluc_row["div_bar"] == pytest.approx(20.0)  # 40 / 2
     assert halluc_row["bc_bar"] == pytest.approx(1.0)  # 4 / 4
+    assert halluc_row["bc_local_bar"] == pytest.approx(1.0)  # 5 / 5
     assert halluc_row["E_bar"] == pytest.approx(1.0)  # 1 / 1
     assert halluc_row["Score1_momentum_only"] == pytest.approx(10.0)
     assert halluc_row["Score2_momentum_divergence"] == pytest.approx(30.0)
-    assert halluc_row["Score3_PHS_full"] == pytest.approx(32.0)
+    assert halluc_row["Score3_without_bc_local"] == pytest.approx(32.0)  # mom+div+bc+E
+    assert halluc_row["Score4_PHS_full"] == pytest.approx(33.0)  # Score3 + bc_local
 
 
 def test_select_threshold_is_the_95th_percentile():
@@ -263,11 +266,12 @@ def test_select_threshold_is_the_95th_percentile():
 
 def test_baseline_definitions_are_nested_subsets():
     """
-    Verifies Score1 subset-of Score2 subset-of Score3's component sets,
-    and that Score3 covers all 4 components -- matching WP5's intent that
-    Score2/Score3 are strict supersets of the simpler baselines they are
-    compared against. If this breaks, the AUC(PHS) > AUC(Score2)
-    acceptance criterion stops meaning what it's supposed to.
+    Verifies Score1 subset-of Score2 subset-of Score3 subset-of Score4's
+    component sets, and that Score4 (the official PHS) covers all 5
+    components -- matching WP5's intent that each successive baseline is a
+    strict superset of the simpler ones it is compared against. If this
+    breaks, the AUC(PHS) > AUC(Score2) acceptance criterion stops meaning
+    what it's supposed to.
 
     Inputs:
         None.
@@ -277,9 +281,10 @@ def test_baseline_definitions_are_nested_subsets():
     """
     s1 = set(BASELINE_DEFINITIONS["Score1_momentum_only"])
     s2 = set(BASELINE_DEFINITIONS["Score2_momentum_divergence"])
-    s3 = set(BASELINE_DEFINITIONS["Score3_PHS_full"])
-    assert s1 <= s2 <= s3
-    assert s3 == set(PHS_COMPONENT_NAMES)
+    s3 = set(BASELINE_DEFINITIONS["Score3_without_bc_local"])
+    s4 = set(BASELINE_DEFINITIONS["Score4_PHS_full"])
+    assert s1 <= s2 <= s3 <= s4
+    assert s4 == set(PHS_COMPONENT_NAMES)
 
 
 # ---------------------------------------------------------------------
@@ -315,10 +320,12 @@ def test_evaluate_detection_recovers_perfect_separation():
     rows = []
     for split, n_clean, n_halluc in [("validation", 5, 0), ("test", 5, 15)]:
         for _ in range(n_clean):
-            rows.append({"split": split, "label": "clean", "mom": 1.0, "div": 1.0, "bc": 1.0, "E": 1.0})
+            rows.append({"split": split, "label": "clean",
+                         "mom": 1.0, "div": 1.0, "bc": 1.0, "bc_local": 1.0, "E": 1.0})
         for _ in range(n_halluc):
             rows.append({"split": split, "label": "hallucinated",
-                         "mom": rng.uniform(9, 11), "div": rng.uniform(9, 11), "bc": 1.0, "E": 1.0})
+                         "mom": rng.uniform(9, 11), "div": rng.uniform(9, 11),
+                         "bc": 1.0, "bc_local": 1.0, "E": 1.0})
     df = pd.DataFrame(rows)
 
     _, _, metrics_rows, _ = evaluate_detection(df, percentile=95.0)
@@ -344,7 +351,7 @@ def test_evaluate_detection_raises_without_validation_clean_fields():
     df = pd.DataFrame({
         "split": ["test", "test"],
         "label": ["clean", "hallucinated"],
-        "mom": [1.0, 10.0], "div": [1.0, 10.0], "bc": [1.0, 1.0], "E": [1.0, 1.0],
+        "mom": [1.0, 10.0], "div": [1.0, 10.0], "bc": [1.0, 1.0], "bc_local": [1.0, 1.0], "E": [1.0, 1.0],
     })
     with pytest.raises(RuntimeError):
         evaluate_detection(df, percentile=95.0)
