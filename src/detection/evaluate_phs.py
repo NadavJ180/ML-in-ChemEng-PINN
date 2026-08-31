@@ -46,9 +46,11 @@ Outputs:
   plots/phs_evaluation/roc_curves.png
       ROC curves for all 4 scores overlaid (test split).
   plots/phs_evaluation/score_distributions_comparison.png
-      Clean vs. hallucinated distribution for every score (Score1/2/3/4),
-      side by side with a shared x-axis, so separation quality can be
-      compared directly across baselines.
+      Clean vs. hallucinated scores for every score (Score1/2/3/4), as a
+      strip plot with epsilon as categorical x-axis positions (clean, then
+      each epsilon value, light-to-dark color gradient) rather than a
+      pooled histogram -- shows the dose-response structure per epsilon
+      directly, including exactly which epsilon's fields sit below tau.
   plots/phs_evaluation/phs_vs_epsilon.png
       Mean PHS vs. epsilon per perturbation type (all splits pooled) --
       sanity check that PHS increases with perturbation strength.
@@ -430,24 +432,37 @@ def diagnose_misclassifications(df: pd.DataFrame, thresholds: dict, score_name: 
 
 def plot_score_distributions_comparison(df: pd.DataFrame, thresholds: dict, output_dir: Path):
     """
-    Plots clean vs. hallucinated score distributions for ALL baseline
-    scores (Score1, Score2, Score3, Score4/PHS) side by
-    side in one figure, sharing a common log-x axis range across every
-    panel so the DEGREE of separation can be compared directly panel to
-    panel, not just inferred from the AUC numbers.
+    Plots clean vs. hallucinated scores for ALL baseline scores (Score1-4)
+    side by side, one panel per score, as a STRIP PLOT (jittered individual
+    points) with epsilon as categorical x-axis positions, rather than a
+    pooled histogram.
 
-    This intentionally replaces having one near-identical full-size
-    distribution plot per score (three or four separate files would be
-    largely redundant with each other, and with the ROC curve, which
-    already summarizes comparative rank-order separation numerically) --
-    one compact side-by-side figure shows the same "does PHS separate
-    better than the simpler baselines" story as an actual score gap you
-    can see, which is complementary to the ROC curve's abstract
-    TPR/FPR view rather than a duplicate of it.
+    WHY THIS REPLACED A POOLED HISTOGRAM: the previous version pooled all
+    epsilon values into one "hallucinated" bucket per panel, which hid
+    exactly the structure that matters most once EPSILON_VALUES was
+    rebuilt around the detection boundary (see the README's Findings
+    section) -- a wide, spread-out mass spanning orders of magnitude, with
+    no visual indication that "easy" (large epsilon) and "hard" (small
+    epsilon) fields were mixed together, which is exactly what made the
+    false-negative mass hard to interpret at a glance. Splitting by
+    epsilon as separate x-axis categories, with a light-to-dark color
+    gradient for increasing epsilon and a distinct color for the clean
+    baseline, shows the dose-response structure directly: each epsilon's
+    cluster of points relative to tau is a visual recall readout for that
+    epsilon specifically, not just a number in recall_by_type.png.
+
+    A strip plot (not a histogram, box plot, or violin) was chosen because
+    the sample sizes here are small (n=5 clean, n=25 hallucinated per
+    epsilon) -- a violin plot's smoothed density estimate can visually
+    oversell how much data backs it at this size, and a histogram bins
+    away exactly the individual-field detail that matters when n is this
+    small. Showing every real point, jittered only to avoid exact overlap,
+    plus a short median marker per group, is the most honest
+    representation of data this size.
 
     Inputs:
-        df (pd.DataFrame): Must have "split", "label", and every score
-            column in BASELINE_DEFINITIONS that is present.
+        df (pd.DataFrame): Must have "split", "label", "epsilon", and
+            every score column in BASELINE_DEFINITIONS.
         thresholds (dict): Output of evaluate_detection(); tau per score.
         output_dir (Path): Where to save score_distributions_comparison.png.
 
@@ -460,38 +475,60 @@ def plot_score_distributions_comparison(df: pd.DataFrame, thresholds: dict, outp
         print("⏭️  Skipping score_distributions_comparison.png: no score columns found.")
         return
 
-    all_scores = np.concatenate([test_df[s].values for s in score_names])
-    all_scores_positive = all_scores[all_scores > 0]
-    if len(all_scores_positive) == 0:
-        print("⏭️  Skipping score_distributions_comparison.png: all scores are zero.")
-        return
-    log_min = np.log10(max(all_scores_positive.min(), 1e-6))
-    log_max = np.log10(max(all_scores_positive.max(), 10 ** (log_min + 1)))
-    bins = np.logspace(log_min, log_max, 30)
+    epsilon_values = sorted(test_df.loc[test_df["label"] == "hallucinated", "epsilon"].unique())
+    categories = ["clean"] + [f"{eps:g}" for eps in epsilon_values]
+    n_categories = len(categories)
 
-    fig, axes = plt.subplots(1, len(score_names), figsize=(5.5 * len(score_names), 5), sharey=True)
+    # Light-to-dark gradient for increasing epsilon; clean gets a completely separate, fixed color
+    # (steelblue/tab:blue) so it is never confusable with any hallucinated shade regardless of
+    # colormap choice or how many epsilon values there are.
+    cmap = plt.cm.Reds
+    n_eps = max(len(epsilon_values), 1)
+    epsilon_colors = [cmap(0.35 + 0.55 * i / max(n_eps - 1, 1)) for i in range(n_eps)]
+    category_colors = ["tab:blue"] + epsilon_colors
+
+    rng = np.random.default_rng(0)
+
+    fig, axes = plt.subplots(1, len(score_names), figsize=(5.5 * len(score_names), 5.5), sharey=True)
     axes = np.atleast_1d(axes)
 
     for ax, score_name in zip(axes, score_names):
         clean_scores = test_df.loc[test_df["label"] == "clean", score_name].values
-        halluc_scores = test_df.loc[test_df["label"] == "hallucinated", score_name].values
+        all_positive = test_df.loc[test_df[score_name] > 0, score_name].values
+        floor = all_positive.min() if len(all_positive) else 1e-6
 
-        ax.hist(np.clip(clean_scores, all_scores_positive.min(), None), bins=bins, alpha=0.6,
-                label=f"Clean (n={len(clean_scores)})", color="tab:blue")
-        ax.hist(np.clip(halluc_scores, all_scores_positive.min(), None), bins=bins, alpha=0.6,
-                label=f"Hallucinated (n={len(halluc_scores)})", color="tab:red")
-        ax.axvline(max(thresholds[score_name], all_scores_positive.min()), color="black", linestyle="--",
-                   label=f"tau={thresholds[score_name]:.2f}")
-        ax.set_xscale("log")
-        ax.set_xlabel(f"{score_name} (log scale)")
+        # x=0 is "clean"; x=1..N are the epsilon categories in increasing order
+        jitter = rng.uniform(-0.18, 0.18, size=len(clean_scores))
+        ax.scatter(jitter, np.clip(clean_scores, floor, None),
+                   color=category_colors[0], alpha=0.8, s=35, edgecolor="none", zorder=3)
+        if len(clean_scores) > 0:
+            ax.hlines(np.median(clean_scores), -0.3, 0.3, color=category_colors[0], linewidth=2.5, zorder=4)
+
+        for i, eps in enumerate(epsilon_values):
+            eps_scores = test_df.loc[(test_df["label"] == "hallucinated") & (test_df["epsilon"] == eps),
+                                       score_name].values
+            x_pos = i + 1
+            jitter = rng.uniform(-0.18, 0.18, size=len(eps_scores))
+            ax.scatter(x_pos + jitter, np.clip(eps_scores, floor, None),
+                       color=category_colors[i + 1], alpha=0.7, s=25, edgecolor="none", zorder=2)
+            if len(eps_scores) > 0:
+                ax.hlines(np.median(eps_scores), x_pos - 0.3, x_pos + 0.3,
+                          color=category_colors[i + 1], linewidth=2.5, zorder=4)
+
+        ax.axhline(thresholds[score_name], color="black", linestyle="--", linewidth=1.3,
+                   label=f"tau={thresholds[score_name]:.2f}", zorder=5)
+        ax.set_yscale("log")
+        ax.set_xticks(range(n_categories))
+        ax.set_xticklabels(categories, rotation=45, ha="right")
+        ax.set_xlim(-0.6, n_categories - 1 + 0.6)
         ax.set_title(score_name, fontsize=10)
-        ax.legend(fontsize=8)
+        ax.legend(fontsize=8, loc="upper left")
+        ax.grid(True, axis="y", which="both", alpha=0.25)
 
-    axes[0].set_ylabel("Count")
-    fig.suptitle("Score Distributions: Clean vs. Hallucinated, All Baselines Compared (test split)")
+    axes[0].set_ylabel("Score value (log scale)")
+    fig.suptitle("Score Distributions by Epsilon: Clean vs. Hallucinated, All Baselines Compared (test split)")
     plt.tight_layout()
     plt.savefig(output_dir / "score_distributions_comparison.png", dpi=150)
-    plt.close()
     plt.close()
 
 

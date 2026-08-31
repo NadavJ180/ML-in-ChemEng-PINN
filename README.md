@@ -342,9 +342,20 @@ of the sweep); zero false negatives occur at ε≥0.003. They're also spread fai
 perturbation types (7-15 each), not concentrated in one specific mechanism. This is the direct, intended
 result of deliberately testing PHS against hallucinations below and around its actual detection boundary
 (~ε=0.0003-0.0016) instead of only well above it — a real detection limit necessarily produces false
-negatives when you test at or below that limit, by definition. `score_distributions_comparison.png`'s
-visible overlap between the clean and hallucinated histograms is that limit made visible, not a
-regression to fix.
+negatives when you test at or below that limit, by definition.
+
+`score_distributions_comparison.png` was redesigned around exactly this: the original version pooled every
+epsilon into one "hallucinated" histogram per score, which hid the structure above entirely — a wide,
+spread-out mass with no visual indication that "easy" and "hard" fields were mixed together. It's now a
+strip plot (every individual field's score plotted as a real point, not binned) with epsilon as categorical
+x-axis positions — clean, then each epsilon value in increasing order — colored on a light-to-dark
+gradient for increasing epsilon, with clean fields in a completely distinct color. This makes the
+dose-response structure directly visible: you can see each epsilon's own cluster relative to tau, count how
+many of its points sit below it (a visual version of `recall_by_type.png`'s numbers), and watch every
+score's discriminative power narrow or widen across the 4 panels. A strip plot rather than a histogram,
+box plot, or violin was a deliberate choice for this sample size (n=5 clean, n=25 hallucinated per
+epsilon) — a violin plot's smoothed density can visually oversell how much data backs it this small, and a
+histogram bins away exactly the individual-field detail that matters when n is this size.
 
 One caveat worth keeping in mind when reading the recall curves: at the very smallest epsilon the
 pooled recall floors around ~40% rather than 0%, which traces back to the k-imbalance false positives
