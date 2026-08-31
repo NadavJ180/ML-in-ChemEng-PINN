@@ -38,16 +38,22 @@ Outputs:
   plots/phs_evaluation/sensitivity_recall_vs_epsilon.png
       Recall vs. epsilon, one line per perturbation type, for whatever
       grid this script was run with.
-  plots/phs_evaluation/sensitivity_recall_vs_relative_error.png
-      Recall vs. relative L2 error, one line per perturbation type PLUS an
-      overall pooled line -- the cross-type-comparable precision curve.
   plots/phs_evaluation/sensitivity_boundary_summary.csv / .json
       The epsilon and relative-error values where recall crosses 50% and
       90% (linear interpolation in log-space, over QUANTILE bins -- see
       _binned_recall's docstring for why equal-width log bins produced
       visibly "jerky" curves with occasional single-point bins reading a
       hard 0% or 100%, and why equal-COUNT bins fix that), overall and
-      per perturbation type.
+      per perturbation type. NOTE: the relative-error columns/crossings
+      here are computed the same way as before, but the corresponding
+      PLOT (sensitivity_recall_vs_relative_error.png) was removed --
+      even after both binning fixes, per-perturbation-type curves still
+      showed real 0%/100% jumps from small sample size (~35 rows/type),
+      which read as more informative than they actually were. The single
+      interpolated crossing NUMBER per type in this file is less
+      misleading than the jumpy curve was, since it's one summary value
+      rather than a chart inviting over-interpretation of every wiggle --
+      but treat it with the same small-sample caution.
 
 Usage:
     python src/detection/detection_sensitivity.py
@@ -480,11 +486,7 @@ def main():
     plot_recall_vs_x(df, "epsilon", "Epsilon (log scale)",
                       output_dir / "sensitivity_recall_vs_epsilon.png",
                       "Detection Rate vs. Epsilon (fine-grained, below canonical range)")
-    plot_recall_vs_x(df, "relative_error", "Relative L2 Error vs. Clean Field (log scale)",
-                      output_dir / "sensitivity_recall_vs_relative_error.png",
-                      "Detection Rate vs. Relative Error -- Precision of the Method")
-    print(f"🖼️  Wrote sensitivity_recall_vs_epsilon.png, sensitivity_recall_vs_relative_error.png to "
-          f"{output_dir.relative_to(project_root)}")
+    print(f"🖼️  Wrote sensitivity_recall_vs_epsilon.png to {output_dir.relative_to(project_root)}")
 
     print("\n" + "=" * 60)
     print("✅ Detection boundary summary (overall, pooled across perturbation types):")

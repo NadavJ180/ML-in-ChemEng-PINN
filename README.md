@@ -269,11 +269,12 @@ everything else constant. It is not the current headline number; see below for t
 Two additions to `evaluate_phs.py` make cross-cutting detection issues (like the `temporal_mismatch`
 finding above) visible without manually slicing the raw CSV: `evaluate_detection_by_perturbation_type` /
 `recall_by_type.png` break recall down by `(perturbation_type, epsilon)` instead of pooling everything
-into one number (labels are stacked in a single vertical column with distinct, legend-matched colors, so
-lines that fully overlap — a common outcome once several types hit 100% recall — stay individually
-identifiable via a leader line to a real point on each curve, without misrepresenting any value), and
-`diagnose_misclassifications` prints and saves `plots/phs_evaluation/misclassified_fields.csv` — every
-field on the wrong side of `tau`, sorted by how close the call was, with its margin.
+into one number (uses a standard legend with `_styled_line`'s distinct linestyle/marker cycle, matching
+every other multi-line plot in this module — an earlier version used per-type colored callout labels with
+leader lines instead, specifically to guarantee zero overlap when several types tie at recall=1.0, but
+was reverted in favor of a plain legend for consistency), and `diagnose_misclassifications` prints and
+saves `plots/phs_evaluation/misclassified_fields.csv` — every field on the wrong side of `tau`, sorted by
+how close the call was, with its margin.
 
 **Current configuration: point sampling is seeded per-case by default.** `sample_interior_points` /
 `sample_periodic_boundaries` calls inside `phs.py` use a deterministic seed derived from each case_id, so
@@ -311,18 +312,22 @@ amplitude or a fraction of a decay timescale — so it's reported as a second, p
 `(u, v, p)` together, not just `(u, v)` — the `pressure` perturbation only touches `p`, so a velocity-only
 version would be identically zero for every one of its epsilons.)
 
-**Decision made from this finding: `EPSILON_VALUES` was rebuilt around the boundary itself** —
-`[0.0001, 0.0002, 0.0005, 0.001, 0.0015, 0.002, 0.003, 0.005, 0.0075, 0.01]` — rather than keeping the
-higher values, which added no information once detection was already saturated there. This was a
-deliberate call that the write-up's Section 11 example values are a starting point, not a constraint:
-smaller epsilon is *harder* to detect, not easier, so a sweep weighted toward the boundary is a more
-demanding test of PHS, not a relaxed one, and finding that boundary is closer to the actual point of this
-project than reproducing the write-up's specific numeric examples. `VISUAL_CHECK_EPSILONS = [0.01, 0.02]`
-in `verify_hallucinations.py` (the required visual-plausibility plot) is independently fixed and untouched
-by this change — it doesn't read from `EPSILON_VALUES`.
+**Decision made from this finding: `EPSILON_VALUES` was rebuilt around the boundary itself.** An
+intermediate 10-value version, `[0.0001, 0.0002, 0.0005, 0.001, 0.0015, 0.002, 0.003, 0.005, 0.0075, 0.01]`,
+was tried first, then trimmed to 5 — `[0.0001, 0.0005, 0.001, 0.005, 0.01]` — after checking directly
+(by filtering the 10-value run's own already-computed data down to just these 5) that the resulting
+recall curve still told the same story clearly: **0.40 → 0.52 → 0.76 → 1.00 → 1.00**, a genuine
+floor-to-ceiling transition with fewer, cheaper points, at the cost of some resolution on exactly how the
+climb happens between 0.001 and 0.005. This was a deliberate call that the write-up's Section 11 example
+values are a starting point, not a constraint: smaller epsilon is *harder* to detect, not easier, so a
+sweep weighted toward the boundary is a more demanding test of PHS, not a relaxed one, and finding that
+boundary is closer to the actual point of this project than reproducing the write-up's specific numeric
+examples. `VISUAL_CHECK_EPSILONS = [0.01, 0.02]` in `verify_hallucinations.py` (the required
+visual-plausibility plot) is independently fixed and untouched by this change — it doesn't read from
+`EPSILON_VALUES`.
 
-**Consequence: the headline AUC is no longer 1.000, and that's the point.** On the new range,
-Score1=0.810, Score2=0.888, Score3=0.855, Score4/PHS=0.850 (test split, one representative run) — a real,
+**Consequence: the headline AUC is no longer 1.000, and that's the point.** On the 5-value range,
+Score1=0.786, Score2=0.858, Score3=0.822, Score4/PHS=0.818 (test split, one representative run) — a real,
 informative spread rather than every score maxing out together. `evaluate_phs.py`'s standard output
 (`recall_by_type.png`, `scores_vs_epsilon.png`, etc.) now shows the actual sensitivity curve directly, as
 part of the normal pipeline, rather than needing a separate probe to see it. `detection_sensitivity.py`
@@ -330,24 +335,26 @@ still exists for going even lower than the new floor (0.0001) — its own `SENSI
 starts at 0.00001 — or for checking specific values outside the standard grid without regenerating the
 whole dataset.
 
-One caveat worth keeping in mind when reading the sensitivity curves: at the very smallest epsilons the
-pooled curve floors around ~40% rather than 0%, which traces back to the k-imbalance false positives
+**Direct consequence, and the answer to "why do the score distribution plots show so many false
+negatives now": they're supposed to.** Checked exactly rather than assumed: on the test split, **54 of 250
+hallucinated fields (22%) fall below tau** — and every single one of them is at ε≤0.002 (the bottom half
+of the sweep); zero false negatives occur at ε≥0.003. They're also spread fairly evenly across all 5
+perturbation types (7-15 each), not concentrated in one specific mechanism. This is the direct, intended
+result of deliberately testing PHS against hallucinations below and around its actual detection boundary
+(~ε=0.0003-0.0016) instead of only well above it — a real detection limit necessarily produces false
+negatives when you test at or below that limit, by definition. `score_distributions_comparison.png`'s
+visible overlap between the clean and hallucinated histograms is that limit made visible, not a
+regression to fix.
+
+One caveat worth keeping in mind when reading the recall curves: at the very smallest epsilon the
+pooled recall floors around ~40% rather than 0%, which traces back to the k-imbalance false positives
 below — 2 of the 5 test cases already sit above tau at their *clean* baseline, so a barely-perturbed
 version of those two also reads as "detected," which is really the case's own baseline showing through,
-not genuine sensitivity to that particular epsilon. A second, purely presentational issue was found and
-fixed along the way: the sensitivity plots originally binned relative-error into equal-*width* log bins,
-which occasionally sliced through a tight cluster of near-identical values and isolated one point alone in
-its own bin — with n=1, that bin could only read a hard 0% or 100%, producing a visible "jerk" in the curve
-that had nothing to do with a real detection effect (traced to one exact case: `case_26`'s "boundary" row
-at ε=0.0002, whose relative error was 4.5e-5 versus 3.8e-5–4.1e-5 for the same perturbation/epsilon on the
-other 4 test cases — essentially the same measurement, split apart by where a fixed bin edge happened to
-fall). Switched to equal-*count* bins, with bin width additionally scaled down for the lower-sample
-per-perturbation-type lines specifically (each has 1/5th the rows of the pooled curve) — see
-`_binned_recall`'s docstring in `detection_sensitivity.py` for the full mechanism.
+not genuine sensitivity to that particular epsilon.
 
-Also worth flagging for context regardless of binning: AUC computed from only 5 clean test fields is a
-real result, but a small one — it says "no clean field outranked any hallucinated field observed" (when
-AUC=1.0) or reflects the ranking of a 5-vs-125-field comparison, both narrower guarantees than the same
+Also worth flagging for context regardless: AUC computed from only 5 clean test fields is a real result,
+but a small one — it says "no clean field outranked any hallucinated field observed" (when AUC=1.0) or
+reflects the ranking of a small pooled comparison otherwise, both narrower guarantees than the same
 statistic computed from thousands of examples.
 
 A related, more conceptual point for the paper's Discussion/Limitations: PHS was designed to check

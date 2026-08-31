@@ -539,24 +539,14 @@ def plot_recall_by_type(recall_df: pd.DataFrame, output_dir: Path):
     hidden inside a single pooled recall number.
 
     Lines are plotted at their TRUE, unmodified recall values -- no
-    vertical offset -- so multiple perturbation types legitimately tied at
-    recall=1.0 for every epsilon land exactly on top of one another and
-    only one is visible by color/style alone. To keep every type
-    identifiable without misrepresenting the data, each type gets a plain
-    colored label (matching that type's exact line color, same as a
-    legend swatch would) with a thin leader line pointing to one real
-    point on that type's actual curve.
-
-    Labels are stacked in a single vertical column (fixed left edge, one
-    row per type) rather than spread horizontally, so overlap between
-    labels is avoided by construction regardless of how long any given
-    type's name is: rows are separated by a fixed vertical gap chosen to
-    exceed one row's text height, so two labels can only collide if that
-    gap is too small for the current label count -- never because one
-    label happened to be wide. Each label's leader line points to a
-    DIFFERENT epsilon along its curve (cycling through the available
-    epsilon values by index) purely so the arrow tips fan out instead of
-    converging on one spot -- the tip always lands on a genuine data point.
+    vertical offset -- with a standard legend, matching every other
+    multi-line plot in this module (_styled_line's distinct linestyle/
+    marker cycle is what keeps types identifiable when several are tied
+    at recall=1.0 and overlap exactly). An earlier version used
+    per-type colored callout labels with leader lines instead of a
+    legend specifically to guarantee zero label-to-label overlap; reverted
+    in favor of a plain legend for consistency with the rest of the
+    module's plots.
 
     Inputs:
         recall_df (pd.DataFrame): Output of evaluate_detection_by_perturbation_type().
@@ -567,51 +557,18 @@ def plot_recall_by_type(recall_df: pd.DataFrame, output_dir: Path):
     """
     phs_recall = recall_df[recall_df["score_name"] == "Score4_PHS_full"]
     perturbation_types = sorted(phs_recall["perturbation_type"].unique())
-    colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-    n_types = len(perturbation_types)
 
-    fig, ax = plt.subplots(figsize=(9, 5.5 + 0.35 * n_types))
-
-    series_by_type = {}
+    plt.figure(figsize=(8, 5.5))
     for i, perturbation_name in enumerate(perturbation_types):
         group = phs_recall[phs_recall["perturbation_type"] == perturbation_name].sort_values("epsilon")
-        color = colors[i % len(colors)]
-        _styled_line(ax, group["epsilon"], group["recall"], i, perturbation_name, color=color)
-        series_by_type[perturbation_name] = (group["epsilon"].values, group["recall"].values, color)
+        _styled_line(plt, group["epsilon"], group["recall"], i, perturbation_name)
 
-    # Headroom above the data reserved for the label column: recall can't exceed 1.0, so this
-    # space is always empty of real data, regardless of how many types there are.
-    row_height = 1.0 / max(n_types, 1)
-    label_band_top = 1.05 + row_height * n_types
-    ax.set_xlabel("Epsilon")
-    ax.set_ylabel("Recall (PHS, at tau) -- TRUE values, lines may overlap exactly")
-    ax.set_title("Detection Recall by Perturbation Type and Epsilon (test split)")
-    ax.set_ylim(-0.05, label_band_top + 0.05)
-    ax.grid(True, alpha=0.3)
-
-    # Single vertical column of labels, one per row, all left-anchored at the same x -- this is
-    # what guarantees no label-to-label overlap regardless of text length (a wide label just
-    # extends further right into its OWN row; it can never intrude into a neighboring row's space).
-    all_epsilons = sorted(phs_recall["epsilon"].unique())
-    label_x = 0.02  # axes fraction, shared left edge for every row
-    for i, perturbation_name in enumerate(perturbation_types):
-        eps_vals, recall_vals, color = series_by_type[perturbation_name]
-        landing_eps = all_epsilons[i % len(all_epsilons)]
-        landing_idx = np.argmin(np.abs(eps_vals - landing_eps))
-        landing_x, landing_y = eps_vals[landing_idx], recall_vals[landing_idx]
-
-        label_y_data = label_band_top - row_height * (i + 0.5)  # data coords, one row per type
-
-        ax.annotate(
-            perturbation_name,
-            xy=(landing_x, landing_y), xycoords="data",
-            xytext=(label_x, label_y_data), textcoords=("axes fraction", "data"),
-            color="white", fontsize=9, fontweight="bold", ha="left", va="center",
-            bbox=dict(boxstyle="round,pad=0.35", facecolor=color, edgecolor=color, alpha=0.95),
-            arrowprops=dict(arrowstyle="-", color=color, lw=1.3, alpha=0.8,
-                             connectionstyle="arc3,rad=0.1"),
-        )
-
+    plt.xlabel("Epsilon")
+    plt.ylabel("Recall (PHS, at tau)")
+    plt.title("Detection Recall by Perturbation Type and Epsilon (test split)")
+    plt.ylim(-0.05, 1.05)
+    plt.legend(fontsize=8)
+    plt.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.savefig(output_dir / "recall_by_type.png", dpi=150)
     plt.close()

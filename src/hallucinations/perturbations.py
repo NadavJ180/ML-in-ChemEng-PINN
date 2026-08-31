@@ -374,16 +374,19 @@ def apply_perturbation(name, fields, coords, params, epsilon, model=None, **kwar
 # Originally [0.005, 0.01, 0.02, 0.05, 0.1], matching the write-up's Section 11 example values
 # (eps=0.01, 0.02 specifically named for the visual-plausibility criterion -- see
 # VISUAL_CHECK_EPSILONS in verify_hallucinations.py, which stays independently fixed at those two
-# values regardless of what this list contains). Replaced with this wider, lower-weighted set once
-# Issue #10's detection_sensitivity analysis showed the ORIGINAL range was entirely inside the "easy"
-# regime: recall was already 1.0 at the smallest original value (0.005), and 0.02-0.1 added no
-# further information (detection was already saturated there). The actual detection boundary sits
-# around eps=0.0003-0.0016 (50%/90% recall crossings, see the README's Findings section) -- this
-# range is centered on THAT boundary instead, so the standard sweep itself demonstrates where PHS's
-# precision limit is, rather than only exercising strengths well past it. Smaller epsilon is HARDER
+# values regardless of what this list contains). Replaced once Issue #10's detection_sensitivity
+# analysis showed the ORIGINAL range was entirely inside the "easy" regime: recall was already 1.0
+# at the smallest original value (0.005), and 0.02-0.1 added no further information (detection was
+# already saturated there). The actual detection boundary sits around eps=0.0003-0.0016 (50%/90%
+# recall crossings, see the README's Findings section). An intermediate 10-value version of this
+# list [0.0001, 0.0002, 0.0005, 0.001, 0.0015, 0.002, 0.003, 0.005, 0.0075, 0.01] was tried first;
+# trimmed to these 5 after confirming directly (by filtering that run's own already-computed data
+# down to just these 5 values) that the resulting recall curve -- 0.40 -> 0.52 -> 0.76 -> 1.00 ->
+# 1.00 -- still shows the same floor -> climbing -> ceiling story clearly, just with less resolution
+# on exactly how the climb happens between 0.001 and 0.005 specifically. Smaller epsilon is HARDER
 # to detect, not easier, so a sweep weighted toward the low end is the more demanding, more
 # informative test of the method, not a relaxation of it.
-EPSILON_VALUES = [0.0001, 0.0002, 0.0005, 0.001, 0.0015, 0.002, 0.003, 0.005, 0.0075, 0.01]
+EPSILON_VALUES = [0.0001, 0.0005, 0.001, 0.005, 0.01]
 PERTURBATION_NAMES = [
     "velocity_divergence",
     "momentum",
