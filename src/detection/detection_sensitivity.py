@@ -322,25 +322,24 @@ def _binned_recall(df: pd.DataFrame, x_col: str, n_bins: int = 15, min_points_pe
 
 def find_boundary_crossings(df: pd.DataFrame, x_col: str, levels: list, n_bins: int = 15) -> dict:
     """
-    Finds where BINNED mean detection rate crosses each level in `levels`
-    (see _binned_recall for why binning, not an exact-value groupby, is
-    what makes this meaningful for a continuous x_col like
-    "relative_error"), via linear interpolation between bin centers in
-    log-x space -- computed on the pooled (all perturbation types, all
-    cases) curve, plus the same per perturbation type.
+    Finds where detection rate crosses each level in `levels` (see
+    _recall_curve for how "epsilon" and "relative_error" are computed
+    differently), via linear interpolation in log-x space -- computed on
+    the pooled (all perturbation types, all cases) curve, plus the same
+    per perturbation type.
 
     Inputs:
         df (pd.DataFrame): Must have "perturbation_type", x_col, "detected" columns.
         x_col (str): Either "epsilon" or "relative_error".
         levels (list[float]): Recall levels to find crossings for (e.g. [0.5, 0.9]).
-        n_bins (int): Forwarded to _binned_recall.
+        n_bins (int): Forwarded to _recall_curve (only used when x_col is "relative_error").
 
     Outputs:
         dict: {"overall": {level: x_value_or_None, ...},
                perturbation_name: {level: x_value_or_None, ...}, ...}
     """
     def crossings_for(group):
-        xs, ys = _binned_recall(group, x_col, n_bins)
+        xs, ys = _recall_curve(group, x_col, n_bins)
         result = {}
         for level in levels:
             crossing = None
@@ -359,11 +358,49 @@ def find_boundary_crossings(df: pd.DataFrame, x_col: str, levels: list, n_bins: 
     return boundaries
 
 
+def _recall_curve(df: pd.DataFrame, x_col: str, n_bins: int = 15) -> tuple:
+    """
+    Dispatches to the appropriate recall-curve computation for `x_col`:
+    an exact groupby for "epsilon" (a small, shared, discrete grid where
+    every row at a given value is a genuinely comparable replicate -- the
+    same convention evaluate_phs.py's recall_by_type.png uses), or the
+    quantile-binned _binned_recall for "relative_error" (continuous,
+    essentially never exactly shared across rows, so it needs binning to
+    pool anything at all -- see _binned_recall's own docstring).
+
+    WHY THIS SPLIT EXISTS: an earlier version ran BOTH axes through
+    _binned_recall uniformly. For "epsilon" specifically, that meant
+    sorting all rows by epsilon and cutting them into equal-count chunks
+    WITHOUT regard for the fact that many rows already share the exact
+    same epsilon value -- chunk boundaries routinely fell in the middle of
+    a block of identical-epsilon rows, mixing two adjacent epsilon values'
+    worth of detection outcomes into one plotted point. Confirmed directly:
+    the resulting curve was extremely jagged (recall bouncing between
+    ~0.17 and ~0.82 with no clear trend), while the CORRECT exact-groupby
+    version of the exact same underlying data is a clean, flat floor at
+    0.40 from eps=0.00001 through 0.0002, rising to 0.44 then 0.76 -- the
+    jaggedness was entirely a plotting artifact, not a property of the data.
+
+    Inputs:
+        df (pd.DataFrame): Must have `x_col` and "detected" columns.
+        x_col (str): Either "epsilon" or "relative_error".
+        n_bins (int): Forwarded to _binned_recall when x_col is "relative_error".
+
+    Outputs:
+        (x_values, mean_recall): both np.ndarray, sorted by x_values.
+    """
+    if x_col == "epsilon":
+        by_x = df.groupby(x_col)["detected"].mean().sort_index()
+        return by_x.index.values, by_x.values
+    return _binned_recall(df, x_col, n_bins)
+
+
 def plot_recall_vs_x(df: pd.DataFrame, x_col: str, x_label: str, output_path: Path, title: str,
                       n_bins: int = 15):
     """
-    Plots BINNED mean detection rate vs. x_col (see _binned_recall), one
-    line per perturbation type plus an overall pooled line, on a log-x axis.
+    Plots detection rate vs. x_col, one line per perturbation type plus an
+    overall pooled line, on a log-x axis. See _recall_curve for how "epsilon"
+    and "relative_error" are computed differently and why.
 
     Inputs:
         df (pd.DataFrame): Must have "perturbation_type", x_col, "detected" columns.
@@ -371,9 +408,10 @@ def plot_recall_vs_x(df: pd.DataFrame, x_col: str, x_label: str, output_path: Pa
         x_label (str): Axis label.
         output_path (Path): Where to save the figure.
         title (str): Plot title.
-        n_bins (int): Forwarded to _binned_recall. Per-perturbation-type
-            curves use fewer effective points than "overall" (each type
-            has 1/5th the rows), so bins may be sparser for those lines.
+        n_bins (int): Forwarded to _recall_curve (only used when x_col is
+            "relative_error"). Per-perturbation-type curves use fewer
+            effective points than "overall" (each type has 1/5th the
+            rows), so bins may be sparser for those lines.
 
     Outputs:
         None. Saves a PNG to output_path.
@@ -381,13 +419,13 @@ def plot_recall_vs_x(df: pd.DataFrame, x_col: str, x_label: str, output_path: Pa
     perturbation_types = sorted(df["perturbation_type"].unique())
 
     plt.figure(figsize=(8, 5.5))
-    overall_x, overall_y = _binned_recall(df, x_col, n_bins)
+    overall_x, overall_y = _recall_curve(df, x_col, n_bins)
     plt.plot(overall_x, overall_y, color="black", linewidth=2.5, marker="o",
               markersize=5, label="overall (pooled)", zorder=10)
 
     for i, perturbation_name in enumerate(perturbation_types):
         group = df[df["perturbation_type"] == perturbation_name]
-        by_x, by_y = _binned_recall(group, x_col, n_bins)
+        by_x, by_y = _recall_curve(group, x_col, n_bins)
         linestyle, marker = _LINE_STYLES[i % len(_LINE_STYLES)]
         plt.plot(by_x, by_y, linestyle=linestyle, marker=marker, markersize=5,
                   alpha=0.75, label=perturbation_name)

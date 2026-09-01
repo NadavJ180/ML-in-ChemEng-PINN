@@ -378,15 +378,20 @@ def apply_perturbation(name, fields, coords, params, epsilon, model=None, **kwar
 # analysis showed the ORIGINAL range was entirely inside the "easy" regime: recall was already 1.0
 # at the smallest original value (0.005), and 0.02-0.1 added no further information (detection was
 # already saturated there). The actual detection boundary sits around eps=0.0003-0.0016 (50%/90%
-# recall crossings, see the README's Findings section). An intermediate 10-value version of this
-# list [0.0001, 0.0002, 0.0005, 0.001, 0.0015, 0.002, 0.003, 0.005, 0.0075, 0.01] was tried first;
-# trimmed to these 5 after confirming directly (by filtering that run's own already-computed data
-# down to just these 5 values) that the resulting recall curve -- 0.40 -> 0.52 -> 0.76 -> 1.00 ->
-# 1.00 -- still shows the same floor -> climbing -> ceiling story clearly, just with less resolution
-# on exactly how the climb happens between 0.001 and 0.005 specifically. Smaller epsilon is HARDER
-# to detect, not easier, so a sweep weighted toward the low end is the more demanding, more
-# informative test of the method, not a relaxation of it.
-EPSILON_VALUES = [0.0001, 0.0005, 0.001, 0.005, 0.01]
+# recall crossings, see the README's Findings section).
+#
+# Went through two narrower versions before this one: a 10-value list first, trimmed to 5
+# ([0.0001, 0.0005, 0.001, 0.005, 0.01]) after confirming the resulting recall curve (0.40 -> 0.52
+# -> 0.76 -> 1.00 -> 1.00) still told the same floor -> climbing -> ceiling story. Widened back to
+# 6 -- the agreed maximum -- by inserting 0.002 into the climbing region specifically: the earlier
+# 10-value run's own data showed 0.001 -> 0.76, 0.0015 -> 0.84, 0.002 -> 0.92, 0.003 -> 1.00, so
+# 0.002 sits right where the curve is still visibly rising but close to the ceiling, giving a third
+# point across the transition instead of jumping straight from 0.001 to 0.005. This is meant to give
+# a genuinely complete AUC-vs-epsilon story (a real rise, THEN confirmed stabilization via 2 points
+# at ceiling: 0.005 and 0.01) within a small, fixed budget of epsilon values, not just extend the
+# floor or the ceiling further. Smaller epsilon is HARDER to detect, not easier, so a sweep weighted
+# toward the low end is the more demanding, more informative test of the method, not a relaxation of it.
+EPSILON_VALUES = [0.0001, 0.0005, 0.001, 0.002, 0.005, 0.01]
 PERTURBATION_NAMES = [
     "velocity_divergence",
     "momentum",

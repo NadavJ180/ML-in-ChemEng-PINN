@@ -55,7 +55,9 @@ This project does not aim to create a new PINN architecture or a faster CFD solv
 │   │   └── verify_hallucinations.py    # WP4 audit: visual plausibility + violation-activation checks
 │   ├── detection/                   # Issue #10: Physical Hallucination Score (Section 8, WP5)
 │   │   ├── phs.py                   # Pure formula module: Smom/Sdiv/Sbc/S_bc_local/SE, normalization, scoring
-│   │   └── evaluate_phs.py          # Full detection pipeline: scores every field, calibrates tau, evaluates
+│   │   ├── evaluate_phs.py          # Full detection pipeline: scores every field, calibrates tau, evaluates
+│   │   ├── detection_sensitivity.py # Probes detection precision below the canonical epsilon floor
+│   │   └── publication_figures.py   # Issues #12-13: curated Figures 1-3 / Tables 1-2 for the paper
 │   └── utils/                       # Utility functions (e.g., seeding)
 │       └── seed.py
 ├── tests/                           # Pytest suite for physics, samplers, losses, perturbations, and PHS
@@ -83,11 +85,17 @@ This project does not aim to create a new PINN architecture or a faster CFD solv
 │   │   └── _summary/loss_summary.csv / .json, all_cases_loss_overlay.png
 │   ├── hallucination_verification/  # Output of verify_hallucinations.py (Issue #9)
 │   │   └── {case_id}/contour_eps_0.01_0.02.png, residual_curves.png, residual_summary.csv/json, ...
-│   └── phs_evaluation/              # Output of evaluate_phs.py (Issue #10)
-│       ├── roc_curves.png, score_distributions_comparison.png
-│       ├── phs_vs_epsilon.png, raw_components_vs_epsilon.png, scores_vs_epsilon.png
-│       ├── recall_by_type.png, recall_by_perturbation_type.csv
-│       ├── normalizers_and_thresholds.json, detection_metrics_summary.csv / .json
+│   ├── phs_evaluation/               # Output of evaluate_phs.py (Issue #10) and detection_sensitivity.py
+│   │   ├── roc_curves.png, score_distributions_comparison.png
+│   │   ├── raw_components_vs_epsilon.png, scores_vs_epsilon.png
+│   │   ├── recall_by_type.png, recall_by_perturbation_type.csv
+│   │   ├── normalizers_and_thresholds.json, detection_metrics_summary.csv / .json
+│   │   └── sensitivity_recall_vs_epsilon.png, sensitivity_boundary_summary.csv / .json
+│   └── paper_figures/                # Output of publication_figures.py (Issues #12-13), IEEE-sized
+│       ├── figure1_valid_hallucinated_diff_residual.png
+│       ├── figure2_phs_histogram_and_roc.png
+│       ├── figure3_violation_signature_heatmap.png
+│       └── table1_experimental_setup.csv / .tex, table2_detection_results.csv / .tex
 ```
 `data/*` and `plots/*` are gitignored by default (see `.gitignore`); the specific files above are force-added (`git add -f`) when they're meant to ship as deliverables, following the convention already used for `models/*.pth` and the original `plots/loss_history/` outputs.
 
@@ -155,6 +163,31 @@ the exact formulas and every deliberate deviation from the write-up's literal no
 5th component, `bc_local` -- promoted from an optional add-on to a permanent part of PHS; see the
 Findings section below for why, and for an honest look at what it does and doesn't improve).
 
+### Probing Detection Precision Below the Canonical Range
+Loads an *existing* calibration from a prior `evaluate_phs.py` run (never refits it) and sweeps epsilon
+values below the canonical floor, reporting recall vs. both epsilon and relative L2 error:
+```bash
+python src/detection/detection_sensitivity.py
+```
+Writes `sensitivity_recall_vs_epsilon.png` and `sensitivity_boundary_summary.csv`/`.json` (the epsilon/
+relative-error values where recall crosses 50%/90%) to `plots/phs_evaluation/`.
+
+### Generating Publication Figures & Tables (Issues #12-13)
+Produces the exact curated deliverables WP6 calls for -- Figures 1-3 and Tables 1-2 -- sized for an IEEE
+double-column paper, reading from `evaluate_phs.py`'s already-computed outputs wherever possible rather
+than recomputing anything:
+```bash
+python src/detection/publication_figures.py
+python src/detection/publication_figures.py --case_id case_05 --perturbation_type boundary --epsilon 0.002
+```
+Writes `figure1_valid_hallucinated_diff_residual.png`, `figure2_phs_histogram_and_roc.png`,
+`figure3_violation_signature_heatmap.png`, and `table1_experimental_setup.csv`/`.tex`,
+`table2_detection_results.csv`/`.tex` to `plots/paper_figures/`. Requires `evaluate_phs.py` to have
+already been run (Figures 2-3 and Table 2 read its output directly) and a trained model for whichever
+case Figure 1 illustrates (`case_00` by default). See the Findings section below for two rendering bugs
+that were caught and fixed while building this (a malformed LaTeX subscript, and unescaped underscores
+that would have broken real LaTeX compilation).
+
 ## 🎯 Key Deliverables & Roadmap
 Based on the project blueprint, the following components are implemented or actively being developed:
 - [x] **Taylor-Green Vortex Generator:** Analytical flow generation (`src/physics/taylor_green.py`).
@@ -169,8 +202,16 @@ Based on the project blueprint, the following components are implemented or acti
       WP4's acceptance criteria (`src/hallucinations/verify_hallucinations.py`).
 - [x] **Physical Hallucination Score (Issue #10):** Smom/Sdiv/Sbc/S_bc_local/SE components, validation-split
       normalization, and threshold calibration (`src/detection/phs.py`).
-- [x] **Detection Metrics & Baseline Comparison:** ROC-AUC/Precision/Recall/F1 for PHS vs. 3 baselines,
-      plus a per-perturbation-type recall breakdown (`src/detection/evaluate_phs.py`).
+- [x] **Detection Metrics & Baseline Comparison (Issue #11):** ROC-AUC/Precision/Recall/F1 for PHS vs. 3
+      baselines, plus a per-perturbation-type recall breakdown (`src/detection/evaluate_phs.py`). Note:
+      WP5's own acceptance bar (`AUC(PHS) > 0.90`) is not currently met on the harder, boundary-centered
+      epsilon range chosen for this project (`AUC(PHS) = 0.836`) — see the Findings section for why that's
+      a deliberate tradeoff, not an oversight.
+- [x] **Publication Figures & Tables (Issues #12-13):** Figures 1-3 and Tables 1-2, IEEE double-column
+      sized (`src/detection/publication_figures.py`, output in `plots/paper_figures/`). One caveat: Figure
+      1's residual panel should be regenerated against the actual retrained models before being treated as
+      final — see the Findings section.
+- [ ] **Technical Report & Archiving (Issue #14):** Not started.
 
 ## 📝 Documentation
 Please refer to the `PINN suggestion-1.pdf` within the repository for the full academic roadmap, methodological details, and risk management strategies.
@@ -376,14 +417,83 @@ generated by some other mechanism (e.g. a snapshot mislabeled from a different c
 optimized field that minimizes these specific residuals while still being wrong some other way). Not
 something to fix now, but worth naming as a scope boundary rather than leaving it implicit.
 
+### Publication figures & tables generated (Issues #12, #13), and a bug found along the way
+`src/detection/publication_figures.py` (new) produces the exact deliverables WP6/Issues #12-13 ask
+for — Figures 1-3 and Tables 1-2 — as a script separate from the diagnostic tools (`verify_hallucinations.py`,
+`evaluate_phs.py`), since those are meant to be exhaustive (every type, every epsilon) while these are
+meant to be a small, curated, print-ready set. Output lives in `plots/paper_figures/`:
+
+- **Figure 1** (`figure1_valid_hallucinated_diff_residual.png`): valid field, hallucinated field,
+  difference map, and — the one piece that didn't exist anywhere in the repo before — a residual
+  **heatmap**, all for one representative example (`case_00`, `velocity_divergence`, ε=0.001 by default,
+  configurable via `--case_id`/`--perturbation_type`/`--epsilon`). Residual statistics were already
+  computed everywhere; this is the first time they're rendered as a spatial map. One honest caveat:
+  the residual panel looks somewhat speckled/noisy in the current render — this is likely because the
+  sandbox this was generated in is still working from an earlier, pre-retraining clone of the models
+  (see the phase-mismatch entry above); it's worth regenerating against the actual retrained models to
+  see if the panel cleans up, rather than assuming the speckle is a real physical signature.
+- **Figure 2** (`figure2_phs_histogram_and_roc.png`): histogram of log10(PHS) and its ROC curve, both
+  restricted to `Score4_PHS_full` specifically, matching the write-up's singular "the PHS" framing. The
+  fuller 4-score ROC comparison remains available separately in `evaluate_phs.py`'s own `roc_curves.png`
+  for the ablation discussion — this is the clean, single-score headline version for the paper, not a
+  replacement for that.
+- **Figure 3** (`figure3_violation_signature_heatmap.png`): perturbation type × PHS component heatmap
+  (mean normalized `S̄_j` at the largest epsilon, test split) — genuinely new, and turned out to be a
+  clean, single-glance summary of several findings from this project's whole history at once: `Sbc`'s
+  column stays flat even for "boundary" (the blind spot), `bc_local`'s column responds broadly rather
+  than being boundary-exclusive (it's a spatially-restricted momentum-residual check, not a
+  boundary-only detector — any broadly-active perturbation like `pressure`/`momentum` shows up there
+  too), and `SE`'s column lights up only for `temporal_mismatch`. One rendering bug fixed along the
+  way: a raw underscore inside an already math-mode-subscripted label (`bc_local`) triggers a *second*,
+  nested LaTeX subscript and renders as a stray vertical bar — fixed by substituting a comma for display.
+- **Table 1** (`table1_experimental_setup.csv`/`.tex`) and **Table 2** (`table2_detection_results.csv`/`.tex`):
+  computed directly from `cases_metadata.json` and `perturbations.py`'s own constants (Table 1) or read
+  directly from `evaluate_phs.py`'s `detection_metrics_summary.csv` (Table 2), so neither can silently
+  drift out of sync with the actual pipeline. A second bug fixed here: raw underscores in table values
+  pulled from Python identifiers (e.g. `velocity_divergence`) will fail to compile or mis-render in
+  actual LaTeX (underscore is a reserved math-mode character in text mode) — the `.tex` outputs now
+  escape them (`\_`); the `.csv` outputs correctly keep plain underscores, since CSVs have no such
+  reserved character.
+
+**IEEE double-column sizing** is used throughout this new script (`IEEE_COL_WIDTH = 3.5in`,
+`IEEE_PAGE_WIDTH = 7.16in`, explicit 8pt figure font, 300 DPI) rather than matplotlib's on-screen
+defaults, which look oversized once a figure is scaled down to these physical print dimensions. This is
+a starting convention, not a full pass over every figure in the repo — the diagnostic plots in
+`verify_hallucinations.py`/`evaluate_phs.py` are still sized for on-screen inspection, which is
+appropriate for their exhaustive/debugging role; only the 3 curated paper figures use it so far.
+
+**One redundant plot removed** rather than left alongside a newer one, per the general
+"replace, don't just add" principle: `phs_vs_epsilon.png` (Score4 only, all perturbation types overlaid
+in one panel) was a strict subset of what `scores_vs_epsilon.png` already shows (every score including
+Score4, per perturbation type, across separate panels) — removed, including its one unique feature (a
+horizontal clean-baseline reference line), since `score_distributions_comparison.png`'s strip plot
+already shows the actual clean-field points as their own category, which is more informative than a
+single averaged reference line.
+
+### The canonical epsilon sweep now shows a complete rise-and-stabilization story in 6 points
+`EPSILON_VALUES` was widened from 5 values to the agreed maximum of 6:
+`[0.0001, 0.0005, 0.001, 0.002, 0.005, 0.01]` — inserting `0.002` into the climbing region specifically
+(the earlier 10-value exploratory run showed 0.001→0.76, 0.0015→0.84, 0.002→0.92, 0.003→1.00 recall, so
+0.002 sits right where the curve is still visibly rising but close to the ceiling) rather than extending
+either end further. The result, confirmed directly rather than assumed: pooled recall by epsilon is now
+**0.40 (floor) → [0.0005, 0.001, 0.002 climbing] → 1.00, 1.00 (two points confirming stabilization, not
+just one)** — a complete, small, six-point S-curve. Current AUCs on this range: Score1=0.800,
+Score2=0.880, Score3=0.841, Score4/PHS=0.836 (test split) — the same Score2-leads-pooled-AUC pattern
+documented above still holds at this slightly different range, for the same reasons.
+
 ### Score2 (momentum+divergence) currently beats Score3/Score4 in pooled AUC — a real trend, not a strong one
-On the new epsilon range, pooled test-split AUC ranks Score2=0.858 > Score3=0.822 > Score4/PHS=0.818 >
-Score1=0.786 — adding `bc`, `bc_local`, and `E` on top of momentum+divergence does not currently improve,
-and mildly hurts, the pooled ranking metric. Checked rather than assumed: a case-level bootstrap (2000
-resamples of the 5 test cases) gives `P(Score2 > Score4) = 92.5%` and `P(Score2 > Score3) = 92%` — a real,
-consistent direction, but well short of a strong statistical result at this sample size (the 95% CIs
-overlap substantially). The same pattern holds even broken down by perturbation type, including
-"boundary," where `bc_local` was expected to show a clear win and didn't.
+On the current epsilon range, pooled test-split AUC ranks Score2=0.880 > Score3=0.841 > Score4/PHS=0.836 >
+Score1=0.800 — adding `bc`, `bc_local`, and `E` on top of momentum+divergence does not currently improve,
+and mildly hurts, the pooled ranking metric. This was first found (and the mechanism below investigated)
+on an earlier 5-value epsilon range, where the same ranking held with different absolute numbers
+(Score2=0.858 > Score3=0.822 > Score4=0.818 > Score1=0.786) — cited here for the record, since the
+bootstrap analysis below was run against that range and hasn't been repeated on the current 6-value one;
+the qualitative pattern (and the point estimates above) both still hold at the new range, but treat the
+specific confidence numbers as approximate rather than re-verified. Checked rather than assumed at the
+time: a case-level bootstrap (2000 resamples of the 5 test cases) gives `P(Score2 > Score4) = 92.5%` and
+`P(Score2 > Score3) = 92%` — a real, consistent direction, but well short of a strong statistical result
+at this sample size (the 95% CIs overlap substantially). The same pattern held even broken down by
+perturbation type, including "boundary," where `bc_local` was expected to show a clear win and didn't.
 
 Likely mechanism: `Smom`/`Sdiv` respond robustly across all 5 perturbation types, while `Sbc`, `bc_local`,
 and `SE` are each strongly informative for only some types and mostly contribute their own calibration

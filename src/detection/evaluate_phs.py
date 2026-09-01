@@ -51,9 +51,6 @@ Outputs:
       each epsilon value, light-to-dark color gradient) rather than a
       pooled histogram -- shows the dose-response structure per epsilon
       directly, including exactly which epsilon's fields sit below tau.
-  plots/phs_evaluation/phs_vs_epsilon.png
-      Mean PHS vs. epsilon per perturbation type (all splits pooled) --
-      sanity check that PHS increases with perturbation strength.
   plots/phs_evaluation/raw_components_vs_epsilon.png
       Smom, Sdiv, Sbc, S_bc_local, SE (raw, pre-normalization) vs. epsilon,
       one panel per perturbation type -- shows exactly which component(s)
@@ -611,55 +608,6 @@ def plot_recall_by_type(recall_df: pd.DataFrame, output_dir: Path):
     plt.close()
 
 
-def plot_phs_vs_epsilon(df: pd.DataFrame, output_dir: Path):
-    """
-    Plots mean PHS vs. epsilon, one line per perturbation type (all splits
-    pooled, since this is a sanity/robustness check rather than a formal
-    evaluation) -- confirms the "PHS increases with perturbation strength"
-    success criterion.
-
-    Uses a semi-log axis (linear epsilon, log PHS) per project preference.
-    Note EPSILON_VALUES = [0.005, 0.01, 0.02, 0.05, 0.1] is itself an
-    approximately geometric sequence (consecutive ratios of ~2-2.5), so
-    the 5 points still land closer together at the low-epsilon end on a
-    linear x-axis than a log-log reader might expect -- that clustering is
-    inherent to the sweep design, not a plotting artifact.
-
-    Epsilon=0 (the clean baseline) is NOT plotted as a sixth x-position:
-    it isn't a value in EPSILON_VALUES for any perturbation type -- it's a
-    separate label="clean" row with no perturbation_type at all. Instead,
-    the clean-split mean PHS is drawn as a horizontal reference line.
-
-    Inputs:
-        df (pd.DataFrame): Must have "perturbation_type", "epsilon",
-            "label", "Score4_PHS_full" columns.
-        output_dir (Path): Where to save phs_vs_epsilon.png.
-
-    Outputs:
-        None. Saves plots/phs_evaluation/phs_vs_epsilon.png.
-    """
-    halluc_df = df[df["label"] == "hallucinated"]
-    clean_mean = df.loc[df["label"] == "clean", "Score4_PHS_full"].mean()
-    perturbation_types = sorted(halluc_df["perturbation_type"].unique())
-
-    plt.figure(figsize=(7, 5))
-    for i, perturbation_name in enumerate(perturbation_types):
-        group = halluc_df[halluc_df["perturbation_type"] == perturbation_name]
-        by_eps = group.groupby("epsilon")["Score4_PHS_full"].mean().sort_index()
-        _styled_line(plt, by_eps.index, by_eps.values, i, perturbation_name)
-
-    plt.axhline(clean_mean, color="gray", linestyle="--", alpha=0.7,
-                label=f"clean baseline (mean={clean_mean:.2f})")
-    plt.yscale("log")
-    plt.xlabel("Epsilon (perturbation strength, linear scale)")
-    plt.ylabel("Mean PHS (log scale)")
-    plt.title("PHS vs. Epsilon by Perturbation Type (all splits)")
-    plt.legend()
-    plt.grid(True, which="both", alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(output_dir / "phs_vs_epsilon.png", dpi=150)
-    plt.close()
-
 
 def plot_raw_components_vs_epsilon(df: pd.DataFrame, output_dir: Path):
     """
@@ -668,7 +616,8 @@ def plot_raw_components_vs_epsilon(df: pd.DataFrame, output_dir: Path):
     which component(s) each perturbation type activates. This is the
     figure that makes the Sbc "boundary" blind spot visible directly: the
     "boundary" panel's bc line should sit flat while its mom/div lines
-    climb. Semi-log axis (linear epsilon, log value), matching phs_vs_epsilon.
+    climb. Semi-log axis (linear epsilon, log value) -- the project's standard convention for
+    epsilon-response plots.
 
     Inputs:
         df (pd.DataFrame): Must have "perturbation_type", "epsilon",
@@ -713,7 +662,7 @@ def plot_all_scores_vs_epsilon(df: pd.DataFrame, output_dir: Path):
     subplot per perturbation type, so you can see how adding each
     successive component changes the detection signal's shape and
     magnitude for each perturbation type. Semi-log axis (linear epsilon,
-    log value), matching phs_vs_epsilon.
+    log value) -- the project's standard convention for epsilon-response plots.
 
     Inputs:
         df (pd.DataFrame): Must have "perturbation_type", "epsilon",
@@ -844,11 +793,10 @@ def main():
     # --- Plots ---
     plot_roc_curves(df, output_dir)
     plot_score_distributions_comparison(df, thresholds, output_dir)
-    plot_phs_vs_epsilon(df, output_dir)
     plot_raw_components_vs_epsilon(df, output_dir)
     plot_all_scores_vs_epsilon(df, output_dir)
     plot_recall_by_type(recall_by_type_df, output_dir)
-    print(f"🖼️  Wrote roc_curves.png, score_distributions_comparison.png, phs_vs_epsilon.png, "
+    print(f"🖼️  Wrote roc_curves.png, score_distributions_comparison.png, "
           f"raw_components_vs_epsilon.png, scores_vs_epsilon.png, recall_by_type.png to "
           f"{output_dir.relative_to(project_root)}")
 
