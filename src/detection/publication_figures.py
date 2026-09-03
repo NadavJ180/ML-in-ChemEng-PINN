@@ -301,9 +301,30 @@ def make_figure3(phs_df, output_dir):
     columns are the 5 raw PHS components, cell value is that component's
     NORMALIZED value (the same S_bar quantity evaluate_phs.py sums into
     scores), averaged over test-split cases at the LARGEST epsilon in
-    EPSILON_VALUES (the strongest, clearest signal for each cell). Log
-    color scale, since these values span orders of magnitude exactly like
-    everywhere else in this project.
+    EPSILON_VALUES (the strongest, clearest signal for each cell).
+
+    S_bar IS correctly normalized in the sense this project defines it --
+    each raw Sj is divided by ITS OWN mean over clean validation fields, so
+    a clean field reads ~1.0 for every component regardless of scale. That
+    is a per-component, relative-to-clean normalization; it does NOT (and
+    isn't meant to) equalize how STRONGLY different perturbation types
+    activate different components -- a perturbation genuinely can push one
+    component to ~800x its clean level while barely moving another, and
+    that contrast IS the finding this figure exists to show (e.g. Sbc
+    staying near 1 even for "boundary" is the blind spot; S_bar_local
+    responding broadly rather than boundary-only). So the wide spread
+    across cells (~1 up to ~800+) is real, not evidence of missing
+    normalization to fix.
+
+    What IS worth fixing is display: annotating cells with the raw S_bar
+    number makes that same correct, wide dynamic range hard to read at a
+    glance (single-digit and 3-digit numbers side by side). The color
+    mapping already uses a log scale for exactly this reason; the
+    annotated numbers now do too (log10(S_bar), shown in the colorbar
+    label) so the ON-SCREEN numbers are visually comparable across cells,
+    while the underlying data and PHS's actual score computation elsewhere
+    in this project still use the untransformed S_bar -- only this
+    figure's displayed digits are log-scaled, not any stored or scored value.
 
     Inputs:
         phs_df (pd.DataFrame): evaluate_phs.py's phs_components_raw.csv,
@@ -338,9 +359,12 @@ def make_figure3(phs_df, output_dir):
     ax.set_title(f"Violation signature at \u03b5={max_epsilon:g} (test split, mean $\\bar{{S}}_j$)")
     for i in range(len(perturbation_types)):
         for j in range(len(PHS_COMPONENT_NAMES)):
-            ax.text(j, i, f"{matrix[i, j]:.1f}", ha="center", va="center",
+            # Cell text shows log10(S_bar) for readability across a ~3-order-of-magnitude range
+            # (see docstring); the underlying value/color mapping is unaffected.
+            log_val = np.log10(max(matrix[i, j], 1e-12))
+            ax.text(j, i, f"{log_val:.1f}", ha="center", va="center",
                     color="white" if matrix[i, j] < matrix.max() ** 0.5 else "black", fontsize=FIGURE_FONT_SIZE - 1)
-    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="$\\bar{S}_j$ (log scale)")
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="log$_{10}(\\bar{S}_j)$")
     plt.tight_layout()
     plt.savefig(output_dir / "figure3_violation_signature_heatmap.png", dpi=FIGURE_DPI)
     plt.close()

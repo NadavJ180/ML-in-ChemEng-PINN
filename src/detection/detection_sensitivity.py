@@ -82,9 +82,15 @@ from src.hallucinations.perturbations import PERTURBATION_NAMES
 from src.detection.phs import compute_phs_components, compute_relative_error, PHS_COMPONENT_NAMES
 
 # Extends BELOW the canonical EPSILON_VALUES floor (0.0001, per perturbations.py) rather than
-# overlapping it -- the canonical sweep already covers 0.0001-0.01, so this picks up from there
-# downward, for anyone curious whether the boundary moves further once epsilon gets smaller still.
-SENSITIVITY_EPSILON_VALUES = [0.00001, 0.00002, 0.00005, 0.0001, 0.0002, 0.0005, 0.001]
+# overlapping it, for anyone curious whether the boundary moves further once epsilon gets smaller
+# still -- plus a couple of points (0.0015, 0.002) reaching just past the canonical range's own 90%
+# crossing (confirmed at eps=0.002 in a full evaluate_phs.py run), so this script's own summary can
+# report a genuine 90% crossing point self-contained, rather than only ever saying "not reached in
+# this range" and requiring a cross-reference to a different script's output. The "6 values maximum"
+# constraint agreed for the canonical EPSILON_VALUES (which drives the full, expensive dataset
+# generation used everywhere) does not apply here -- this is a lighter-weight, standalone probe
+# against an already-existing calibration, not a size-constrained dataset.
+SENSITIVITY_EPSILON_VALUES = [0.00001, 0.00002, 0.00005, 0.0001, 0.0002, 0.0005, 0.001, 0.0015, 0.002]
 
 # Recall levels to report boundary crossings for.
 BOUNDARY_LEVELS = [0.5, 0.9]
@@ -328,6 +334,14 @@ def find_boundary_crossings(df: pd.DataFrame, x_col: str, levels: list, n_bins: 
     the pooled (all perturbation types, all cases) curve, plus the same
     per perturbation type.
 
+    Also reports the highest recall actually observed in-range and the
+    x-value it occurred at, regardless of whether any requested level was
+    crossed -- so a level that isn't reached (e.g. 90% recall, if the
+    chosen x range tops out below it) still gets a complete, useful
+    answer ("recall reached at most 0.80, at eps=0.001") instead of a
+    bare "not reached," which said nothing about how close the curve got
+    or whether it's worth widening the range at all.
+
     Inputs:
         df (pd.DataFrame): Must have "perturbation_type", x_col, "detected" columns.
         x_col (str): Either "epsilon" or "relative_error".
@@ -335,12 +349,13 @@ def find_boundary_crossings(df: pd.DataFrame, x_col: str, levels: list, n_bins: 
         n_bins (int): Forwarded to _recall_curve (only used when x_col is "relative_error").
 
     Outputs:
-        dict: {"overall": {level: x_value_or_None, ...},
-               perturbation_name: {level: x_value_or_None, ...}, ...}
+        dict: {"overall": {"crossings": {level: x_value_or_None, ...},
+                            "max_recall": float, "max_recall_x": float},
+               perturbation_name: {same structure}, ...}
     """
     def crossings_for(group):
         xs, ys = _recall_curve(group, x_col, n_bins)
-        result = {}
+        crossings = {}
         for level in levels:
             crossing = None
             for i in range(len(ys) - 1):
@@ -349,8 +364,11 @@ def find_boundary_crossings(df: pd.DataFrame, x_col: str, levels: list, n_bins: 
                     frac = (level - ys[i]) / (ys[i + 1] - ys[i])
                     crossing = float(10 ** (log_x0 + frac * (log_x1 - log_x0)))
                     break
-            result[level] = crossing
-        return result
+            crossings[level] = crossing
+        if len(ys) == 0:
+            return {"crossings": crossings, "max_recall": None, "max_recall_x": None}
+        max_idx = int(np.argmax(ys))
+        return {"crossings": crossings, "max_recall": float(ys[max_idx]), "max_recall_x": float(xs[max_idx])}
 
     boundaries = {"overall": crossings_for(df)}
     for perturbation_name, group in df.groupby("perturbation_type"):
@@ -512,8 +530,10 @@ def main():
     for key in boundaries_eps:
         summary_rows.append({
             "perturbation_type": key,
-            **{f"epsilon_at_{int(lvl*100)}pct_recall": boundaries_eps[key][lvl] for lvl in BOUNDARY_LEVELS},
-            **{f"relative_error_at_{int(lvl*100)}pct_recall": boundaries_err[key][lvl] for lvl in BOUNDARY_LEVELS},
+            **{f"epsilon_at_{int(lvl*100)}pct_recall": boundaries_eps[key]["crossings"][lvl] for lvl in BOUNDARY_LEVELS},
+            **{f"relative_error_at_{int(lvl*100)}pct_recall": boundaries_err[key]["crossings"][lvl] for lvl in BOUNDARY_LEVELS},
+            "max_recall_reached": boundaries_eps[key]["max_recall"],
+            "max_recall_at_epsilon": boundaries_eps[key]["max_recall_x"],
         })
     summary_df = pd.DataFrame(summary_rows)
     summary_df.to_csv(output_dir / "sensitivity_boundary_summary.csv", index=False)
@@ -528,11 +548,20 @@ def main():
 
     print("\n" + "=" * 60)
     print("✅ Detection boundary summary (overall, pooled across perturbation types):")
+    overall_eps, overall_err = boundaries_eps["overall"], boundaries_err["overall"]
     for lvl in BOUNDARY_LEVELS:
-        eps_b = boundaries_eps["overall"][lvl]
-        err_b = boundaries_err["overall"][lvl]
-        eps_str = f"{eps_b:.5f}" if eps_b is not None else "not reached in this range"
-        err_str = f"{err_b*100:.3f}%" if err_b is not None else "not reached in this range"
+        eps_b = overall_eps["crossings"][lvl]
+        err_b = overall_err["crossings"][lvl]
+        if eps_b is not None:
+            eps_str = f"{eps_b:.5f}"
+        else:
+            eps_str = (f"not reached in this range (max recall = {overall_eps['max_recall']:.2f} "
+                       f"at epsilon={overall_eps['max_recall_x']:.5f})")
+        if err_b is not None:
+            err_str = f"{err_b*100:.3f}%"
+        else:
+            err_str = (f"not reached in this range (max recall = {overall_err['max_recall']:.2f} "
+                       f"at relative error={overall_err['max_recall_x']*100:.3f}%)")
         print(f"  {int(lvl*100)}% recall: epsilon ≈ {eps_str}   |   relative L2 error ≈ {err_str}")
     print("=" * 60)
 

@@ -446,6 +446,13 @@ meant to be a small, curated, print-ready set. Output lives in `plots/paper_figu
   too), and `SE`'s column lights up only for `temporal_mismatch`. One rendering bug fixed along the
   way: a raw underscore inside an already math-mode-subscripted label (`bc_local`) triggers a *second*,
   nested LaTeX subscript and renders as a stray vertical bar — fixed by substituting a comma for display.
+  **A second display fix**: cells were originally annotated with the raw `S̄_j` value, spanning ~1 to
+  ~800+ across the grid — genuinely correct (`S̄_j` is normalized *per component* against that
+  component's own clean-field mean, not normalized *across components* to a common scale, so wildly
+  different activation strengths between components is real information, not a normalization bug), but
+  hard to read at a glance with single- and triple-digit numbers side by side. Cell text now shows
+  `log10(S̄_j)` instead (colorbar relabeled to match); the color mapping and underlying data are
+  unchanged, only the displayed digits are log-scaled.
 - **Table 1** (`table1_experimental_setup.csv`/`.tex`) and **Table 2** (`table2_detection_results.csv`/`.tex`):
   computed directly from `cases_metadata.json` and `perturbations.py`'s own constants (Table 1) or read
   directly from `evaluate_phs.py`'s `detection_metrics_summary.csv` (Table 2), so neither can silently
@@ -469,6 +476,26 @@ Score4, per perturbation type, across separate panels) — removed, including it
 horizontal clean-baseline reference line), since `score_distributions_comparison.png`'s strip plot
 already shows the actual clean-field points as their own category, which is more informative than a
 single averaged reference line.
+
+### `detection_sensitivity.py`'s own grid extended to reach a genuine 90% crossing, plus graceful fallback reporting
+`SENSITIVITY_EPSILON_VALUES` originally topped out at 0.001, where recall was still climbing (~76-80%) --
+so its "90% recall" boundary summary printed "not reached in this range," which was accurate but
+unsatisfying on its own. Added `0.0015` and `0.002` (confirmed directly: `evaluate_phs.py`'s own
+canonical-range run shows recall=0.92 at ε=0.002) so this script's own run now finds a genuine, self-contained
+90% crossing at ε≈0.00186, rather than requiring a cross-reference to a different script's output. The
+"6 values maximum" agreed for the canonical `EPSILON_VALUES` doesn't apply here -- that constraint was
+specifically about the size of the full, expensive hallucination dataset every other script depends on;
+this script is a lightweight, standalone probe against an already-existing calibration.
+
+Also made the boundary-crossing report more informative when a level genuinely isn't reached (for
+whatever future range gets chosen): rather than a bare "not reached in this range," it now also reports
+the highest recall actually observed in-range and the epsilon it occurred at (e.g. "not reached in this
+range (max recall = 0.80 at epsilon=0.001)"), computed once per group in `find_boundary_crossings` rather
+than left as a dead end. One thing worth being clear about, since it came up while reviewing this
+script's output: the reported "N epsilons" and the epsilon grid itself are computed dynamically from
+`len(SENSITIVITY_EPSILON_VALUES)` and printed at the top of every run -- not a stale or hardcoded count.
+The number changing between runs (7 before this fix, 9 after) reflects an intentional, separate grid for
+this script, not inconsistent output.
 
 ### The canonical epsilon sweep now shows a complete rise-and-stabilization story in 6 points
 `EPSILON_VALUES` was widened from 5 values to the agreed maximum of 6:
