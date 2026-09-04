@@ -7,7 +7,6 @@ for Taylor-Green Vortex simulations.
 """
 
 import torch
-import numpy as np
 
 
 def generate_evaluation_grid(T: float) -> torch.Tensor:
