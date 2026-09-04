@@ -49,10 +49,15 @@ Outputs:
       each epsilon value, light-to-dark color gradient) rather than a
       pooled histogram -- shows the dose-response structure per epsilon
       directly, including exactly which epsilon's fields sit below tau.
-  plots/phs_evaluation/raw_components_vs_epsilon.png
-      Smom, Sdiv, Sbc, SE (raw, pre-normalization) vs. epsilon, one panel
-      per perturbation type -- shows exactly which component(s) each
-      perturbation type activates.
+  plots/phs_evaluation/normalized_components_vs_epsilon.png
+      S_bar_mom, S_bar_div, S_bar_bc, S_bar_E (normalized -- the same
+      quantities the scores are built from) vs. epsilon, one panel per
+      perturbation type, on a single shared axis -- shows exactly which
+      component(s) each perturbation type activates. Was raw_components_
+      vs_epsilon.png (pre-normalization values) until Sbc became a
+      near/far ratio and needed a different plotting approach; see
+      plot_normalized_components_vs_epsilon's docstring for why normalized
+      values were used instead of a secondary axis.
   plots/phs_evaluation/scores_vs_epsilon.png
       Score1 / Score2 / Score3 (PHS) vs. epsilon, one panel per
       perturbation type -- shows how adding each successive component
@@ -128,12 +133,16 @@ def _styled_line(ax, x, y, index: int, label: str, **kwargs):
         **kwargs: Forwarded to .plot(), overriding the defaults below.
 
     Outputs:
-        None (draws on `ax`).
+        The Line2D object matplotlib's ax.plot() creates (useful for
+        combining legends across two axes, e.g. a twinx() secondary axis --
+        see plot_normalized_components_vs_epsilon). Existing callers that ignore
+        the return value are unaffected.
     """
     linestyle, marker = _LINE_STYLES[index % len(_LINE_STYLES)]
     style = dict(linestyle=linestyle, marker=marker, markersize=6, linewidth=2, alpha=0.85)
     style.update(kwargs)
-    ax.plot(x, y, label=label, **style)
+    line, = ax.plot(x, y, label=label, **style)
+    return line
 
 
 def parse_args():
@@ -608,49 +617,80 @@ def plot_recall_by_type(recall_df: pd.DataFrame, output_dir: Path):
 
 
 
-def plot_raw_components_vs_epsilon(df: pd.DataFrame, output_dir: Path):
+def plot_normalized_components_vs_epsilon(df: pd.DataFrame, output_dir: Path):
     """
-    Plots all 4 RAW components (Smom, Sdiv, Sbc, SE -- before normalization)
-    vs. epsilon, one subplot per perturbation type, so you can see exactly
-    which component(s) each perturbation type activates. This is the
-    figure that makes the Sbc "boundary" blind spot visible directly: the
-    "boundary" panel's bc line should sit flat while its mom/div lines
-    climb. Semi-log axis (linear epsilon, log value) -- the project's standard convention for
-    epsilon-response plots.
+    Plots all 4 NORMALIZED components (S_bar_mom, S_bar_div, S_bar_bc,
+    S_bar_E -- the "_bar" quantities that actually get summed into the
+    scores, per Section 8's S_bar_j = Sj / mean(Sj_clean_validation)) vs.
+    epsilon, one subplot per perturbation type, on a SINGLE shared axis --
+    so you can see exactly which component(s) each perturbation type
+    activates, in the same units the scoring itself uses.
+
+    HISTORY: an earlier version plotted the RAW (pre-normalization)
+    components instead, which needed a secondary y-axis for "bc"
+    specifically once it became a near/far RATIO -- a ratio of two
+    similarly-tiny residuals is naturally of order 1, roughly six orders
+    of magnitude larger than Smom/Sdiv/SE's raw MSE-style values (checked
+    directly: bc's clean-baseline normalizer is ~1.39 vs. ~1e-6 to 1e-7
+    for the other three). Switched to normalized values instead of
+    maintaining two axes: every "_bar" component is, by construction,
+    ~1.0 at its own clean baseline (S_bar = S / mean(S_clean)), so all 4
+    become directly comparable on one shared axis without needing any
+    special-casing for "bc" -- this is a more direct fix than the
+    secondary-axis version, and ties the plot directly to what the actual
+    scores are built from, rather than an intermediate raw quantity.
+
+    NOTE on a related, separately-investigated finding this plot makes
+    visible: for perturbation types OTHER than "boundary", S_bar_bc often
+    starts ELEVATED at the smallest epsilon and DECREASES as epsilon
+    grows, rather than the monotonic rise the other components show. This
+    is not noise -- checked directly, the smallest-epsilon value is
+    essentially identical to that SAME case's own clean-field bc value
+    (e.g. one case: clean=3.190, eps=0.0001 gives 3.189), meaning at tiny
+    epsilon this reflects each TRAINED MODEL's own intrinsic near/far
+    residual imbalance (which varies substantially case-to-case, from
+    below 1 to above 3) rather than a perturbation effect. As epsilon
+    grows, a globally-uniform perturbation's own contribution starts
+    dominating both the near- and far-boundary residual comparably,
+    diluting that baseline imbalance toward the perturbation's own
+    (typically closer-to-1) near/far ratio. For "boundary" specifically,
+    the perturbation's effect is concentrated enough to quickly overwhelm
+    this baseline-imbalance effect instead, producing the clear rise seen
+    there rather than a dip.
 
     Inputs:
-        df (pd.DataFrame): Must have "perturbation_type", "epsilon",
-            "label", and the 4 raw component columns ("mom", "div", "bc", "E").
-        output_dir (Path): Where to save raw_components_vs_epsilon.png.
+        df (pd.DataFrame): Post evaluate_detection() -- must have
+            "perturbation_type", "epsilon", "label", and the 4 normalized
+            ("mom_bar", "div_bar", "bc_bar", "E_bar") columns.
+        output_dir (Path): Where to save normalized_components_vs_epsilon.png.
 
     Outputs:
-        None. Saves plots/phs_evaluation/raw_components_vs_epsilon.png.
+        None. Saves plots/phs_evaluation/normalized_components_vs_epsilon.png.
     """
     halluc_df = df[df["label"] == "hallucinated"]
     perturbation_types = sorted(halluc_df["perturbation_type"].unique())
-    component_names = PHS_COMPONENT_NAMES  # all 5, always computed
 
     fig, axes = plt.subplots(2, 3, figsize=(15, 9))
     axes = axes.flatten()
 
     for ax, perturbation_name in zip(axes, perturbation_types):
         group = halluc_df[halluc_df["perturbation_type"] == perturbation_name]
-        for i, component in enumerate(component_names):
-            by_eps = group.groupby("epsilon")[component].mean().sort_index()
-            _styled_line(ax, by_eps.index, by_eps.values, i, f"S_{component}")
+        for i, component in enumerate(PHS_COMPONENT_NAMES):
+            by_eps = group.groupby("epsilon")[f"{component}_bar"].mean().sort_index()
+            _styled_line(ax, by_eps.index, by_eps.values, i, f"S̄_{component}")
         ax.set_yscale("log")
+        ax.set_ylabel("Normalized component (S̄_j, log scale)")
         ax.set_title(perturbation_name)
         ax.set_xlabel("Epsilon")
-        ax.set_ylabel("Raw component value")
         ax.grid(True, which="both", alpha=0.3)
         ax.legend(fontsize=8)
 
     for ax in axes[len(perturbation_types):]:
         ax.axis("off")
 
-    fig.suptitle("Raw PHS Components vs. Epsilon, by Perturbation Type (all splits)")
+    fig.suptitle("Normalized PHS Components vs. Epsilon, by Perturbation Type (all splits)")
     plt.tight_layout()
-    plt.savefig(output_dir / "raw_components_vs_epsilon.png", dpi=150)
+    plt.savefig(output_dir / "normalized_components_vs_epsilon.png", dpi=150)
     plt.close()
 
 
@@ -792,11 +832,11 @@ def main():
     # --- Plots ---
     plot_roc_curves(df, output_dir)
     plot_score_distributions_comparison(df, thresholds, output_dir)
-    plot_raw_components_vs_epsilon(df, output_dir)
+    plot_normalized_components_vs_epsilon(df, output_dir)
     plot_all_scores_vs_epsilon(df, output_dir)
     plot_recall_by_type(recall_by_type_df, output_dir)
     print(f"🖼️  Wrote roc_curves.png, score_distributions_comparison.png, "
-          f"raw_components_vs_epsilon.png, scores_vs_epsilon.png, recall_by_type.png to "
+          f"normalized_components_vs_epsilon.png, scores_vs_epsilon.png, recall_by_type.png to "
           f"{output_dir.relative_to(project_root)}")
 
     print("\n" + "=" * 60)

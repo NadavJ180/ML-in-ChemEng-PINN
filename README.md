@@ -87,7 +87,7 @@ This project does not aim to create a new PINN architecture or a faster CFD solv
 │   │   └── {case_id}/contour_eps_0.01_0.02.png, residual_curves.png, residual_summary.csv/json, ...
 │   ├── phs_evaluation/               # Output of evaluate_phs.py (Issue #10) and detection_sensitivity.py
 │   │   ├── roc_curves.png, score_distributions_comparison.png
-│   │   ├── raw_components_vs_epsilon.png, scores_vs_epsilon.png
+│   │   ├── normalized_components_vs_epsilon.png, scores_vs_epsilon.png
 │   │   ├── recall_by_type.png, recall_by_perturbation_type.csv
 │   │   ├── normalizers_and_thresholds.json, detection_metrics_summary.csv / .json
 │   │   └── sensitivity_recall_vs_epsilon.png, sensitivity_boundary_summary.csv / .json
@@ -615,6 +615,42 @@ hardcoded name that broke (`KeyError`) the moment `evaluate_phs.py`'s calibratio
 it still worked; renamed to `Score3_PHS_full` throughout. Worth remembering for next time: any script that
 independently re-derives a score name rather than importing it from `phs.py`'s own definitions is a latent
 source of exactly this kind of silent-until-run breakage during a rename.
+
+**A second effect of the ratio redesign, this time on a plot rather than the scoring itself**:
+`raw_components_vs_epsilon.png` originally plotted all raw (pre-normalization) components on one shared
+axis, and once `bc` became a ratio, its line sat roughly six orders of magnitude above `Smom`/`Sdiv`/`SE`
+regardless of epsilon — checked directly, `bc`'s clean-baseline normalizer is `~1.39` (a ratio of two
+similarly-tiny numbers is naturally of order 1), while `mom`/`div`/`E`'s are all in the `1e-6`-`1e-7` range
+(MSE-style quantities, inherently tiny for a well-trained model). This was not a scoring bug — normalization
+already divides each component by its own baseline before summing into PHS, exactly correcting for this —
+it only affected how readable this specific raw-value plot was, since a shared axis meant `Smom`/`Sdiv`/`SE`'s
+own shapes were squashed flat at the bottom by `bc`'s much larger absolute scale.
+
+Went through two fixes: first, giving `bc` its own secondary y-axis (`ax.twinx()`), which worked but kept
+the underlying raw-value units, which are what caused the scale mismatch in the first place. **Second, and
+final: switched the whole plot to NORMALIZED (`_bar`) components instead of raw ones, on a single shared
+axis** — every `_bar` component is, by construction, `~1.0` at its own clean baseline, so `mom_bar`,
+`div_bar`, `bc_bar`, and `E_bar` are directly comparable without any special-casing, and this ties the plot
+directly to the same quantities the scores are actually built from, rather than an intermediate raw value.
+The file was renamed accordingly: `raw_components_vs_epsilon.png` → `normalized_components_vs_epsilon.png`.
+(`_styled_line`, the shared plotting helper, was changed along the way to return its `Line2D` handle rather
+than nothing, originally to combine the two axes' legends for the twin-axis version — kept even after that
+version was replaced, since it's a harmless, backward-compatible addition other callers can ignore.)
+
+**A genuine, separately-investigated finding this plot made visible**: for perturbation types other than
+"boundary", `S_bar_bc` often starts *elevated* at the smallest epsilon and *decreases* as epsilon grows,
+rather than the monotonic rise every other component shows. Checked directly rather than assumed to be
+noise: at the smallest epsilon, a case's `bc` value is essentially identical to that SAME case's own
+*clean*-field `bc` value (e.g. one case: clean=3.190, ε=0.0001 gives 3.189) — meaning this reflects each
+trained model's own intrinsic near/far residual imbalance (which varies substantially case-to-case, from
+below 1 to above 3 across the 14 cases checked) rather than a perturbation effect. As epsilon grows, a
+globally-uniform perturbation's own contribution starts dominating both the near- and far-boundary residual
+comparably, diluting that baseline imbalance toward the perturbation's own (typically closer-to-1) near/far
+ratio. For "boundary" specifically, the perturbation's effect is concentrated enough to quickly overwhelm
+this baseline-imbalance effect instead, producing the clear, monotonic rise seen there rather than a dip.
+This is a real property of the trained models' own boundary-region fitting quality, not a flaw in the
+ratio design — worth knowing if this pattern comes up again elsewhere.
+
 
 ### `S_bc_local`'s band width is now a fraction of the domain, not a fixed number
 `compute_boundary_localization_violation`'s `band_width` parameter (how far from an edge counts as
