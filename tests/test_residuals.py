@@ -1,5 +1,4 @@
 import torch
-import pytest
 from src.physics.taylor_green import generate_tgv, compute_nu, compute_T
 from src.physics.navier_stokes import compute_residuals
 
@@ -33,7 +32,7 @@ def test_navier_stokes_tgv_compliance():
     mse_Rc = torch.mean(R_c**2).item()
     
     # Log the outputs for terminal visibility
-    print(f"\n--- Residual Verification ---")
+    print("\n--- Residual Verification ---")
     print(f"MSE(R_u): {mse_Ru:.2e}")
     print(f"MSE(R_v): {mse_Rv:.2e}")
     print(f"MSE(R_c): {mse_Rc:.2e}")

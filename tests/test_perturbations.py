@@ -242,7 +242,7 @@ def test_temporal_mismatch_matches_shifted_model_query_when_unclamped(sample_fie
 
     assert torch.allclose(out["u"][within_bounds], expected[:, 0:1][within_bounds])
     assert torch.allclose(out["v"][within_bounds], expected[:, 1:2][within_bounds])
-    # p is untouched by this perturbation per the Section 7 spec
+    # p is untouched by this perturbation by design (only u, v are modified)
     assert torch.allclose(out["p"], fields["p"])
 
 

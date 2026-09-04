@@ -116,9 +116,9 @@ def test_perfect_field_gives_near_zero_components(perfect_case):
 def test_pde_perturbations_raise_momentum_divergence(name, perfect_case):
     """
     Verifies Smom + Sdiv strictly increases from epsilon=0.01 to
-    epsilon=0.1 for perturbation types known (from the Issue #9 audit) to
-    inject a genuine PDE-residual violation: velocity_divergence, momentum,
-    and pressure.
+    epsilon=0.1 for perturbation types known (from the hallucination
+    verification audit) to inject a genuine PDE-residual violation:
+    velocity_divergence, momentum, and pressure.
 
     Inputs:
         name (str): Perturbation name, parametrized.
@@ -215,7 +215,7 @@ def test_normalize_and_baseline_scores_match_hand_computed_values():
 def test_select_threshold_is_the_95th_percentile():
     """
     Verifies select_threshold matches numpy's percentile function directly
-    (Section 8: tau = percentile95(PHS_valid)).
+    (tau = percentile95(PHS_valid), per phs.py's module docstring).
 
     Inputs:
         None.
@@ -230,9 +230,9 @@ def test_select_threshold_is_the_95th_percentile():
 def test_baseline_definitions_are_nested_subsets():
     """
     Verifies Score1 subset-of Score2 subset-of Score3's component sets, and
-    that Score3 (PHS) covers all 4 components -- matching WP5's intent that
-    each successive baseline is a strict superset of the simpler ones it is
-    compared against. If this breaks, the AUC(PHS) > AUC(Score2) acceptance
+    that Score3 (PHS) covers all 4 components -- each successive baseline is
+    meant to be a strict superset of the simpler ones it is compared
+    against. If this breaks, the AUC(PHS) > AUC(Score2) acceptance
     criterion stops meaning what it's supposed to.
 
     Inputs:
@@ -300,8 +300,8 @@ def test_evaluate_detection_raises_without_validation_clean_fields():
     """
     Verifies evaluate_detection() raises a clear RuntimeError (rather than
     silently producing garbage normalizers) when no clean validation-split
-    rows are present -- guards the calibration precondition documented in
-    Section 8 ("normalized using valid validation fields").
+    rows are present -- guards the calibration precondition that
+    normalizers are computed only from clean, validation-split fields.
 
     Inputs:
         None.
