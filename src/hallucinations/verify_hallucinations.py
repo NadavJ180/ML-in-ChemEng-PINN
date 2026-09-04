@@ -1,5 +1,5 @@
 """
-Hallucination Verification Script (Section 7 sanity checks)
+Hallucination Verification Script (sanity checks on the perturbation engine)
 
 This script answers the two DIFFERENT questions the hallucination benchmark
 depends on, and deliberately checks them over DIFFERENT epsilon ranges:
@@ -14,10 +14,11 @@ depends on, and deliberately checks them over DIFFERENT epsilon ranges:
      violation, and does the violation scale sensibly with epsilon?"
      -> Quantitative check (PDE residuals, periodic-boundary mismatch,
         deviation from the analytical solution), run across the FULL
-        epsilon sweep {0.005, 0.01, 0.02, 0.05, 0.1} and all 5 perturbation
-        types. This is a different claim from (1) and needs the full range
-        to be credible -- a monotonic, non-negligible violation curve is
-        much stronger evidence than two isolated points.
+        canonical epsilon sweep (EPSILON_VALUES) and every perturbation
+        type (PERTURBATION_NAMES, see perturbations.py). This is a
+        different claim from (1) and needs the full range to be credible --
+        a monotonic, non-negligible violation curve is much stronger
+        evidence than two isolated points.
 
 Outputs (per case, saved under plots/hallucination_verification/{case_id}/):
   - contour_eps_0.01_0.02.png   : Required deliverable -- clean vs. perturbed
@@ -83,7 +84,7 @@ def parse_args():
             case_id (str | None), all_cases (bool), device (str),
             res (int), time_frac (float), n_bc (int), output_dir (str).
     """
-    parser = argparse.ArgumentParser(description="Verify the physical hallucination dataset (Section 7).")
+    parser = argparse.ArgumentParser(description="Verify the physical hallucination dataset.")
     parser.add_argument("--case_id", type=str, default=None,
                         help="Case to generate full plots + table for. Defaults to the first case with a trained model.")
     parser.add_argument("--all_cases", action="store_true",
@@ -183,8 +184,8 @@ def build_boundary_pair_grid(T: float, n_points: int, time_frac: float, device: 
 def compute_clean_and_perturbed(model, x, y, t, params, perturbation_name: str, epsilon: float, track_gradients: bool = True):
     """
     Runs the model once to obtain the clean (u, v, p) prediction, then
-    applies the requested Section 7 perturbation on top of it, optionally
-    preserving the autograd graph so PDE residuals can be computed downstream.
+    applies the requested perturbation on top of it, optionally preserving
+    the autograd graph so PDE residuals can be computed downstream.
 
     Inputs:
         model (nn.Module): The trained BaselinePINN.
@@ -509,8 +510,6 @@ def build_residual_table(model, case_id: str, case_meta: dict, args):
     rows = []
 
     # --- Clean reference row ---
-    with torch.no_grad():
-        clean_preds = model(torch.cat([x, y, t], dim=1))
     # Residuals of the clean field need their own gradient-tracked pass
     clean_u, clean_v, clean_p = compute_clean_and_perturbed(model, x, y, t, params, "velocity_divergence", 0.0)[0].values()
     clean_res = residual_stats(clean_u, clean_v, clean_p, x, y, t, nu, scaler)
@@ -712,8 +711,8 @@ def plot_pressure_field_check(model, case_id: str, case_meta: dict, args, output
 def plot_vector_field_check(model, case_id: str, case_meta: dict, args, output_dir: Path,
                               vector_res: int = 18, demo_epsilon: float = 0.1):
     """
-    Generates quiver (vector) plots showing how each Section 7 perturbation
-    affects the DIRECTION of the velocity field, not just its magnitude.
+    Generates quiver (vector) plots showing how each perturbation affects
+    the DIRECTION of the velocity field, not just its magnitude.
 
     WHY THIS IS A DIFFERENT CHECK FROM THE CONTOUR PLOTS: velocity-magnitude
     contours (plot_visual_check, plot_full_sweep) show sqrt(u^2+v^2), which is
@@ -1115,7 +1114,7 @@ def main():
         raise ValueError(f"{primary_case_id} has no trained model in {models_dir}")
 
     print("=" * 60)
-    print("🔬 VERIFYING PHYSICAL HALLUCINATION DATASET (Section 7 sanity checks)")
+    print("🔬 VERIFYING PHYSICAL HALLUCINATION DATASET")
     print(f"Primary case (plots + table): {primary_case_id}")
     print(f"Visual imperceptibility check restricted to ε ∈ {VISUAL_CHECK_EPSILONS}")
     print(f"Quantitative residual checks run across ε ∈ {EPSILON_VALUES}")

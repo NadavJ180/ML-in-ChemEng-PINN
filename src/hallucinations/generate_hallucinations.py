@@ -1,5 +1,5 @@
 """
-Hallucination Dataset Generator (Section 7 execution script)
+Hallucination Dataset Generator
 
 For every case_id that has a trained, saved PINN (models/{case_id}_best.pth),
 this script:
@@ -7,10 +7,11 @@ this script:
   1. Loads the model and its evaluation grid (reusing the exact grid the
      model was trained/evaluated on when available, for consistency).
   2. Runs one clean forward pass to obtain the valid (u, v, p) baseline.
-  3. Applies all 5 Section 7 perturbation functions at all 5 epsilon
-     strengths {0.005, 0.01, 0.02, 0.05, 0.1} -> 25 hallucinated variants.
+  3. Applies every registered perturbation function (PERTURBATION_NAMES) at
+     every canonical epsilon strength (EPSILON_VALUES, see perturbations.py)
+     -> len(PERTURBATION_NAMES) * len(EPSILON_VALUES) hallucinated variants.
   4. Saves a single .pt file per case containing the clean baseline plus all
-     25 perturbed variants, each tagged with clear categorization labels.
+     perturbed variants, each tagged with clear categorization labels.
   5. Appends every (case, perturbation, epsilon) combination as a row to a
      global CSV/JSON index so downstream detection code (PHS scoring) can
      enumerate the full hallucinated dataset without re-opening every file.
@@ -55,7 +56,7 @@ def parse_args():
         args (argparse.Namespace): Parsed arguments with fields
             case_id (str | None), device (str), chunk_size (int).
     """
-    parser = argparse.ArgumentParser(description="Generate the physical hallucination dataset (Section 7).")
+    parser = argparse.ArgumentParser(description="Generate the physical hallucination dataset.")
     parser.add_argument("--case_id", type=str, default=None,
                         help="Only generate hallucinations for this specific case_id.")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
@@ -103,8 +104,9 @@ def get_evaluation_grid(case_id: str, T: float, tensors_dir: Path) -> torch.Tens
     """
     Reuses the exact evaluation grid the model saw during training/validation
     (data/tensors/{case_id}.pt) when available, since that keeps the
-    hallucination grid perfectly consistent with the WP3 acceptance-criteria
-    grid. Falls back to regenerating a fresh 64x64x20 grid otherwise.
+    hallucination grid perfectly consistent with the grid the model was
+    scored against during training. Falls back to regenerating a fresh
+    64x64x20 grid otherwise.
 
     Inputs:
         case_id (str): The case identifier (e.g. "case_00"), used to locate
@@ -157,10 +159,10 @@ def run_model_in_chunks(model, coords: torch.Tensor, device: str, chunk_size: in
 
 def generate_case_hallucinations(case_id, case_meta, project_root, device, chunk_size):
     """
-    Builds the full clean + 25-variant hallucination bundle for a single case:
+    Builds the full clean + hallucinated-variant bundle for a single case:
     loads the trained model, runs one clean forward pass on the evaluation
-    grid, then applies all 5 Section 7 perturbations at all 5 epsilon
-    strengths to produce the 25 hallucinated variants.
+    grid, then applies every registered perturbation at every canonical
+    epsilon strength to produce the hallucinated variants.
 
     Inputs:
         case_id (str): The case identifier (e.g. "case_00").
@@ -235,7 +237,7 @@ def generate_case_hallucinations(case_id, case_meta, project_root, device, chunk
                 # Run the shifted-time query on-device in chunks for VRAM safety,
                 # then bring the result back to CPU to match the rest of the bundle.
                 hallucinated = _temporal_mismatch_chunked(model, coords, params, epsilon, device, chunk_size)
-                # Section 7 only redefines (u, v) for this perturbation; pressure
+                # This perturbation only redefines (u, v); pressure
                 # stays at its clean value.
                 hallucinated["p"] = fields["p"].clone()
             else:
@@ -302,8 +304,8 @@ def _temporal_mismatch_chunked(model, coords, params, epsilon, device, chunk_siz
     Outputs:
         dict: {"u": hallucinated u (N, 1), "v": hallucinated v (N, 1)} on CPU.
               Does NOT include "p" — the caller is responsible for filling
-              it in with the clean pressure field, since Section 7 only
-              redefines (u, v) for this perturbation.
+              it in with the clean pressure field, since this perturbation
+              only redefines (u, v).
     """
     T = params["T"]
     x, y, t = coords["x"], coords["y"], coords["t"]
@@ -325,7 +327,7 @@ def _temporal_mismatch_chunked(model, coords, params, epsilon, device, chunk_siz
     v_tilde = torch.cat(v_chunks, dim=0)
 
     # "p" is intentionally omitted here; the caller fills it in with the clean
-    # pressure field, since Section 7 only redefines (u, v) for this perturbation.
+    # pressure field, since this perturbation only redefines (u, v).
     return {"u": u_tilde, "v": v_tilde}
 
 
@@ -366,7 +368,7 @@ def main():
     n_generated, n_skipped = 0, 0
 
     print("=" * 60)
-    print("🧪 GENERATING PHYSICAL HALLUCINATION DATASET (Section 7)")
+    print("🧪 GENERATING PHYSICAL HALLUCINATION DATASET")
     print(f"Perturbations: {PERTURBATION_NAMES}")
     print(f"Epsilon values: {EPSILON_VALUES}")
     print("=" * 60)
@@ -384,7 +386,8 @@ def main():
             n_skipped += 1
             continue
 
-        print(f"\n[{case_id}] Generating 25 hallucinated variants + clean baseline...")
+        print(f"\n[{case_id}] Generating {len(PERTURBATION_NAMES) * len(EPSILON_VALUES)} "
+              f"hallucinated variants + clean baseline...")
         bundle, index_rows = generate_case_hallucinations(
             case_id, case_meta, project_root, args.device, args.chunk_size
         )
