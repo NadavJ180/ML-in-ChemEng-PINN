@@ -1,0 +1,11 @@
+Setting,Value
+Total cases,30
+Train / Validation / Test split,20 / 5 / 5
+Reynolds number Re range,22.7 - 273.3
+Velocity scale U0 range,0.50 - 1.97
+Wavenumbers k used,"1, 2, 3"
+Perturbation types,5
+Perturbation type names,"velocity_divergence, momentum, pressure, temporal_mismatch, boundary"
+Epsilon values,"0.0001, 0.002, 0.01, 0.02, 0.03, 0.05"
+PHS components,"mom, div, bc, E"
+Threshold percentile,95th (of clean validation-split PHS)
