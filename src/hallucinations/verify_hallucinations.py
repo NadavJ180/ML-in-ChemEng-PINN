@@ -56,7 +56,7 @@ sys.path.append(str(project_root))
 from src.models.pinn import BaselinePINN
 from src.models.scaling import ResidualScaler
 from src.physics.navier_stokes import compute_residuals
-from src.physics.taylor_green import compute_nu, compute_T, generate_tgv
+from src.physics.taylor_green import compute_nu, compute_T, compute_decay_timescale, generate_tgv
 from src.hallucinations.perturbations import (
     apply_perturbation,
     EPSILON_VALUES,
@@ -501,7 +501,7 @@ def build_residual_table(model, case_id: str, case_meta: dict, args):
     nu = compute_nu(U0, Re, k)
     T = compute_T(U0, Re, k)
     scaler = ResidualScaler(U0, k)
-    params = {"U0": U0, "k": k, "T": T}
+    params = {"U0": U0, "k": k, "T": T, "tau_decay": compute_decay_timescale(nu, k)}
 
     x, y, t = build_interior_grid(T, args.res, args.time_frac, args.device)
     x_left, x_right, y_b, t_b = build_boundary_pair_grid(T, args.n_bc, args.time_frac, args.device)
@@ -597,7 +597,7 @@ def plot_visual_check(model, case_id: str, case_meta: dict, args, output_dir: Pa
     """
     Re, U0, k = case_meta["Re"], case_meta["U0"], case_meta["k"]
     T = compute_T(U0, Re, k)
-    params = {"U0": U0, "k": k, "T": T}
+    params = {"U0": U0, "k": k, "T": T, "tau_decay": compute_decay_timescale(compute_nu(U0, Re, k), k)}
     res = args.res
 
     x, y, t = build_interior_grid(T, res, args.time_frac, args.device)
@@ -669,7 +669,7 @@ def plot_pressure_field_check(model, case_id: str, case_meta: dict, args, output
     """
     Re, U0, k = case_meta["Re"], case_meta["U0"], case_meta["k"]
     T = compute_T(U0, Re, k)
-    params = {"U0": U0, "k": k, "T": T}
+    params = {"U0": U0, "k": k, "T": T, "tau_decay": compute_decay_timescale(compute_nu(U0, Re, k), k)}
     res = args.res
 
     x, y, t = build_interior_grid(T, res, args.time_frac, args.device)
@@ -759,7 +759,7 @@ def plot_vector_field_check(model, case_id: str, case_meta: dict, args, output_d
     """
     Re, U0, k = case_meta["Re"], case_meta["U0"], case_meta["k"]
     T = compute_T(U0, Re, k)
-    params = {"U0": U0, "k": k, "T": T}
+    params = {"U0": U0, "k": k, "T": T, "tau_decay": compute_decay_timescale(compute_nu(U0, Re, k), k)}
 
     x, y, t = build_interior_grid(T, vector_res, args.time_frac, args.device)
 
@@ -866,7 +866,7 @@ def plot_full_sweep(model, case_id: str, case_meta: dict, args, output_dir: Path
     """
     Re, U0, k = case_meta["Re"], case_meta["U0"], case_meta["k"]
     T = compute_T(U0, Re, k)
-    params = {"U0": U0, "k": k, "T": T}
+    params = {"U0": U0, "k": k, "T": T, "tau_decay": compute_decay_timescale(compute_nu(U0, Re, k), k)}
     res = args.res
 
     x, y, t = build_interior_grid(T, res, args.time_frac, args.device)
@@ -942,9 +942,15 @@ def plot_residual_curves(rows: list, case_id: str, output_dir: Path):
     # under-trained model), that baseline error dominates the ratio and
     # swamps the epsilon-dependent signal, making the curve look falsely
     # flat. rel_l2_vs_clean isolates the perturbation's own effect and scales
-    # with epsilon regardless of model quality. rel_l2_vs_analytical is still
-    # plotted as a dashed reference line so that saturation is visible rather
-    # than silently discarded.
+    # with epsilon regardless of model quality. (An earlier version of this
+    # plot also drew rel_l2_vs_analytical as a secondary dashed reference
+    # line, to show whether it was saturated -- useful while diagnosing why
+    # the original epsilon*T-based temporal_mismatch was hard to detect.
+    # Now that the perturbation itself scales with the case's own decay
+    # timescale and detection is confirmed to work (see the README's
+    # Findings section), that reference line no longer answers an open
+    # question and was removed as visual noise; rel_l2_vs_analytical is
+    # still available in residual_summary.csv/json for anyone who wants it.)
     dominant_metric = {
         "velocity_divergence": "mse_Rc",
         "momentum": "mse_Ru",
@@ -962,16 +968,6 @@ def plot_residual_curves(rows: list, case_id: str, output_dir: Path):
                 eps_vals.append(row["epsilon"])
                 metric_vals.append(row[metric_key])
         ax.plot(eps_vals, metric_vals, marker="o", label=f"{perturbation_name} ({metric_key})")
-
-    # Secondary reference line: shows whether rel_l2_vs_analytical is
-    # saturated by baseline model error (flat) or tracking epsilon (rising).
-    eps_vals_temporal, analytical_vals = [], []
-    for row in rows:
-        if row["perturbation_type"] == "temporal_mismatch":
-            eps_vals_temporal.append(row["epsilon"])
-            analytical_vals.append(row["rel_l2_vs_analytical"])
-    ax.plot(eps_vals_temporal, analytical_vals, marker="x", linestyle="--", color="gray", alpha=0.7,
-            label="temporal_mismatch (rel_l2_vs_analytical, reference)")
 
     ax.set_xscale("log")
     ax.set_yscale("log")

@@ -34,7 +34,7 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.append(str(project_root))
 
 from src.models.pinn import BaselinePINN
-from src.physics.taylor_green import compute_nu, compute_T
+from src.physics.taylor_green import compute_nu, compute_T, compute_decay_timescale
 from src.data.point_samplers import generate_evaluation_grid
 from src.hallucinations.perturbations import (
     apply_perturbation,
@@ -207,7 +207,7 @@ def generate_case_hallucinations(case_id, case_meta, project_root, device, chunk
     # the same device/model, but everything is stored back on CPU for saving.
     coords = {"x": x, "y": y, "t": t}
     fields = {"u": u_clean, "v": v_clean, "p": p_clean}
-    params = {"U0": U0, "k": k, "T": T}
+    params = {"U0": U0, "k": k, "T": T, "tau_decay": compute_decay_timescale(nu, k)}
 
     bundle = {
         "case_id": case_id,
@@ -283,13 +283,19 @@ def _temporal_mismatch_chunked(model, coords, params, epsilon, device, chunk_siz
     Chunked version of the temporal_mismatch perturbation (see
     src.hallucinations.perturbations.perturb_temporal_mismatch) so the
     shifted-time re-query never exceeds VRAM limits on large evaluation grids.
+    Duplicates the (small) shift-time formula rather than calling
+    perturb_temporal_mismatch directly, since that operates on the whole
+    tensor at once; only the chunking loop differs here.
 
     Inputs:
         model (nn.Module): The trained BaselinePINN to re-query.
         coords (dict): Evaluation grid coordinates with keys "x", "y", "t",
                         each a torch.Tensor of shape (N, 1).
-        params (dict): Case-specific physical constants; requires "T".
-        epsilon (float): Perturbation strength; the time shift is epsilon * T.
+        params (dict): Case-specific physical constants; requires "T" (for
+                        clamping) and "tau_decay" (the shift scale -- see
+                        src.physics.taylor_green.compute_decay_timescale).
+        epsilon (float): Perturbation strength; the (pre-clamp) time shift
+                          is epsilon * tau_decay.
         device (str): Target hardware device for inference ('cuda' or 'cpu').
         chunk_size (int): Number of points to process per forward-pass chunk.
 
@@ -301,7 +307,7 @@ def _temporal_mismatch_chunked(model, coords, params, epsilon, device, chunk_siz
     """
     T = params["T"]
     x, y, t = coords["x"], coords["y"], coords["t"]
-    t_shifted = t + epsilon * T
+    t_shifted = torch.clamp(t + epsilon * params["tau_decay"], min=0.0, max=T)
 
     u_chunks, v_chunks = [], []
     model.eval()

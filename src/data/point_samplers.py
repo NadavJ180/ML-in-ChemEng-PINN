@@ -72,7 +72,7 @@ def sample_periodic_boundaries(T: float, N_bc_per_axis: int = 1000) -> dict:
         N_bc_per_axis (int): Number of point pairs per boundary axis. Defaults to 1,000.
 
     Returns:
-        dict: A dictionary containing two keys ('x_bounds', 'y_bounds'), where each 
+        dict: ('x_bounds', 'y_bounds'), where each 
         value is a tuple of two tensors representing the paired boundary coordinates 
         (bottom / left, top / right).
     """

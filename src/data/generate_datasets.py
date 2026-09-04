@@ -65,10 +65,6 @@ def main():
         # Calculate and store ic_true directly in the dictionary
         U0_val = case["U0"]
         k_val = case["k"]
-        # FIX: phi_x and phi_y were never read from `case` here, so ic_true was
-        # always built with phi_x=0, phi_y=0 regardless of each case's actual
-        # target phase in cases_metadata.json. Every model was therefore
-        # trained against the wrong initial condition.
         phi_x_val = case["phi_x"]
         phi_y_val = case["phi_y"]
         x_ic = case_data["ic"][:, 0:1]
