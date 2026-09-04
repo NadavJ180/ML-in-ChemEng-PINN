@@ -1,103 +1,76 @@
 """
-Physical Hallucination Score (PHS) -- Core Formula Module (Section 8, WP5)
+Physical Hallucination Score (PHS) -- Core Formula Module
 
-Implements the 5 raw violation components and the normalization/scoring
-pipeline this project uses (extending the project write-up's Section 8 --
-see "DELIBERATE DEPARTURE FROM SECTION 8" below for why a 5th term was
-added):
+Implements the 4 raw violation components and the normalization/scoring
+pipeline this project uses:
 
     Smom = MSE(Ru) + MSE(Rv)                          (momentum violation)
     Sdiv = MSE(ux + vy)                                (divergence violation,
                                                          i.e. MSE(Rc))
-    Sbc  = MSE(s|x=0 - s|x=2pi) + MSE(s|y=0 - s|y=2pi)  (boundary violation,
-                                                         s = (u, v, p))
-    S_bc_local = MSE(Ru) + MSE(Rv), evaluated ONLY on a near-boundary band
-                                                         (localized boundary
-                                                         violation -- see
-                                                         compute_boundary_
-                                                         localization_violation)
+    Sbc  = near-boundary / far-from-boundary ratio of  (boundary violation --
+           the scaled momentum residual (see            see "WHY Sbc IS A
+           compute_boundary_localization_violation)      NEAR/FAR RATIO" below)
     E(t)     = mean_{x,y}[ (u^2 + v^2) / 2 ]            (kinetic energy)
     Ephys(t) = E(0) * exp(-4 * nu * k^2 * t)            (TGV's analytical
                                                          decay)
     SE   = MSE_t( E(t) - Ephys(t) )                     (energy violation)
 
     S_bar_j = Sj / (mean(Sj over clean VALIDATION-split fields) + 1e-12)
-    PHS     = S_bar_mom + S_bar_div + S_bar_bc + S_bar_bc_local + S_bar_E
+    PHS     = S_bar_mom + S_bar_div + S_bar_bc + S_bar_E
     tau     = percentile95(PHS over clean VALIDATION-split fields)
     hallucinated  <=>  PHS > tau
 
-WP5 also asks for residual-only baselines PHS is benchmarked against:
-    Score1 = S_bar_mom
-    Score2 = S_bar_mom + S_bar_div
-    Score3 = S_bar_mom + S_bar_div + S_bar_bc + S_bar_E   (Section 8's
-             original literal 4-term formula, kept as an ablation baseline
-             showing what including bc_local specifically changes)
-    Score4 = PHS (all 5 terms) -- THIS is the current, official PHS.
-(see BASELINE_DEFINITIONS below). The write-up's Score1/Score2 are written
-in terms of the raw Smom/Sdiv, but every score here is built from the SAME
-normalized components PHS uses -- otherwise Score1/Score2 would inherit
-the raw cross-case scale problem described below, making the baseline
-comparison meaningless. This module always operates on S_bar_j.
+This module also defines 2 residual-only baselines PHS is benchmarked
+against (see BASELINE_DEFINITIONS below):
+    Score1_momentum_only       = S_bar_mom
+    Score2_momentum_divergence = S_bar_mom + S_bar_div
+    Score3_PHS_full            = S_bar_mom + S_bar_div + S_bar_bc + S_bar_E
+                                  (= PHS, the official, currently-adopted score)
+Score1/Score2 could be written in terms of the raw Smom/Sdiv, but every
+score here is built from the SAME normalized components PHS uses --
+otherwise Score1/Score2 would inherit the raw cross-case scale problem
+described below, making the baseline comparison meaningless. This module
+always operates on S_bar_j.
 
-DELIBERATE DEPARTURE FROM SECTION 8: the write-up defines exactly 4
-components; this module uses 5. S_bc_local was originally an optional,
-opt-in 5th component (kept separate from the official sum) while it was
-being evaluated; it was promoted to a permanent, always-computed part of
-PHS once it was confirmed to close a real, structural detection gap Sbc
-cannot close by construction, regardless of tuning (see "WHY Sbc NEEDED A
-COMPANION" below) -- not a casual drift from the spec, a demonstrated fix
-kept in place after being shown to work. Score3 remains available specifically
-so the two formulas (with and without bc_local) can still be compared.
+WHY Sbc IS A NEAR/FAR RATIO, NOT A LITERAL PERIODICITY COMPARISON:
+the "boundary" perturbation's m(x) = exp(-x^2/sigma^2) + exp(-(2*pi-x)^2/sigma^2)
+satisfies m(0) == m(2*pi) by construction, so a check that only compares
+VALUES at the boundary pair (s|x=0 vs s|x=2*pi, or any derivative of it) is
+structurally blind to this perturbation type -- this follows for every
+derivative order, not just the raw value, since m(x) = f(x) + f(2*pi-x)
+for a smooth f, and every derivative of that sum matches at x=0 vs x=2*pi
+by the same symmetry. A spatially-LOCALIZED check catches it instead: does
+the field behave anomalously in a neighborhood of the edges, not just
+exactly on them (see compute_boundary_localization_violation below). This
+also turned out to be necessary for the OTHER 4 perturbation types too,
+not just "boundary" -- checked directly, a literal periodicity-comparison
+Sbc was essentially flat (~3.3e-7) and indistinguishable from its own
+clean baseline across every perturbation type in this benchmark, because
+the other perturbations are all built from integer-frequency trig
+functions that are exactly periodic on [0, 2*pi] by construction.
+Confirmed to work: the near/far ratio computed here climbs ~170x across
+the epsilon sweep for "boundary" specifically, while the original
+literal-Sbc formula stayed flat. See the README's Findings section for
+the fuller investigation and history of this replacement.
 
-THREE DELIBERATE DEVIATIONS FROM THE LITERAL SECTION 8 NOTATION FOR THE
-SHARED 4 TERMS (documented again at their point of use below):
+TWO DELIBERATE NON-DIMENSIONALIZATION CHOICES (documented again at their
+point of use below):
 
-  1. Smom, Sdiv are computed from residuals that are FIRST non-dimension-
-     alized via ResidualScaler (src.models.scaling), exactly as loss.py and
-     verify_hallucinations.py already do -- not left in raw physical units.
-     Without this, a case with a large sampled U0 would trivially have a
-     much larger Smom/Sdiv than a low-U0 case even with an equally
-     well-trained model, which would corrupt the cross-case pooled
-     normalization below (mean(Sj_valid) would be dominated by whichever
-     validation cases happen to have large U0).
+  1. Smom, Sdiv, and Sbc are all computed from residuals that are FIRST
+     non-dimensionalized via ResidualScaler (src.models.scaling), exactly as
+     loss.py and verify_hallucinations.py already do -- not left in raw
+     physical units. Without this, a case with a large sampled U0 would
+     trivially have a much larger Smom/Sdiv/Sbc than a low-U0 case even with
+     an equally well-trained model, which would corrupt the cross-case
+     pooled normalization below (mean(Sj_valid) would be dominated by
+     whichever validation cases happen to have large U0).
 
-  2. Sbc's u, v differences are divided by U0 and its p difference by
-     scale_p = U0^2 before squaring, mirroring loss.py's compute_bc_loss.
-     Same cross-case-comparability reason as (1).
-
-  3. Wavenumber k was found to correlate with a case's natural (clean-field)
-     residual scale even after (1)/(2)'s scaling -- see the README's Findings
+  2. Wavenumber k was found to correlate with a case's natural (clean-field)
+     residual scale even after (1)'s scaling -- see the README's Findings
      section for the full mechanism (raw fitting error increases with k, but
      ResidualScaler's U0^2*k divisor over-corrects for it). Not fixed here;
      documented as a known source of calibration sensitivity to how a
      train/validation/test split happens to distribute k across its splits.
-
-WHY Sbc NEEDED A COMPANION (confirmed empirically during Issue #9's
-verification audit, see verify_hallucinations.py's bc_violation_stats
-docstring): the "boundary" perturbation's
-m(x) = exp(-x^2/sigma^2) + exp(-(2*pi-x)^2/sigma^2) satisfies m(0) == m(2*pi)
-by construction, so BOTH x-edges are shifted by the identical amount and
-Sbc's raw value comparison cannot see it -- Sbc does NOT rise for the
-"boundary" perturbation type specifically. This alone didn't break PHS as a
-whole (Smom/Sdiv already made "boundary" fully detectable via the added
-bump's curvature feeding the momentum/divergence residuals), but it did
-mean Sbc's own name didn't match what it could actually detect for one of
-the 5 perturbation types it's nominally responsible for.
-
-IMPORTANT: this blind spot is NOT fixable by comparing a higher-order
-derivative at the boundary pair instead of the raw value -- m(x) is built
-as f(x) + f(2*pi - x) for a smooth f, so m and EVERY derivative of m match
-at x=0 vs x=2*pi (checked numerically up to 2nd order; this follows
-generally since d^n/dx^n [f(2*pi-x)] at x=0 equals (-1)^n * f^(n)(2*pi),
-which pairs exactly with f^(n)(0) at x=2*pi by the same symmetry). No
-VALUE-COMPARISON check evaluated exactly at the boundary pair, of any
-order, can ever separate this perturbation from a clean field. Catching it
-requires a spatially-LOCALIZED check instead (does the field behave
-anomalously in a neighborhood of the edges, not just exactly on them) --
-see compute_boundary_localization_violation below, adapted from Issue #9's
-boundary_localization_ratio diagnostic. Confirmed to work: raw S_bc_local
-climbed from 2e-5 to 3.4e-3 (a ~170x increase) across the epsilon sweep for
-the "boundary" perturbation, while Sbc itself stayed flat at ~2.9e-7.
 
 Every function below takes an already-loaded, eval-mode BaselinePINN and
 computes one thing at a time, mirroring the split used throughout
@@ -119,46 +92,13 @@ from src.physics.taylor_green import generate_tgv, compute_decay_timescale
 from src.data.point_samplers import sample_interior_points
 from src.hallucinations.perturbations import apply_perturbation
 
-# The 4 raw PHS components, per Section 8's literal formula (mom, div, bc, E).
-# HISTORY: an optional, then briefly permanent, 5th component S_bc_local was
-# added alongside the original Sbc (a periodicity/value comparison,
-# s|x=0 vs s|x=2pi) after finding Sbc could not detect the "boundary"
-# perturbation type by construction (see compute_boundary_localization_violation's
-# docstring). Investigated further and found this was an UNDERSTATEMENT of the
-# actual problem: checked directly, raw Sbc is essentially flat -- ~3.5e-7,
-# indistinguishable from the ~3.3e-7 clean baseline -- across EVERY perturbation
-# type and epsilon in this benchmark, not just "boundary". Reason: velocity_
-# divergence/momentum/pressure all add perturbation terms built from INTEGER-
-# frequency trig functions (e.g. sin(3x+0.7)sin(2y), sin(4x)cos(3y)cos(2t),
-# cos(5x)cos(4y)) -- these are exactly periodic on [0, 2*pi] by construction
-# (shifting x by 2*pi shifts the argument by an integer multiple of 2*pi,
-# leaving sin/cos unchanged), so adding them can never break s(0)=s(2*pi),
-# regardless of how large epsilon gets. This is a property of how the
-# perturbations happen to be built (a very natural choice on a periodic
-# domain), not a flaw in Sbc's own logic -- periodicity genuinely is the
-# correct boundary condition here, for any field regardless of internal
-# symmetry (checked: it holds for the analytical TGV solution at ANY phase,
-# since k is always an integer) -- but the practical result is the same:
-# Sbc contributes essentially zero discriminative signal against this
-# benchmark's actual perturbations. Given that, the original Sbc formula has
-# been DELETED entirely (not kept alongside, and not kept for reference --
-# removed on request once its replacement was confirmed to work): "bc" in
-# PHS_COMPONENT_NAMES is now computed via compute_boundary_localization_violation,
-# which no longer computes what its name suggests only "locally" -- see
-# that function's own docstring for why it's now a near/far RATIO, not the
-# original periodicity comparison and not just the near-boundary value alone.
-# This returns PHS to exactly Section 8's original 4-term shape and 3-score
-# structure (Score1/Score2/Score3=PHS) -- see BASELINE_DEFINITIONS below and
-# the README's Findings section for the fuller investigation, including a
-# checked-directly finding that the OLD Sbc+S_bc_local combination (5
-# components) was mostly adding redundant noise for 4 of 5 perturbation
-# types (bc_local correlates with, and mostly duplicates, Smom's own signal
-# for globally-applied perturbations) with genuine new signal only for
-# "boundary" specifically.
+# The 4 raw PHS components. "bc" is computed via compute_boundary_localization_violation
+# (a near/far residual ratio), NOT a literal periodicity comparison -- see this
+# module's docstring ("WHY Sbc IS A NEAR/FAR RATIO") for why, and the README's Findings
+# section for the fuller investigation.
 PHS_COMPONENT_NAMES = ["mom", "div", "bc", "E"]
 
-# WP5's 2 residual-only baselines PHS is compared against, plus PHS itself as
-# Score3 -- back to exactly 3 scores, matching Section 8's original structure.
+# 2 residual-only baselines PHS is compared against, plus PHS itself as Score3.
 BASELINE_DEFINITIONS = {
     "Score1_momentum_only": ["mom"],
     "Score2_momentum_divergence": ["mom", "div"],
@@ -269,7 +209,7 @@ def compute_momentum_divergence_violation(model, T: float, params: dict, perturb
                                            n_interior: int = 20000, chunk_size: int = 8000,
                                            device: str = "cpu", seed: int = None) -> tuple[float, float]:
     """
-    Computes Smom = MSE(Ru) + MSE(Rv) and Sdiv = MSE(Rc) [Section 8] for one
+    Computes Smom = MSE(Ru) + MSE(Rv) and Sdiv = MSE(Rc) for one
     (perturbation, epsilon) field, on a fresh interior collocation sample
     (reusing src.data.point_samplers.sample_interior_points -- the SAME
     distribution training's own PDE loss term is evaluated on), processed
@@ -346,14 +286,14 @@ def compute_boundary_localization_violation(model, T: float, params: dict, pertu
     of how large that uniform rise is. If a perturbation concentrates near
     the edges specifically (like "boundary"), only the numerator rises,
     so the ratio spikes. This directly restores the original design intent
-    from Issue #9's boundary_localization_ratio diagnostic in
+    from the boundary_localization_ratio diagnostic in
     verify_hallucinations.py (which this was adapted from, and which
     already used a near/far ratio) -- the ratio was lost when this was
     first adapted for PHS scoring, keeping only the numerator; this
     restores it.
 
-    This REPLACES the original Section 8 Sbc entirely (a periodicity/value
-    comparison, s|x=0 vs s|x=2pi) -- it is not an addition alongside it.
+    This REPLACES a literal periodicity/value comparison (s|x=0 vs s|x=2pi)
+    entirely -- it is not an addition alongside it.
     Checked directly and found the original formula was essentially blind
     to EVERY perturbation type in this benchmark (not just "boundary"):
     velocity_divergence/momentum/pressure all add perturbation terms built
@@ -441,7 +381,7 @@ def compute_energy_violation(model, T: float, params: dict, perturbation_name: s
                               U0: float, k: int, phi_x: float, phi_y: float, nu: float,
                               n_time: int = 20, energy_res: int = 32, device: str = "cpu") -> float:
     """
-    Computes SE = MSE_t( E(t) - Ephys(t) ) [Section 8] for one
+    Computes SE = MSE_t( E(t) - Ephys(t) ) for one
     (perturbation, epsilon) field, where E(t) = mean_{x,y}[(u^2+v^2)/2] is
     evaluated at n_time slices spanning [0, T] on an energy_res x energy_res
     spatial grid, and Ephys(t) is obtained by evaluating generate_tgv() on
@@ -452,8 +392,8 @@ def compute_energy_violation(model, T: float, params: dict, perturbation_name: s
     Kinetic energy is phase-invariant for the TGV solution (spatial
     averages of sin^2/cos^2 over a full period don't depend on the phase
     offset), so this remains a correct energy-decay reference even for the
-    currently phase-mismatched trained models identified in Issue #9's
-    audit -- any phi_x, phi_y works identically here; the case's own
+    currently phase-mismatched trained models identified in the
+    hallucination-verification audit -- any phi_x, phi_y works identically here; the case's own
     values are used for consistency with the rest of the pipeline.
 
     No gradient tracking needed; this is a value comparison, not a PDE residual.
@@ -506,10 +446,10 @@ def compute_relative_error(model, T: float, params: dict, perturbation_name: str
     pooling, so the three quantities contribute on a comparable footing
     rather than whichever has the largest raw magnitude dominating the sum.
 
-    DELIBERATELY DIFFERENT FROM verify_hallucinations.py's visual_deviation
-    (Issue #9), which compares (u, v) ONLY -- that metric's purpose is "does
-    this look different in a velocity contour plot," matching what Issue
-    9's plots actually show. This function's purpose is different: "how
+    DELIBERATELY DIFFERENT FROM verify_hallucinations.py's visual_deviation,
+    which compares (u, v) ONLY -- that metric's purpose is "does this look
+    different in a velocity contour plot," matching what its own plots
+    actually show. This function's purpose is different: "how
     much did the full field change, in a way that's comparable across
     every perturbation type" -- and "pressure" only modifies p, leaving
     (u, v) completely untouched, so a velocity-only version of this metric
@@ -520,7 +460,7 @@ def compute_relative_error(model, T: float, params: dict, perturbation_name: str
     "how much did this change" measure for this function's purpose anyway.
 
     Unlike Smom/Sdiv/Sbc/SE, this needs no gradients (it's a plain value
-    comparison), and it is NOT one of PHS's 4 official Section 8
+    comparison), and it is NOT one of PHS's 4 official
     components -- it exists purely to express "how much does epsilon
     actually change the field" as a single, physically interpretable
     number that's comparable ACROSS perturbation types. Epsilon itself is
@@ -589,7 +529,7 @@ def compute_phs_components(model, case_meta: dict, nu: float, T: float, scaler,
                             device: str = "cpu", bc_local_band_width_fraction: float = 0.05,
                             bc_local_n_points: int = 20000, seed: int = None) -> dict:
     """
-    Computes the 5 raw PHS components for ONE (case, perturbation, epsilon)
+    Computes the 4 raw PHS components for ONE (case, perturbation, epsilon)
     field. This is the single entry point evaluate_phs.py calls per row of
     the hallucination index.
 
@@ -651,16 +591,15 @@ def compute_phs_components(model, case_meta: dict, nu: float, T: float, scaler,
 def compute_normalizers(valid_validation_rows: pd.DataFrame, component_names: list = None) -> dict:
     """
     Computes the per-component normalizers: mean(Sj) over clean
-    (label == "clean") fields from the VALIDATION split only [Section 8:
-    "normalized using valid validation fields"].
+    (label == "clean") fields from the VALIDATION split only.
 
     Inputs:
         valid_validation_rows (pd.DataFrame): Rows already filtered to
             split == "validation" and label == "clean", with a column for
             each name in component_names.
         component_names (list[str] | None): Which raw columns to
-            normalize. Defaults to PHS_COMPONENT_NAMES (all 5, including
-            bc_local); pass a narrower list only for a specific ablation.
+            normalize. Defaults to PHS_COMPONENT_NAMES (all 4); pass a
+            narrower list only for a specific ablation.
 
     Outputs:
         dict: {component_name: normalizer (float)}.
@@ -675,14 +614,14 @@ def normalize_components(df: pd.DataFrame, normalizers: dict, eps: float = 1e-12
                           component_names: list = None) -> pd.DataFrame:
     """
     Adds one "{component}_bar" column per requested component:
-    S_bar_j = Sj / (mean(Sj_valid) + eps) [Section 8].
+    S_bar_j = Sj / (mean(Sj_valid) + eps).
 
     Inputs:
         df (pd.DataFrame): Must contain a raw column for each name in
             component_names.
         normalizers (dict): Output of compute_normalizers().
         eps (float): Numerical floor preventing division by zero.
-        component_names (list[str] | None): Defaults to PHS_COMPONENT_NAMES (all 5).
+        component_names (list[str] | None): Defaults to PHS_COMPONENT_NAMES (all 4).
 
     Outputs:
         pd.DataFrame: `df` with new columns appended (copy, not in-place).
@@ -717,14 +656,12 @@ def compute_baseline_scores(df: pd.DataFrame, baseline_definitions: dict = None)
 
 def select_threshold(validation_clean_scores: np.ndarray, percentile: float = 95.0) -> float:
     """
-    Selects tau = percentile95(score over clean VALIDATION-split fields)
-    [Section 8: "Select the threshold tau from validation fields"].
+    Selects tau = percentile95(score over clean VALIDATION-split fields).
 
     Inputs:
         validation_clean_scores (array-like): One score's values over the
             clean, validation-split fields only.
-        percentile (float): Which percentile to use. Defaults to 95, per
-                             Section 8.
+        percentile (float): Which percentile to use. Defaults to 95.
 
     Outputs:
         float: tau.
