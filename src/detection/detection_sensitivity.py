@@ -13,8 +13,8 @@ confusion -- worth asking "why two lists" independent of what either one
 contained. Consolidated: this script now imports and uses the SAME
 EPSILON_VALUES every other script uses, rather than a separate grid. The
 one deliberate exception project-wide remains VISUAL_CHECK_EPSILONS in
-verify_hallucinations.py, independently justified by the write-up's own
-named visual-plausibility values.
+verify_hallucinations.py, independently fixed at its own named
+visual-plausibility values.
 
 WHAT THIS MEANS FOR THIS SCRIPT'S ROLE: it can no longer independently probe
 epsilon values below the canonical floor (there's only one floor now, and

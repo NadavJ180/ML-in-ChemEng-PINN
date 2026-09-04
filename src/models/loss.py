@@ -10,7 +10,7 @@ before calculating the MSE to prevent gradient explosions.
 import torch
 import torch.nn as nn
 
-# Import your existing dimensional physics engine
+# Import the dimensional physics engine
 from src.physics.navier_stokes import compute_residuals
 from src.physics.taylor_green import compute_nu
 from src.models.scaling import ResidualScaler
@@ -19,12 +19,12 @@ class LossEvaluator:
     def __init__(self, Re: float, U0: float, k: float):
         """
         Initializes the loss evaluator with the required physics parameters.
-        
+
         Inputs:
             Re (float): The Reynolds number.
             U0 (float): Characteristic velocity.
             k (float): Wave number.
-        
+
         Outputs:
             None. (Initializes the LossEvaluator object).
         """
@@ -37,7 +37,7 @@ class LossEvaluator:
         
         self.mse = nn.MSELoss()
         
-        # Loss weights defined in Section 6 specifications
+        # Loss weights (see the README's Project Workflow section)
         self.lambda_ns = 1.0
         self.lambda_div = 10.0
         self.lambda_ic = 10.0
@@ -52,17 +52,17 @@ class LossEvaluator:
 
     def compute_interior_loss(self, model, interior_coords):
         """
-        Calculates L_NS and L_div by routing coordinates through the 
+        Calculates L_NS and L_div by routing coordinates through the
         established physics engine to get the scaled Navier-Stokes residuals.
-        
+
         Inputs:
             model (nn.Module): The initialized PINN model.
             interior_coords (torch.Tensor): Spatiotemporal collocation points of shape (N_int, 3).
-            
+
         Outputs:
             loss_ns (torch.Tensor): The scaled combined Mean Squared Error of the u and v momentum residuals.
             loss_div (torch.Tensor): The scaled Mean Squared Error of the continuity (divergence) residual.
-            loss_p (torch.Tensor): The sclaed pressure anchoring loss (mean of p squared).
+            loss_p (torch.Tensor): The scaled pressure anchoring loss (mean of p squared).
         """
         # 1. Slice and enable gradients for independent coordinate tracking
         x = interior_coords[:, 0:1].clone().requires_grad_(True)
@@ -78,7 +78,7 @@ class LossEvaluator:
         v = predictions[:, 1:2]
         p = predictions[:, 2:3]
         
-        # 4. Call your existing physics function with the TRUE dimensional nu
+        # 4. Call the physics engine with the TRUE dimensional nu
         R_u, R_v, R_c = compute_residuals(u, v, p, x, y, t, self.nu)
         
         # Calculate raw (unscaled) NS loss for diagnostic terminal logging
@@ -103,12 +103,12 @@ class LossEvaluator:
     def compute_ic_loss(self, model, ic_coords, ic_true):
         """
         Calculates L_IC by comparing scaled model predictions at t=0 to the true scaled initial conditions.
-        
+
         Inputs:
             model (nn.Module): The initialized PINN model.
             ic_coords (torch.Tensor): Spatial coordinates at t=0 of shape (N_ic, 3).
             ic_true (torch.Tensor): Exact analytical values for u and v at t=0, shape (N_ic, 3).
-            
+
         Outputs:
             loss_ic (torch.Tensor): Mean Squared Error between predicted and true initial velocities.
         """
@@ -124,16 +124,16 @@ class LossEvaluator:
     def compute_bc_loss(self, model, bc_left, bc_right, bc_bottom, bc_top):
         """
         Calculates L_BC by enforcing periodicity at the scaled domain boundaries.
-        
+
         Inputs:
             model (nn.Module): The initialized PINN model.
             bc_left (torch.Tensor): Coordinates on the left boundary x=0, shape (N_bc, 3).
             bc_right (torch.Tensor): Coordinates on the right boundary x=2pi, shape (N_bc, 3).
             bc_bottom (torch.Tensor): Coordinates on the bottom boundary y=0, shape (N_bc, 3).
             bc_top (torch.Tensor): Coordinates on the top boundary y=2pi, shape (N_bc, 3).
-            
+
         Outputs:
-            loss_bc (torch.Tensor): Scaled Sum of Mean Squared Errors enforcing identical predictions 
+            loss_bc (torch.Tensor): Scaled Sum of Mean Squared Errors enforcing identical predictions
                                     across periodic boundaries.
         """
         pred_left = model(bc_left)
@@ -164,12 +164,12 @@ class LossEvaluator:
     def __call__(self, model, batch, ic_true):
         """
         Executes the full loss evaluation, applying the lambda weights.
-        
+
         Inputs:
             model (nn.Module): The initialized PINN model.
             batch (dict): Dictionary containing all generated coordinate tensors.
             ic_true (torch.Tensor): Exact analytical initial conditions for the IC batch.
-            
+
         Outputs:
             total_loss (torch.Tensor): The aggregated, scaled, weighted loss tensor for backpropagation.
             metrics (dict): Dictionary of detached float values for terminal logging and plotting.

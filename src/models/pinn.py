@@ -16,12 +16,12 @@ class BaselinePINN(nn.Module):
     Architecture Specifications:
     - 6 hidden layers, 64 neurons per hidden layer.
     - Activation: Tanh.
-    - Precision: Float32 (single precision for VRAM efficiency).
-    
+    - Precision: Float64 (needed for numerically stable high-order PDE derivatives).
+
     Input/Output Mapping:
     - Inputs: (x, y, t) spatial and temporal coordinates.
     - Features: [x, y, t, sin(x), cos(x), sin(y), cos(y)]
-    - Outputs: (\hat{u}, \hat{v}, \hat{p}) predicted velocity and pressure fields.
+    - Outputs: (u_hat, v_hat, p_hat) predicted velocity and pressure fields.
     """
     def __init__(self, k: float):
         super(BaselinePINN, self).__init__()
@@ -45,7 +45,7 @@ class BaselinePINN(nn.Module):
         # Register the sequential model
         self.network = nn.Sequential(*layers)
         
-        # Enforce Float64 for memory efficiency
+        # Float64 is required for numerically stable second-order derivatives (PDE residuals)
         self.to(torch.float64)
 
     def forward(self, x_in):
@@ -55,8 +55,8 @@ class BaselinePINN(nn.Module):
         Inputs: 
         x_in : torch.Tensor of shape (N, 3) representing raw (x, y, t)
         
-        Outputs: 
-        predictions : torch.Tensor of shape (N, 3) representing (\hat{u}, \hat{v}, \hat{p})
+        Outputs:
+        predictions : torch.Tensor of shape (N, 3) representing (u_hat, v_hat, p_hat)
         """
         # Ensure input tensor is float64
         x_in = x_in.to(torch.float64)

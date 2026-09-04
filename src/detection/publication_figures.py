@@ -1,8 +1,8 @@
 """
-Publication Figures & Tables (Issue #12: Figures 1-3, Issue #13: Tables 1-2)
+Publication Figures & Tables
 
-Generates the exact deliverables WP6 asks for, per the write-up's Section
-9.6:
+Generates a small, curated set of illustrative figures and tables for a
+paper:
 
     Figure 1: Valid field, hallucinated field, difference map, and
               residual heatmap.
@@ -16,21 +16,18 @@ Generates the exact deliverables WP6 asks for, per the write-up's Section
 WHY A SEPARATE SCRIPT rather than extending verify_hallucinations.py or
 evaluate_phs.py: those two produce EXHAUSTIVE diagnostic material (every
 perturbation type, every epsilon, multiple views per case) for verifying
-and debugging the pipeline -- exactly what Issues #9/#10 needed. WP6 asks
-for a small, CURATED set of illustrative figures for a paper, sized and
-styled for print rather than on-screen inspection. Keeping this separate
-means the diagnostic scripts stay focused on exhaustive verification and
-this one stays focused on "what actually goes in the PDF," without either
-job compromising the other's defaults.
+and debugging the pipeline. This script instead produces a small, CURATED
+set of illustrative figures for a paper, sized and styled for print rather
+than on-screen inspection. Keeping this separate means the diagnostic
+scripts stay focused on exhaustive verification and this one stays focused
+on "what actually goes in the PDF," without either job compromising the
+other's defaults.
 
-IEEE double-column sizing conventions used throughout (see IEEE_* constants
-below): IEEE_COL_WIDTH (3.5in) is a single-column figure width;
-IEEE_PAGE_WIDTH (7.16in) spans both columns. Font sizes are set explicitly
-(8-9pt) rather than left at matplotlib defaults (10-12pt), which look
-oversized once a figure is scaled down to print at these physical
-dimensions. Figure 1 (4 side-by-side panels) and Figure 3 (a heatmap with
-long perturbation-type labels) both use the double-column width; Figure 2
-(2 panels) fits comfortably at double-column width too, at a shorter height.
+IEEE double-column sizing convention used throughout: IEEE_PAGE_WIDTH
+(7.16in) is the full page width spanning both columns. Font sizes are set
+explicitly (8-9pt) rather than left at matplotlib defaults (10-12pt),
+which look oversized once a figure is scaled down to print at these
+physical dimensions.
 
 Deliberately reuses rather than duplicates: Table 2 and Figure 2's ROC
 panel read directly from evaluate_phs.py's own outputs
@@ -71,17 +68,15 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.append(str(project_root))
 
 from src.models.pinn import BaselinePINN
-from src.models.scaling import ResidualScaler
 from src.physics.taylor_green import compute_nu, compute_T
 from src.physics.navier_stokes import compute_residuals
 from src.hallucinations.generate_hallucinations import load_case_metadata
 from src.hallucinations.perturbations import apply_perturbation, PERTURBATION_NAMES, EPSILON_VALUES
-from src.detection.phs import PHS_COMPONENT_NAMES, BASELINE_DEFINITIONS
+from src.detection.phs import PHS_COMPONENT_NAMES
 
-# IEEE double-column page conventions (inches). A single column is ~3.5in wide; the full text
-# width spanning both columns is ~7.16in. Font sizes are set explicitly (see FIGURE_FONT_SIZE)
-# since matplotlib's defaults look oversized once scaled down to these physical dimensions.
-IEEE_COL_WIDTH = 3.5
+# IEEE double-column page conventions (inches). The full text width spanning both columns is
+# ~7.16in. Font sizes are set explicitly (see FIGURE_FONT_SIZE) since matplotlib's defaults
+# look oversized once scaled down to these physical dimensions.
 IEEE_PAGE_WIDTH = 7.16
 FIGURE_FONT_SIZE = 8
 FIGURE_DPI = 300  # print-quality; matches typical IEEE submission requirements
@@ -99,7 +94,7 @@ def parse_args():
     Outputs:
         args (argparse.Namespace).
     """
-    parser = argparse.ArgumentParser(description="Generate WP6's publication figures and tables.")
+    parser = argparse.ArgumentParser(description="Generate the paper's publication figures and tables.")
     parser.add_argument("--case_id", type=str, default="case_00",
                         help="Case used for Figure 1's illustrative example.")
     parser.add_argument("--perturbation_type", type=str, default="velocity_divergence",
@@ -262,9 +257,9 @@ def make_figure1(args, case_meta_by_id, output_dir):
 def make_figure2(phs_df, tau, output_dir):
     """
     Figure 2: Histogram of log10(PHS) and ROC curve -- both restricted to
-    Score3_PHS_full specifically (the official PHS), matching the
-    write-up's singular "the PHS" framing. The fuller multi-score ROC
-    comparison (Score1-4 overlaid) remains available separately in
+    Score3_PHS_full specifically (the official, currently-adopted PHS
+    score). The fuller multi-baseline ROC comparison (every score in
+    BASELINE_DEFINITIONS overlaid) remains available separately in
     evaluate_phs.py's own roc_curves.png for the ablation discussion --
     this figure is the clean, single-score headline version for the paper.
 
@@ -351,7 +346,7 @@ def make_figure2(phs_df, tau, output_dir):
 def make_figure3(phs_df, output_dir):
     """
     Figure 3: Violation signature heatmap -- rows are perturbation types,
-    columns are the 5 raw PHS components, cell value is that component's
+    columns are the 4 raw PHS components, cell value is that component's
     NORMALIZED value (the same S_bar quantity evaluate_phs.py sums into
     scores), averaged over test-split cases at the LARGEST epsilon in
     EPSILON_VALUES (the strongest, clearest signal for each cell).
@@ -502,7 +497,7 @@ def make_table2(metrics_summary_path, output_dir):
     divergence, and full PHS -- read directly from evaluate_phs.py's own
     detection_metrics_summary.csv rather than recomputed, so this table
     can never disagree with the numbers evaluate_phs.py itself reports.
-    Exactly the write-up's literal 3-way comparison now -- an earlier
+    A clean 3-way comparison now -- an earlier
     version also carried a 4th "Score3, without bc_local" ablation row from
     when PHS had 5 components; that structure was replaced (see the
     README's Findings section: the original Sbc was found to be blind to
@@ -583,19 +578,19 @@ def main():
     print("=" * 60)
 
     make_figure1(args, case_meta_by_id, output_dir)
-    print(f"🖼️  Wrote figure1_valid_hallucinated_diff_residual.png")
+    print("🖼️  Wrote figure1_valid_hallucinated_diff_residual.png")
 
     make_figure2(phs_df, tau, output_dir)
-    print(f"🖼️  Wrote figure2_phs_histogram_and_roc.png")
+    print("🖼️  Wrote figure2_phs_histogram_and_roc.png")
 
     make_figure3(phs_df, output_dir)
-    print(f"🖼️  Wrote figure3_violation_signature_heatmap.png")
+    print("🖼️  Wrote figure3_violation_signature_heatmap.png")
 
     make_table1(case_meta_by_id, output_dir)
-    print(f"📊 Wrote table1_experimental_setup.csv / .tex")
+    print("📊 Wrote table1_experimental_setup.csv / .tex")
 
     make_table2(metrics_summary_path, output_dir)
-    print(f"📊 Wrote table2_detection_results.csv / .tex")
+    print("📊 Wrote table2_detection_results.csv / .tex")
 
     print("=" * 60)
     print(f"✅ All outputs written to {output_dir.relative_to(project_root)}")

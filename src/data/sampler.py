@@ -9,9 +9,13 @@ Neural Network (PINN) training.
 """
 
 import json
+import sys
 import numpy as np
 from pathlib import Path
 from typing import Dict, List, Any
+
+sys.path.append(str(Path(__file__).parent.parent.parent))
+from src.utils.seed import set_global_seed
 
 
 def generate_randomized_cases(num_cases: int = 30, seed: int = 42) -> List[Dict[str, Any]]:
@@ -27,7 +31,7 @@ def generate_randomized_cases(num_cases: int = 30, seed: int = 42) -> List[Dict[
               the physical parameters (U0, k, Re, phi_x, phi_y) and metadata for a single case.
     """
     # Set seed for strict reproducibility across runs
-    np.random.seed(seed)
+    set_global_seed(seed)
     
     cases = []
     for i in range(num_cases):

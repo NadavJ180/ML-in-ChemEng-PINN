@@ -16,13 +16,14 @@ project_root = Path(__file__).parent.parent.parent
 # 2. Force Python to add the project root to its search path
 sys.path.append(str(project_root))
 
-# Import your actual physics and data functions
+# Import the physics and data generation functions
 from src.data.point_samplers import generate_case_dataset
-from src.physics.taylor_green import compute_T
+from src.physics.taylor_green import compute_T, compute_nu, generate_tgv
+from src.utils.seed import set_global_seed
 
 def main():
     # Lock the random number generator so everyone gets the exact same points
-    torch.manual_seed(42)
+    set_global_seed(42)
 
     # Setup paths
     project_root = Path(__file__).parent.parent.parent
@@ -62,16 +63,18 @@ def main():
                     if isinstance(subval, tuple): # Handling the bc dictionary structure
                         case_data[key][subkey] = tuple(t.to(torch.float64) for t in subval)
 
-        # Calculate and store ic_true directly in the dictionary
+        # Calculate and store ic_true directly in the dictionary, via the same
+        # analytical TGV formula used everywhere else (generate_tgv), evaluated at t=0
         U0_val = case["U0"]
         k_val = case["k"]
         phi_x_val = case["phi_x"]
         phi_y_val = case["phi_y"]
+        nu_val = compute_nu(U0_val, case["Re"], k_val)
         x_ic = case_data["ic"][:, 0:1]
         y_ic = case_data["ic"][:, 1:2]
+        t_ic = torch.zeros_like(x_ic)
 
-        u_true = U0_val * torch.sin(k_val * x_ic + phi_x_val) * torch.cos(k_val * y_ic + phi_y_val)
-        v_true = -U0_val * torch.cos(k_val * x_ic + phi_x_val) * torch.sin(k_val * y_ic + phi_y_val)
+        u_true, v_true, _ = generate_tgv(x_ic, y_ic, t_ic, U0_val, k_val, phi_x_val, phi_y_val, nu_val)
         case_data["ic_true"] = torch.cat([u_true, v_true], dim=1)
 
         # Save the dictionary as a compressed PyTorch file

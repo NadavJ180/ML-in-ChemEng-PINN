@@ -36,7 +36,7 @@ def compute_residuals(u: torch.Tensor, v: torch.Tensor, p: torch.Tensor,
         x  : Spatial x-coordinate tensor (requires_grad=True).
         y  : Spatial y-coordinate tensor (requires_grad=True).
         t  : Time coordinate tensor (requires_grad=True).
-        nu : The kinematic viscocity of the fluid flow.
+        nu : The kinematic viscosity of the fluid flow.
         
     Returns:
         A tuple containing the PDE residuals:

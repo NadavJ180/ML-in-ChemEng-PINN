@@ -1,8 +1,8 @@
 """
-PHS Detection Evaluation Script (Section 8, WP5)
+PHS Detection Evaluation Script
 
 For every (case_id, perturbation_type, epsilon) row listed in
-data/hallucinations/hallucination_index.json (produced by Issue #8's
+data/hallucinations/hallucination_index.json (produced by
 src/hallucinations/generate_hallucinations.py), this script:
 
   1. Loads that case's trained model once, then computes the 4 raw PHS
@@ -14,24 +14,26 @@ src/hallucinations/generate_hallucinations.py), this script:
      PDE residuals, so the field has to be recomputed here regardless. The
      index is still exactly what makes this script possible without
      re-deriving which (case, perturbation, epsilon, split, label) combos
-     exist -- that enumeration is the part Issue #8's bundle was for.
+     exist -- that enumeration is what generate_hallucinations.py's bundle
+     is for.
      NOTE: "Sbc" here is computed via compute_boundary_localization_violation,
-     NOT the original periodicity-comparison formula from Section 8's literal
-     text -- see phs.py's module docstring for why that original formula was
-     REPLACED (checked directly: it was essentially blind to every
-     perturbation type in this benchmark, not just "boundary").
+     NOT a literal periodicity-comparison formula -- see phs.py's module
+     docstring for why that original formula was REPLACED (checked directly:
+     it was essentially blind to every perturbation type in this benchmark,
+     not just "boundary").
   2. Normalizes all 4 components using the VALIDATION split's clean-field
-     means [Section 8].
-  3. Computes 3 detection scores per field -- WP5's baselines plus PHS itself:
+     means.
+  3. Computes 3 detection scores per field -- 2 residual-only baselines plus
+     PHS itself:
        Score1_momentum_only        = S_bar_mom
        Score2_momentum_divergence  = S_bar_mom + S_bar_div
        Score3_PHS_full             = S_bar_mom + S_bar_div + S_bar_bc + S_bar_E
                                      (= PHS, the official score)
   4. Selects each score's threshold tau from the 95th percentile of its
-     VALIDATION-split clean-field distribution [Section 8].
+     VALIDATION-split clean-field distribution.
   5. Evaluates detection (ROC-AUC, Precision, Recall, F1 @ tau) for all 3
-     scores on the held-out TEST split, per WP5's acceptance criterion
-     (AUC(PHS) > 0.90, ideally > AUC(Score2)).
+     scores on the held-out TEST split (target: AUC(PHS) > 0.90, ideally
+     > AUC(Score2)).
 
 Outputs:
   data/phs_scores/phs_components_raw.csv / .json
@@ -64,7 +66,7 @@ Outputs:
       changes the detection signal.
 
 CAVEAT (historical): models committed before commit `be9b8ff` predated a phase-mismatch
-bug identified during Issue #9's audit (see verify_hallucinations.py's
+bug identified during the hallucination-verification audit (see verify_hallucinations.py's
 phase_amplitude_fit_diagnostic -- clean predictions matched the analytical TGV solution at
 the WRONG phase). Retrained, phase-corrected models have since been committed. This script
 was unaffected by that bug either way: Smom/Sdiv/Sbc are phase-invariant PDE/BC residuals,
@@ -160,7 +162,7 @@ def parse_args():
             n_bc (int), n_time (int), energy_res (int), chunk_size (int),
             percentile (float), output_dir (str).
     """
-    parser = argparse.ArgumentParser(description="Evaluate the Physical Hallucination Score (Section 8, WP5).")
+    parser = argparse.ArgumentParser(description="Evaluate the Physical Hallucination Score.")
     parser.add_argument("--case_id", action="append", default=None,
                         help="Restrict to this case_id. Repeatable (--case_id case_00 --case_id case_25). "
                              "Defaults to every case with a trained model AND an entry in the hallucination "
@@ -179,7 +181,7 @@ def parse_args():
     parser.add_argument("--chunk_size", type=int, default=8000,
                         help="Chunk size for the interior Smom/Sdiv pass (VRAM safety).")
     parser.add_argument("--percentile", type=float, default=95.0,
-                        help="Threshold percentile tau is drawn from, per Section 8.")
+                        help="Threshold percentile tau is drawn from.")
     parser.add_argument("--no_seed_points", action="store_true",
                         help="Disable per-case point-sampling seeding (default: ON -- every field of a "
                              "case, clean and perturbed, is evaluated at identical random points, "
@@ -225,7 +227,7 @@ def load_model(case_id: str, k: float, device: str):
 
 def score_all_fields(index_rows: list, case_meta_by_id: dict, models_dir: Path, args) -> pd.DataFrame:
     """
-    Loads each case's model once and computes the 5 raw PHS components for
+    Loads each case's model once and computes the 4 raw PHS components for
     every one of its rows in `index_rows`.
 
     Inputs:
@@ -297,7 +299,7 @@ def evaluate_detection(df: pd.DataFrame, percentile: float) -> tuple[dict, dict,
     Inputs:
         df (pd.DataFrame): Output of score_all_fields(); must contain
             "split", "label", "mom", "div", "bc", "E" columns.
-        percentile (float): Threshold percentile, per Section 8 (95.0).
+        percentile (float): Threshold percentile (95.0).
 
     Outputs:
         normalizers (dict): {component_name: normalizer (float)}.
@@ -310,9 +312,9 @@ def evaluate_detection(df: pd.DataFrame, percentile: float) -> tuple[dict, dict,
     valid_val_mask = (df["split"] == "validation") & (df["label"] == "clean")
     if valid_val_mask.sum() == 0:
         raise RuntimeError(
-            "No clean validation-split fields found -- cannot calibrate normalizers/threshold "
-            "(Section 8 requires them). If you passed --case_id, make sure at least one "
-            "validation-split case is included, or omit --case_id to process every case."
+            "No clean validation-split fields found -- cannot calibrate normalizers/threshold. "
+            "If you passed --case_id, make sure at least one validation-split case is included, "
+            "or omit --case_id to process every case."
         )
 
     normalizers = compute_normalizers(df.loc[valid_val_mask])
@@ -327,8 +329,8 @@ def evaluate_detection(df: pd.DataFrame, percentile: float) -> tuple[dict, dict,
     test_mask = df["split"] == "test"
     if test_mask.sum() == 0:
         raise RuntimeError(
-            "No test-split fields found -- cannot evaluate detection (Section 9.5 requires a held-out "
-            "test split). If you passed --case_id, make sure at least one test-split case is included."
+            "No test-split fields found -- cannot evaluate detection on a held-out test split. "
+            "If you passed --case_id, make sure at least one test-split case is included."
         )
     y_true = (df.loc[test_mask, "label"] == "hallucinated").astype(int).values
 
@@ -361,7 +363,7 @@ def evaluate_detection(df: pd.DataFrame, percentile: float) -> tuple[dict, dict,
 
 def plot_roc_curves(df: pd.DataFrame, output_dir: Path):
     """
-    Plots ROC curves for all 4 baseline scores on the test split, overlaid
+    Plots ROC curves for all 3 baseline scores on the test split, overlaid
     for direct visual comparison (the AUC(PHS) > AUC(Score2) acceptance
     criterion is exactly what this figure is meant to show).
 
@@ -380,7 +382,7 @@ def plot_roc_curves(df: pd.DataFrame, output_dir: Path):
         return
 
     plt.figure(figsize=(6.5, 6))
-    score_names = list(BASELINE_DEFINITIONS)  # all 4, always computed
+    score_names = list(BASELINE_DEFINITIONS)  # all 3, always computed
     for score_name in score_names:
         y_score = df.loc[test_mask, score_name].values
         fpr, tpr, _ = roc_curve(y_true, y_score)
@@ -437,7 +439,7 @@ def diagnose_misclassifications(df: pd.DataFrame, thresholds: dict, score_name: 
 
 def plot_score_distributions_comparison(df: pd.DataFrame, thresholds: dict, output_dir: Path):
     """
-    Plots clean vs. hallucinated scores for ALL baseline scores (Score1-4)
+    Plots clean vs. hallucinated scores for ALL baseline scores (Score1-3)
     side by side, one panel per score, as a STRIP PLOT (jittered individual
     points) with epsilon as categorical x-axis positions, rather than a
     pooled histogram.
@@ -475,7 +477,7 @@ def plot_score_distributions_comparison(df: pd.DataFrame, thresholds: dict, outp
         None. Saves plots/phs_evaluation/score_distributions_comparison.png.
     """
     test_df = df[df["split"] == "test"]
-    score_names = list(BASELINE_DEFINITIONS)  # all 4, always computed
+    score_names = list(BASELINE_DEFINITIONS)  # all 3, always computed
     if not score_names:
         print("⏭️  Skipping score_distributions_comparison.png: no score columns found.")
         return
@@ -621,7 +623,7 @@ def plot_normalized_components_vs_epsilon(df: pd.DataFrame, output_dir: Path):
     """
     Plots all 4 NORMALIZED components (S_bar_mom, S_bar_div, S_bar_bc,
     S_bar_E -- the "_bar" quantities that actually get summed into the
-    scores, per Section 8's S_bar_j = Sj / mean(Sj_clean_validation)) vs.
+    scores, S_bar_j = Sj / mean(Sj_clean_validation)) vs.
     epsilon, one subplot per perturbation type, on a SINGLE shared axis --
     so you can see exactly which component(s) each perturbation type
     activates, in the same units the scoring itself uses.
@@ -713,7 +715,7 @@ def plot_all_scores_vs_epsilon(df: pd.DataFrame, output_dir: Path):
     """
     halluc_df = df[df["label"] == "hallucinated"]
     perturbation_types = sorted(halluc_df["perturbation_type"].unique())
-    score_names = list(BASELINE_DEFINITIONS)  # all 4, always computed
+    score_names = list(BASELINE_DEFINITIONS)  # all 3, always computed
 
     fig, axes = plt.subplots(2, 3, figsize=(15, 9))
     axes = axes.flatten()
@@ -765,7 +767,7 @@ def main():
     if not index_path.exists():
         raise FileNotFoundError(
             f"Cannot find {index_path}. Run src/hallucinations/generate_hallucinations.py "
-            "first (Issue #8) to produce the dataset manifest this script scores."
+            "first to produce the dataset manifest this script scores."
         )
     with open(index_path, "r") as f:
         index_rows = json.load(f)
@@ -782,7 +784,7 @@ def main():
     data_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 60)
-    print("🔍 EVALUATING PHYSICAL HALLUCINATION SCORE (Section 8, WP5)")
+    print("🔍 EVALUATING PHYSICAL HALLUCINATION SCORE")
     print(f"Fields to score: {len(index_rows)}")
     print("=" * 60)
 

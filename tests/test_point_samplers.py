@@ -4,7 +4,6 @@ import torch
 import numpy as np
 from pathlib import Path
 
-# Import your actual functions
 from src.data.point_samplers import generate_case_dataset
 from src.physics.taylor_green import compute_T 
 

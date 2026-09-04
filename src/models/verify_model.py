@@ -1,3 +1,4 @@
+import argparse
 import json
 import torch
 import numpy as np
@@ -6,13 +7,26 @@ from pathlib import Path
 import sys
 
 # Ensure the project root is in the Python path
-project_root = Path(__file__).parent
+project_root = Path(__file__).parent.parent.parent
 sys.path.append(str(project_root))
 
 from src.models.pinn import BaselinePINN
 from src.physics.taylor_green import compute_nu, generate_tgv
 
-def verify_case(case_id="case_00"):
+def parse_args():
+    parser = argparse.ArgumentParser(description="Verify a trained PINN against the analytical TGV solution.")
+    parser.add_argument("--case_id", type=str, default="case_00",
+                        help="Which trained case to verify. Ignored if --all_cases is set.")
+    parser.add_argument("--all_cases", action="store_true",
+                        help="Verify every case with a trained model in models/, instead of just --case_id.")
+    parser.add_argument("--no_show", action="store_true",
+                        help="Save the dashboard PNG without opening an interactive plot window "
+                             "(use this when calling verify_case() from a script/pipeline, since "
+                             "plt.show() otherwise blocks until the window is closed).")
+    return parser.parse_args()
+
+
+def verify_case(case_id="case_00", show: bool = True):
     """
     Loads a trained PINN and compares its predictions against the exact
     analytical Taylor-Green Vortex equations for visual and quantitative validation.
@@ -80,7 +94,6 @@ def verify_case(case_id="case_00"):
         preds = model(coords)
         u_pred = preds[:, 0].reshape(res, res)
         v_pred = preds[:, 1].reshape(res, res)
-        # p_pred = preds[:, 2].reshape(res, res)
 
     # 5. Generate Exact Analytical Truth
     # FIX: use this case's actual target phase, not a hardcoded phi_x=phi_y=0.0.
@@ -147,8 +160,22 @@ def verify_case(case_id="case_00"):
     plt.savefig(save_path, dpi=300)
     print(f"📈 Dashboard saved to: {save_path.relative_to(project_root)}")
 
-    plt.show()
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
+    return rel_l2
+
 
 if __name__ == "__main__":
-    # Ensure you are targeting the exact case ID you just trained
-    verify_case("case_00")
+    args = parse_args()
+    if args.all_cases:
+        models_dir = project_root / "models"
+        case_ids = sorted(p.stem.replace("_best", "") for p in models_dir.glob("*_best.pth"))
+        if not case_ids:
+            raise FileNotFoundError(f"No trained models found in {models_dir}")
+        for cid in case_ids:
+            verify_case(cid, show=not args.no_show)
+    else:
+        verify_case(args.case_id, show=not args.no_show)

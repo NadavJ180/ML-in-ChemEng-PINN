@@ -1,5 +1,4 @@
 import torch
-import pytest
 from src.models.pinn import BaselinePINN
 from src.models.loss import LossEvaluator
 

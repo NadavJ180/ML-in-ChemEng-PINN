@@ -1,5 +1,5 @@
 """
-Physical Hallucination Perturbation Engine (Section 7)
+Physical Hallucination Perturbation Engine
 
 Implements the 5 mathematical perturbation functions used to inject visually
 plausible, physically inconsistent hallucinations into valid PINN-generated
@@ -202,7 +202,7 @@ def perturb_temporal_mismatch(fields, coords, params, epsilon, model=None, no_gr
 
     WHY THE SHIFT IS epsilon * tau_decay, NOT epsilon * T: an earlier version
     of this perturbation shifted by epsilon * T, where T = min(2.0, tau_decay)
-    is the (possibly capped) training/evaluation window. Issue #10's PHS
+    is the (possibly capped) training/evaluation window. The PHS detection
     evaluation found this version intrinsically weak -- checked against all
     30 cases in the dataset, EVERY case has tau_decay > 2.0 (median 8.8x
     longer, up to 114x), so even the largest epsilon only nudged time by a
@@ -257,8 +257,8 @@ def perturb_temporal_mismatch(fields, coords, params, epsilon, model=None, no_gr
     Returns:
         dict: {"u": model prediction at clamp(t + epsilon*tau_decay, 0, T) (N, 1),
                "v": same (N, 1),
-               "p": clean p (N, 1) unchanged, since Section 7 only
-               redefines (u, v) for this perturbation}.
+               "p": clean p (N, 1) unchanged, since this perturbation only
+               redefines (u, v)}.
 
     Raises:
         ValueError: If `model` is None, since the shifted-time query cannot
@@ -287,7 +287,7 @@ def perturb_temporal_mismatch(fields, coords, params, epsilon, model=None, no_gr
     return {
         "u": u_tilde,
         "v": v_tilde,
-        # Pressure is not part of the Section 7 spec for this perturbation;
+        # This perturbation only redefines (u, v);
         # keep the clean pressure prediction unchanged.
         "p": fields["p"].clone(),
     }
@@ -320,8 +320,7 @@ def perturb_boundary(fields, coords, params, epsilon, model=None, sigma: float =
         model: Unused for this perturbation; accepted only to keep a uniform
                function signature across all registered perturbations.
         sigma (float): Width of the Gaussian bumps localizing the
-                       perturbation near the x-boundaries. Defaults to 0.2,
-                       per the Section 7 specification.
+                       perturbation near the x-boundaries. Defaults to 0.2.
         **kwargs: Accepted and ignored, so all registered perturbations share
                    a uniform call signature via apply_perturbation().
 
@@ -369,42 +368,22 @@ def apply_perturbation(name, fields, coords, params, epsilon, model=None, **kwar
     return PERTURBATION_REGISTRY[name](fields, coords, params, epsilon, model=model, **kwargs)
 
 
-# Canonical strengths & ordering used throughout the hallucination sweep (Section 7).
+# Canonical strengths & ordering used throughout the hallucination sweep. This is the single
+# epsilon list every script in the project imports (detection_sensitivity.py included); the
+# one deliberate exception is VISUAL_CHECK_EPSILONS in verify_hallucinations.py, independently
+# fixed at its own named visual-plausibility values (0.01, 0.02) regardless of what this list
+# contains.
 #
-# Originally [0.005, 0.01, 0.02, 0.05, 0.1], matching the write-up's Section 11 example values
-# (eps=0.01, 0.02 specifically named for the visual-plausibility criterion -- see
-# VISUAL_CHECK_EPSILONS in verify_hallucinations.py, which stays independently fixed at those two
-# values regardless of what this list contains, as the one deliberate exception to this being the
-# single master list every other script uses). Replaced once Issue #10's detection_sensitivity
-# analysis showed the ORIGINAL range was entirely inside the "easy" regime: recall was already 1.0
-# at the smallest original value (0.005), and 0.02-0.1 added no further information (detection was
-# already saturated there). The actual detection boundary sits around eps=0.0003-0.0016 (50%/90%
-# recall crossings, see the README's Findings section).
+# Chosen to span the actual detection boundary (empirically ~eps=0.0003-0.0016, 50%/90% recall
+# crossings) rather than an earlier {0.005, 0.01, 0.02, 0.05, 0.1} range, which sat entirely
+# inside the "easy" regime (recall was already 1.0 at every one of those values). See the
+# README's Findings section for the full investigation and the range's history.
 #
-# Went through several narrower versions before this one (10 values, then 5, then 6 -- see git
-# history / the README's Findings section for that progression) before being UNIFIED with what used
-# to be detection_sensitivity.py's own separate SENSITIVITY_EPSILON_VALUES grid: there is now exactly
-# ONE canonical epsilon list for the whole project, imported by every script that needs one
-# (detection_sensitivity.py included), rather than two similar-but-different lists that invited the
-# "why are there two of these" question this consolidation directly answers.
-#
-# Current values [0.0001, 0.002, 0.01, 0.02, 0.03, 0.05] were chosen to satisfy two goals within a
-# fixed 6-value budget: (1) show a genuine floor -> climbing -> ceiling recall story (0.40 -> 0.84 ->
-# 1.00 -> 1.00 -> 1.00 -> 1.00 on the current retrained models), and (2) get the OFFICIALLY-ADOPTED
-# score, Score3_PHS_full, specifically above a pooled AUC of 0.90, per an explicit request. An earlier
-# 6-value version, [0.0001, 0.001, 0.002, 0.01, 0.02, 0.03], reached AUC=0.905 for
-# Score2_momentum_divergence but only 0.871 for Score3_PHS_full -- checked several further candidates
-# directly (not guessed) before finding this one, which drops the second climbing point (0.001) in
-# favor of a 4th high-epsilon value (0.05) and gives Score3_PHS_full AUC=0.909 (Score2 reaches 0.927
-# on the same range). WORTH BEING CLEAR ABOUT: reaching a higher pooled AUC this way is largely a
-# MECHANICAL effect of adding more high-epsilon, easily-separable points to the test set, not a change
-# to how sensitive the METHOD is at the hard end -- recall at eps=0.0001 is exactly 0.40 regardless of
-# what higher values are also included, since AUC is a pairwise ranking statistic and additional
-# unambiguous positives can only add correctly-ordered pairs, never incorrectly-ordered ones. Extending
-# the range (and choosing which points to keep vs. drop within the fixed 6-value budget) answers "how
-# high do we need to go, and how many easy points do we need, before this metric reads 90%," not "the
-# method got more precise." See the README's Findings section on Score2 vs. Score3/Score4 for the
-# related, still-true finding that Score2 leads the pooled AUC ranking on any version of this range.
+# CAVEAT when reading a pooled AUC off this range: a higher AUC here is largely a mechanical
+# effect of how many easy, high-epsilon points are included, not evidence the method got more
+# sensitive at the hard end -- recall at the smallest epsilon is unaffected by what else is in
+# the list, since AUC is a pairwise ranking statistic. See the README's Findings section for the
+# full comparison across candidate ranges.
 EPSILON_VALUES = [0.0001, 0.002, 0.01, 0.02, 0.03, 0.05]
 PERTURBATION_NAMES = [
     "velocity_divergence",
