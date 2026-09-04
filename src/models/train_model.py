@@ -14,8 +14,6 @@ import torch.optim as optim
 import time
 import math
 import sys
-from pathlib import Path
-import torch.optim as optim
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -32,6 +30,7 @@ from src.models.scaling import ResidualScaler
 from src.physics.taylor_green import compute_nu, compute_T, generate_tgv # Needed for analytical equations
 from src.physics.navier_stokes import compute_residuals # Needed for evaluation
 from src.hallucinations.perturbations import apply_perturbation, PERTURBATION_NAMES, EPSILON_VALUES
+from src.utils.seed import set_global_seed
 
 def print_vram_instructions():
     """Prints a clear banner with instructions for handling GPU Out-Of-Memory errors."""
@@ -52,10 +51,10 @@ def print_vram_instructions():
 def parse_args():
     """
     Parses command-line arguments for VRAM-safe training configuration.
-    
+
     Inputs:
         None (Reads directly from standard terminal sys.argv inputs).
-        
+
     Outputs:
         args (argparse.Namespace): An object containing all the parsed hyperparameters.
     """
@@ -74,10 +73,9 @@ def parse_args():
     parser.add_argument("--lbfgs_rel_tol", type=float, default=1e-3, help="Relative loss-improvement threshold to trigger early stop")
 
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
-    
-    # Commands for debugging and isolated testing (reverse order and isolated cases)
-    parser.add_argument("--reverse_order", action="store_true",
-                     help="TEMPORARY: run cases hardest-first instead of easiest-first (for diagnostic testing)")
+    parser.add_argument("--seed", type=int, default=42, help="Global random seed for reproducible weight initialization and mini-batch sampling")
+
+    # Command for isolated testing
     parser.add_argument("--case_id", type=str, default=None,
                      help="Run only this specific case_id (for isolated diagnostic testing)")
 
@@ -92,20 +90,20 @@ def parse_args():
 
 def sample_minibatch(case_data: dict, n_int: int, n_ic: int, n_bc: int, device: str):
     """
-    Randomly slices a smaller mini-batch from the full loaded Float64 case dataset 
+    Randomly slices a smaller mini-batch from the full loaded Float64 case dataset
     and pushes it to the target device.
-    
+
     Inputs:
         case_data (dict): The full dataset dictionary loaded from the .pt file.
         n_int (int): The target number of interior collocation points to sample.
         n_ic (int): The target number of initial condition points to sample.
         n_bc (int): The target number of boundary points to sample per edge.
         device (str): The target hardware device ('cuda' or 'cpu').
-        
+
     Outputs:
-        batch (dict): A dictionary containing only the randomly sliced tensors 
+        batch (dict): A dictionary containing only the randomly sliced tensors
                       pushed to the target device.
-        ic_true (torch.Tensor): A tensor of shape (n_ic, 2) containing the exact 
+        ic_true (torch.Tensor): A tensor of shape (n_ic, 2) containing the exact
                                 analytical velocities (u, v) at t=0.
     """
     total_int = case_data["interior"].shape[0]
@@ -139,13 +137,13 @@ def train_adam(model, case_data, case_meta, args):
     """
     Executes Phase 1 of PINN training using the Adam optimizer.
     Utilizes dynamic mini-batching to maintain strict VRAM limits.
-    
+
     Inputs:
         model (nn.Module): The initialized BaselinePINN.
         case_data (dict): The loaded Float64 dataset.
         case_meta (dict): The metadata containing Re, U0, and k for this case.
         args (argparse.Namespace): The parsed command-line arguments.
-        
+
     Outputs:
         model (nn.Module): The trained model after Adam optimization.
         criterion (LossEvaluator): The initialized loss evaluator.
@@ -210,13 +208,13 @@ def train_lbfgs(model, criterion, case_data, case_meta, args, device, eval_inter
     Executes Phase 2 of PINN training using the L-BFGS optimizer.
     Uses a static mini-batch to ensure convergence of the line-search algorithm
     while maintaining the VRAM limits.
-    
+
     Inputs:
         model (nn.Module): The Adam-trained BaselinePINN.
         criterion (LossEvaluator): The initialized loss evaluator from Phase 1.
         case_data (dict): The loaded Float64 dataset.
         args (argparse.Namespace): The parsed command-line arguments.
-        
+
     Outputs:
         model (nn.Module): The fully trained model.
         history (dict): A dictionary containing the loss history for each component during L-BFGS.
@@ -247,7 +245,7 @@ def train_lbfgs(model, criterion, case_data, case_meta, args, device, eval_inter
     
     # Dictionary to track loss history
     history = {'Total': [], 'L_NS': [], 'L_div': [], 'L_IC': [], 'L_BC': [], 'L_p': []}
-    rel_l2_history = []   # NEW: track (iteration, RelL2) pairs
+    rel_l2_history = []   # Tracks (iteration, RelL2) pairs
     iteration = 0
     
     # 3. Define the closure function required by L-BFGS
@@ -273,7 +271,7 @@ def train_lbfgs(model, criterion, case_data, case_meta, args, device, eval_inter
                   f"L_NS(s): {metrics['L_NS']:.2e} | L_NS(raw): {metrics['L_NS_raw']:.2e} | L_div: {metrics['L_div']:.2e} | "
                   f"L_IC: {metrics['L_IC']:.2e} | L_BC: {metrics['L_BC']:.2e} | L_p: {metrics['L_p']:.2e}")
         
-        # --- NEW: periodic held-out RelL2 check ---
+        # --- Periodic held-out RelL2 check ---
         if iteration > 0 and iteration % eval_interval == 0:
             _, rel_l2, mse_rc, mse_rm = evaluate_model(
                 model, case_meta, eval_grid, device, chunk_size=5000, verbose=False
@@ -306,8 +304,10 @@ def train_lbfgs(model, criterion, case_data, case_meta, args, device, eval_inter
 
 def evaluate_model(model, case_meta, eval_grid, device, chunk_size=5000, verbose=True):
     """
-    Evaluates the trained model against the WP3 Acceptance Criteria using the
-    81,920 point evaluation grid. Processes in chunks to prevent VRAM overflow.
+    Evaluates the trained model against the project's usability acceptance criteria
+    (relative L2 error vs. the analytical solution, continuity residual, momentum
+    residual -- see the thresholds below) using the 81,920-point evaluation grid.
+    Processes in chunks to prevent VRAM overflow.
     """
     if verbose:
         print("\n--- Phase 3: Acceptance Criteria Evaluation ---")
@@ -320,7 +320,7 @@ def evaluate_model(model, case_meta, eval_grid, device, chunk_size=5000, verbose
     # silently comparing every model against phi_x=0, phi_y=0 regardless of the
     # case's actual target phase (the same bug found in verify_model.py and
     # generate_datasets.py). Since this is the function that decides
-    # PASSED/FAILED for the WP3 acceptance criteria, every prior pass/fail
+    # PASSED/FAILED for the acceptance criteria, every prior pass/fail
     # decision and every eval_interval RelL2 reading logged during L-BFGS was
     # made against the wrong ground truth.
     phi_x = case_meta["phi_x"]
@@ -515,7 +515,7 @@ def plot_loss_overlay(loss_history_root: Path, summary_dir: Path):
 def generate_distortion_demo(model, case_id: str, case_meta: dict, device: str, save_dir: Path, res: int = 64, time_frac: float = 0.5):
     """
     Generates a single side-by-side figure demonstrating the flow field
-    becoming visibly distorted under the Section 7 hallucination
+    becoming visibly distorted under the project's physical hallucination
     perturbations, using the exact same perturbation functions as the
     dedicated hallucination-generation pipeline (src/hallucinations/perturbations.py)
     so there is one source of truth for the perturbation math.
@@ -589,8 +589,8 @@ def generate_distortion_demo(model, case_id: str, case_meta: dict, device: str, 
     for col in range(n_cols):
         ax = axes[0, col]
         if col < len(progression_fields):
-            im = ax.imshow(progression_fields[col].T, origin="lower", extent=[0, 2 * math.pi, 0, 2 * math.pi],
-                            cmap="RdBu_r", vmin=vmin, vmax=vmax)
+            ax.imshow(progression_fields[col].T, origin="lower", extent=[0, 2 * math.pi, 0, 2 * math.pi],
+                      cmap="RdBu_r", vmin=vmin, vmax=vmax)
             ax.set_title(f"momentum\nε={progression_epsilons[col]}", fontsize=9)
         else:
             ax.axis("off")
@@ -599,8 +599,8 @@ def generate_distortion_demo(model, case_id: str, case_meta: dict, device: str, 
         ax = axes[1, col]
         if col < len(type_fields):
             name, field = type_fields[col]
-            im = ax.imshow(field.T, origin="lower", extent=[0, 2 * math.pi, 0, 2 * math.pi],
-                            cmap="RdBu_r", vmin=vmin, vmax=vmax)
+            ax.imshow(field.T, origin="lower", extent=[0, 2 * math.pi, 0, 2 * math.pi],
+                      cmap="RdBu_r", vmin=vmin, vmax=vmax)
             ax.set_title(name if name == "Clean" else f"{name}\nε={demo_epsilon}", fontsize=9)
         else:
             ax.axis("off")
@@ -627,7 +627,8 @@ def sort_cases_by_difficulty(cases):
 def main():
     print_vram_instructions()
     args = parse_args()
-    
+    set_global_seed(args.seed)
+
     project_root = Path(__file__).parent.parent.parent
     metadata_path = project_root / "data" / "cases_metadata.json"
     tensors_dir = project_root / "data" / "tensors"
@@ -635,14 +636,13 @@ def main():
     plots_dir = project_root / "plots"
     plots_dir.mkdir(exist_ok=True)
 
-    # NEW: per-case loss-history folders + a general cross-case tracking folder,
-    # instead of dumping every case's plots/json flat into plots_dir.
+    # Per-case loss-history folders, plus a general cross-case tracking folder
     loss_history_root = plots_dir / "loss_history"
     loss_history_root.mkdir(exist_ok=True)
     loss_summary_dir = loss_history_root / "_summary"
     loss_summary_dir.mkdir(exist_ok=True)
 
-    # NEW: folder for the flow field distortion demo(s)
+    # Folder for the flow field distortion demo(s)
     distortion_demo_dir = plots_dir / "perturbation_demo"
     distortion_demo_dir.mkdir(exist_ok=True)
 
@@ -666,10 +666,6 @@ def main():
     # SORT BY DIFFICULTY: Easiest (low k, low Re) to Hardest (high k, high Re)
     all_cases = sort_cases_by_difficulty(all_cases)
 
-    # TEMPORARY: for testing hardest-case behavior before full sweep — remove/disable after
-    if args.reverse_order:
-        all_cases = list(reversed(all_cases))
-        print("⚠️  Running in REVERSED order (hardest case first) for diagnostic testing.\n")
     if args.case_id:
         all_cases = [c for c in all_cases if c["case_id"] == args.case_id]
 
@@ -682,7 +678,7 @@ def main():
     for idx, case in enumerate(all_cases):
         case_id = case["case_id"]
         
-        # --- NEW CHECKPOINT LOGIC ---
+        # --- CHECKPOINT LOGIC ---
         # Check if this case has already been successfully trained and saved
         expected_model_path = project_root / "models" / f"{case_id}_best.pth"
         if expected_model_path.exists():
@@ -706,7 +702,7 @@ def main():
         model, criterion, adam_hist = train_adam(model, case_data, case, args)
         model, lbfgs_hist, rel_l2_hist = train_lbfgs(model, criterion, case_data, case, args, args.device)
 
-        # NEW: everything for this case now lives in its own subfolder
+        # Everything for this case lives in its own subfolder
         case_dir = loss_history_root / case_id
         case_dir.mkdir(exist_ok=True)
 
@@ -736,7 +732,8 @@ def main():
         eval_grid = case_data["eval_grid"]
         passed, rel_l2, mse_rc, mse_rm = evaluate_model(model, case, eval_grid, args.device)
         
-       # Apply Section 12.4 Risk Mitigation Rule
+        # Only checkpoint cases that pass the acceptance criteria; failing cases are
+        # logged for follow-up rather than silently included in the delivered model set.
         log_file = project_root / "training_summary.log"
         with open(log_file, "a") as f:
             if passed:
@@ -749,11 +746,11 @@ def main():
                     print(f"⚠️ Failed to save model for {case_id}: {e}")
             else:
                 f.write(f"FAILED: {case_id} | RelL2: {rel_l2:.4f}\n")
-                print(f"\n⚠️ Case {case_id} FAILED criteria. Tagging for Risk Mitigation.")
+                print(f"\n⚠️ Case {case_id} FAILED criteria -- flagged in {log_file.name} for follow-up.")
 
         case_elapsed = time.time() - case_start
 
-        # NEW: update the general cross-case tracking table + overlay plot
+        # Update the general cross-case tracking table + overlay plot
         summary_row = {
             "case_id": case_id,
             "split": case["split"],
@@ -772,7 +769,7 @@ def main():
         update_loss_summary(summary_row, loss_summary_dir)
         plot_loss_overlay(loss_history_root, loss_summary_dir)
 
-        # NEW: generate the flow field distortion demo for at least one case
+        # Generate the flow field distortion demo for at least one case
         # (either the user-requested --demo_case_id, or the first case that
         # passes in this run if no specific case was requested).
         should_generate_demo = (not args.skip_distortion_demo) and passed and (
