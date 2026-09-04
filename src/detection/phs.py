@@ -116,35 +116,53 @@ import torch
 
 from src.physics.navier_stokes import compute_residuals
 from src.physics.taylor_green import generate_tgv, compute_decay_timescale
-from src.data.point_samplers import sample_interior_points, sample_periodic_boundaries
+from src.data.point_samplers import sample_interior_points
 from src.hallucinations.perturbations import apply_perturbation
 
-# The 5 raw PHS components. Originally the 4 from Section 8's literal text
-# (mom, div, bc, E); S_bc_local was promoted from an optional add-on to a
-# permanent 5th component once it was confirmed to close a real, structural
-# gap Sbc cannot close by construction (see compute_boundary_localization_violation's
-# docstring and the README's Findings section: the "boundary" perturbation's
-# envelope is smooth-periodic to every derivative order at the domain seam,
-# so NO value-comparison check evaluated exactly at the boundary pair --
-# Sbc's whole approach -- can ever detect it, regardless of tuning). This is
-# a deliberate, documented departure from Section 8's literal 4-term
-# formula, not an oversight: the write-up's own equations are a starting
-# point for this project, not a constraint that overrides a demonstrated
-# detection gap.
-PHS_COMPONENT_NAMES = ["mom", "div", "bc", "bc_local", "E"]
+# The 4 raw PHS components, per Section 8's literal formula (mom, div, bc, E).
+# HISTORY: an optional, then briefly permanent, 5th component S_bc_local was
+# added alongside the original Sbc (a periodicity/value comparison,
+# s|x=0 vs s|x=2pi) after finding Sbc could not detect the "boundary"
+# perturbation type by construction (see compute_boundary_localization_violation's
+# docstring). Investigated further and found this was an UNDERSTATEMENT of the
+# actual problem: checked directly, raw Sbc is essentially flat -- ~3.5e-7,
+# indistinguishable from the ~3.3e-7 clean baseline -- across EVERY perturbation
+# type and epsilon in this benchmark, not just "boundary". Reason: velocity_
+# divergence/momentum/pressure all add perturbation terms built from INTEGER-
+# frequency trig functions (e.g. sin(3x+0.7)sin(2y), sin(4x)cos(3y)cos(2t),
+# cos(5x)cos(4y)) -- these are exactly periodic on [0, 2*pi] by construction
+# (shifting x by 2*pi shifts the argument by an integer multiple of 2*pi,
+# leaving sin/cos unchanged), so adding them can never break s(0)=s(2*pi),
+# regardless of how large epsilon gets. This is a property of how the
+# perturbations happen to be built (a very natural choice on a periodic
+# domain), not a flaw in Sbc's own logic -- periodicity genuinely is the
+# correct boundary condition here, for any field regardless of internal
+# symmetry (checked: it holds for the analytical TGV solution at ANY phase,
+# since k is always an integer) -- but the practical result is the same:
+# Sbc contributes essentially zero discriminative signal against this
+# benchmark's actual perturbations. Given that, the original Sbc formula has
+# been DELETED entirely (not kept alongside, and not kept for reference --
+# removed on request once its replacement was confirmed to work): "bc" in
+# PHS_COMPONENT_NAMES is now computed via compute_boundary_localization_violation,
+# which no longer computes what its name suggests only "locally" -- see
+# that function's own docstring for why it's now a near/far RATIO, not the
+# original periodicity comparison and not just the near-boundary value alone.
+# This returns PHS to exactly Section 8's original 4-term shape and 3-score
+# structure (Score1/Score2/Score3=PHS) -- see BASELINE_DEFINITIONS below and
+# the README's Findings section for the fuller investigation, including a
+# checked-directly finding that the OLD Sbc+S_bc_local combination (5
+# components) was mostly adding redundant noise for 4 of 5 perturbation
+# types (bc_local correlates with, and mostly duplicates, Smom's own signal
+# for globally-applied perturbations) with genuine new signal only for
+# "boundary" specifically.
+PHS_COMPONENT_NAMES = ["mom", "div", "bc", "E"]
 
-# WP5's residual-only baselines PHS is compared against, plus Score3 kept as an
-# ablation showing what S_bc_local specifically contributes. Score4_PHS_full IS
-# the Physical Hallucination Score (all 5 components); Score1/Score2 are the
-# residual-only baselines it is compared against for the AUC(PHS) >
-# AUC(Smom + Sdiv) acceptance criterion; Score3 is the ORIGINAL Section-8
-# 4-term formula (everything except bc_local), kept as a baseline specifically
-# to show what including bc_local changes, now that it is no longer optional.
+# WP5's 2 residual-only baselines PHS is compared against, plus PHS itself as
+# Score3 -- back to exactly 3 scores, matching Section 8's original structure.
 BASELINE_DEFINITIONS = {
     "Score1_momentum_only": ["mom"],
     "Score2_momentum_divergence": ["mom", "div"],
-    "Score3_without_bc_local": ["mom", "div", "bc", "E"],
-    "Score4_PHS_full": ["mom", "div", "bc", "bc_local", "E"],
+    "Score3_PHS_full": ["mom", "div", "bc", "E"],
 }
 
 
@@ -156,8 +174,8 @@ def _seeded(seed: int | None):
     state it had beforehand on exit. If seed is None, does nothing (the
     original, unseeded behavior).
 
-    WHY THIS EXISTS: sample_interior_points / sample_periodic_boundaries
-    (src.data.point_samplers) draw from torch's global RNG with no seed
+    WHY THIS EXISTS: sample_interior_points (src.data.point_samplers) draws
+    from torch's global RNG with no seed
     argument of their own, so two separate calls -- e.g. one for a case's
     clean field and one for the same case's epsilon=0.1 "momentum" variant
     -- land on completely different random (x, y, t) points. That's an
@@ -300,112 +318,63 @@ def compute_momentum_divergence_violation(model, T: float, params: dict, perturb
     return Smom, Sdiv
 
 
-def _boundary_pair_mismatch(model, side_a: torch.Tensor, side_b: torch.Tensor, params: dict,
-                             perturbation_name: str, epsilon: float, U0: float, scale_p: float,
-                             device: str) -> float:
-    """
-    Computes MSE(u_a - u_b) + MSE(v_a - v_b) + MSE(p_a - p_b) (each divided
-    by U0, U0, and scale_p respectively before squaring -- see module
-    docstring) between two paired boundary sides of a hallucinated field.
-
-    Inputs:
-        model (nn.Module): The trained, eval-mode BaselinePINN.
-        side_a, side_b (torch.Tensor): Paired boundary coordinates from
-            src.data.point_samplers.sample_periodic_boundaries, shape
-            (n_points, 3) each, columns (x, y, t).
-        params (dict): Case-specific physical constants ("U0", "k", "T").
-        perturbation_name (str): One of PERTURBATION_NAMES, or "none".
-        epsilon (float): Perturbation strength.
-        U0 (float): This case's velocity scale (non-dimensionalizes u, v).
-        scale_p (float): This case's pressure scale, U0^2 (non-
-                          dimensionalizes p). Pass scaler.scale_p.
-        device (str): Target hardware device ('cuda' or 'cpu').
-
-    Outputs:
-        float: The summed, non-dimensionalized MSE for this boundary pair.
-    """
-    with torch.no_grad():
-        xa = side_a.to(device=device, dtype=torch.float64)
-        xb = side_b.to(device=device, dtype=torch.float64)
-        x_a, y_a, t_a = xa[:, 0:1], xa[:, 1:2], xa[:, 2:3]
-        x_b, y_b, t_b = xb[:, 0:1], xb[:, 1:2], xb[:, 2:3]
-
-        field_a = _field_at(model, x_a, y_a, t_a, params, perturbation_name, epsilon, no_grad=True)
-        field_b = _field_at(model, x_b, y_b, t_b, params, perturbation_name, epsilon, no_grad=True)
-
-        mse_u = torch.mean(((field_a["u"] - field_b["u"]) / U0) ** 2).item()
-        mse_v = torch.mean(((field_a["v"] - field_b["v"]) / U0) ** 2).item()
-        mse_p = torch.mean(((field_a["p"] - field_b["p"]) / scale_p) ** 2).item()
-    return mse_u + mse_v + mse_p
-
-
-def compute_boundary_violation(model, T: float, params: dict, perturbation_name: str, epsilon: float,
-                                U0: float, scale_p: float, n_bc_per_axis: int = 1000,
-                                device: str = "cpu", seed: int = None) -> float:
-    """
-    Computes Sbc = MSE(s|x=0 - s|x=2pi) + MSE(s|y=0 - s|y=2pi) [Section 8]
-    for one (perturbation, epsilon) field, on paired periodic-boundary
-    points (reusing src.data.point_samplers.sample_periodic_boundaries --
-    the same sampler training's own BC loss term uses). No gradient
-    tracking needed; this is a plain value comparison, not a PDE residual.
-    See the module docstring for this metric's known blind spot re: the
-    "boundary" perturbation type.
-
-    Inputs:
-        model (nn.Module): The trained, eval-mode BaselinePINN.
-        T (float): This case's final simulation time.
-        params (dict): Case-specific physical constants ("U0", "k", "T").
-        perturbation_name (str): One of PERTURBATION_NAMES, or "none".
-        epsilon (float): Perturbation strength.
-        U0 (float): This case's velocity scale.
-        scale_p (float): This case's pressure scale (scaler.scale_p).
-        n_bc_per_axis (int): Number of paired points sampled per boundary axis.
-        device (str): Target hardware device ('cuda' or 'cpu').
-        seed (int | None): See compute_momentum_divergence_violation's docstring.
-
-    Outputs:
-        float: Sbc.
-    """
-    with _seeded(seed):
-        bounds = sample_periodic_boundaries(T, n_bc_per_axis)
-    x_left, x_right = bounds["x_bounds"]
-    y_bottom, y_top = bounds["y_bounds"]
-
-    Sbc_x = _boundary_pair_mismatch(model, x_left, x_right, params, perturbation_name, epsilon, U0, scale_p, device)
-    Sbc_y = _boundary_pair_mismatch(model, y_bottom, y_top, params, perturbation_name, epsilon, U0, scale_p, device)
-    return Sbc_x + Sbc_y
-
-
 def compute_boundary_localization_violation(model, T: float, params: dict, perturbation_name: str, epsilon: float,
-                                             nu: float, scaler, band_width: float = 0.3,
+                                             nu: float, scaler, band_width_fraction: float = 0.05,
                                              n_points: int = 20000, chunk_size: int = 8000,
                                              device: str = "cpu", seed: int = None) -> tuple[float, int]:
     """
-    S_bc_local: a spatially-localized companion to Sbc, and (since being
-    confirmed to work) a permanent part of the official PHS (see the
-    "IMPORTANT" paragraph in this module's docstring for why Sbc itself
-    cannot be patched to catch the "boundary" perturbation type -- its
-    envelope is smooth-periodic to every derivative order at the seam, so
-    no value comparison evaluated exactly at x=0/x=2pi can ever separate
-    it from a clean field).
+    Sbc, as a RATIO of near-boundary to far-from-boundary momentum-residual
+    magnitude, both computed on the SAME field (whichever field this is
+    called on -- clean or a specific perturbed variant), not compared
+    against a separately-stored clean baseline. That clean-baseline
+    normalization still happens afterward, in the usual pipeline (see
+    normalize_components) -- exactly like every other component; this
+    function's own job is to produce one raw number per field, and a ratio
+    computed WITHIN that field is what gives it the property below.
 
-    Instead of comparing two exact lines, this samples the SAME interior
-    collocation distribution used for Smom/Sdiv (sample_interior_points)
-    and splits it by a simple geometric mask into a "near-boundary band"
-    (points within band_width of x=0, x=2*pi, y=0, or y=2*pi) and
-    everything else, then computes MSE(Ru)+MSE(Rv) using ONLY the
-    near-band points. A hallucination concentrated near the edges (like
-    "boundary") inflates this near-band residual while a clean field (or
-    a perturbation NOT concentrated near the edges) does not -- directly
-    adapted from Issue #9's boundary_localization_ratio diagnostic in
-    verify_hallucinations.py, which found this exact ratio jumped from
-    ~10x to ~3150x across the epsilon sweep for the "boundary" type.
+    WHY A RATIO, NOT THE ABSOLUTE NEAR-BOUNDARY VALUE (an earlier version of
+    this function computed only the numerator): checked directly, that
+    absolute-value version was found to be highly correlated with Smom for
+    globally-applied perturbations (momentum, pressure, velocity_divergence,
+    temporal_mismatch all raise residual roughly everywhere, including near
+    the edges, so the near-boundary-only value rises right along with Smom,
+    contributing a mostly-redundant copy of the same signal to PHS's sum --
+    confirmed empirically: a hallucination-uniformly-applied perturbation
+    inflated both by similar relative amounts). A RATIO cancels that: if a
+    perturbation raises residual UNIFORMLY (near and far rise together),
+    the ratio stays close to whatever it was for a clean field, regardless
+    of how large that uniform rise is. If a perturbation concentrates near
+    the edges specifically (like "boundary"), only the numerator rises,
+    so the ratio spikes. This directly restores the original design intent
+    from Issue #9's boundary_localization_ratio diagnostic in
+    verify_hallucinations.py (which this was adapted from, and which
+    already used a near/far ratio) -- the ratio was lost when this was
+    first adapted for PHS scoring, keeping only the numerator; this
+    restores it.
 
-    S_bc_local is a raw component, normalized against clean validation
-    fields exactly like the other 4 (see normalize_components) -- it is
-    always included by compute_phs_components, feeding both Score4_PHS_full
-    (the official PHS) and, via PHS_COMPONENT_NAMES, every other function in
-    this module that iterates over "all" components.
+    This REPLACES the original Section 8 Sbc entirely (a periodicity/value
+    comparison, s|x=0 vs s|x=2pi) -- it is not an addition alongside it.
+    Checked directly and found the original formula was essentially blind
+    to EVERY perturbation type in this benchmark (not just "boundary"):
+    velocity_divergence/momentum/pressure all add perturbation terms built
+    from integer-frequency trig functions, which are exactly periodic on
+    [0, 2*pi] by construction, so they can never move s(0) away from
+    s(2*pi) regardless of epsilon. That is a property of how the
+    perturbations happen to be built, not a flaw in checking periodicity
+    per se (periodicity genuinely is the correct constraint here, for any
+    field regardless of internal symmetry) -- but the practical result is
+    the same either way: the original formula contributed no discriminative
+    signal against this benchmark's actual perturbations, so it was
+    removed rather than kept alongside a working replacement.
+
+    Cost note: computing BOTH the near-band and far-band residual (rather
+    than only the near band, as the previous version did) means this now
+    needs the same expensive double-backward residual computation on
+    close to the FULL n_points sample, not just the ~19% falling in the
+    near-boundary band at the default 5% band_width_fraction. This roughly
+    doubles this component's own cost versus the previous, numerator-only
+    version (see the README's Findings section on why evaluate_phs.py
+    takes the time it does).
 
     Inputs:
         model (nn.Module): The trained, eval-mode BaselinePINN.
@@ -415,48 +384,57 @@ def compute_boundary_localization_violation(model, T: float, params: dict, pertu
         epsilon (float): Perturbation strength.
         nu (float): Kinematic viscosity for this case.
         scaler (ResidualScaler): This case's residual scaler.
-        band_width (float): Distance from an edge (in x or y) counted as
-            "near-boundary". Default 0.3 gives some margin beyond the
-            "boundary" perturbation's own sigma=0.2 envelope width.
+        band_width_fraction (float): Distance from an edge (in x or y),
+            as a FRACTION of the domain length (2*pi), counted as
+            "near-boundary". Default 0.05 (5%).
         n_points (int): Total interior points sampled before the
-            near/far split; with band_width=0.3 on a [0, 2*pi] domain,
-            roughly a third of uniformly sampled points fall in the band.
+            near/far split; with band_width_fraction=0.05, roughly a
+            fifth of uniformly sampled points fall in the near band, the
+            rest in the far band.
         chunk_size (int): Points per forward/backward pass (VRAM safety).
         device (str): Target hardware device ('cuda' or 'cpu').
         seed (int | None): See compute_momentum_divergence_violation's docstring.
 
     Outputs:
-        (S_bc_local, n_near): S_bc_local (float), n_near (int, how many
-            sampled points fell in the band -- callers can use this to
-            sanity-check band_width isn't too narrow/wide; not needed for
-            scoring itself).
+        (Sbc, n_near): Sbc (float, the near/far residual ratio -- this IS
+            "bc" in PHS_COMPONENT_NAMES / compute_phs_components' output),
+            n_near (int, how many sampled points fell in the near band --
+            callers can use this to sanity-check band_width_fraction isn't
+            too narrow/wide; not needed for scoring itself).
     """
+    two_pi = 2 * np.pi
+    band_width = band_width_fraction * two_pi
     with _seeded(seed):
         interior = sample_interior_points(T, n_points)
     x_all, y_all = interior[:, 0], interior[:, 1]
-    two_pi = 2 * np.pi
     near_mask = ((x_all < band_width) | (x_all > two_pi - band_width) |
                  (y_all < band_width) | (y_all > two_pi - band_width))
     near_points = interior[near_mask]
+    far_points = interior[~near_mask]
     n_near = near_points.shape[0]
-    if n_near == 0:
-        return 0.0, 0
+    n_far = far_points.shape[0]
+    if n_near == 0 or n_far == 0:
+        return 0.0, n_near
 
-    sum_Ru2, sum_Rv2, n_done = 0.0, 0.0, 0
-    for i in range(0, n_near, chunk_size):
-        chunk = near_points[i:i + chunk_size]
-        x, y, t = _leaf(chunk, 0, device), _leaf(chunk, 1, device), _leaf(chunk, 2, device)
+    def _mean_scaled_residual_sq(points):
+        sum_Ru2, sum_Rv2, n_done = 0.0, 0.0, 0
+        for i in range(0, points.shape[0], chunk_size):
+            chunk = points[i:i + chunk_size]
+            x, y, t = _leaf(chunk, 0, device), _leaf(chunk, 1, device), _leaf(chunk, 2, device)
 
-        field = _field_at(model, x, y, t, params, perturbation_name, epsilon, no_grad=False)
-        R_u, R_v, R_c = compute_residuals(field["u"], field["v"], field["p"], x, y, t, nu)
-        R_u_s, R_v_s, _ = scaler.scale_residuals(R_u, R_v, R_c)  # R_c's scaled form is unused here
+            field = _field_at(model, x, y, t, params, perturbation_name, epsilon, no_grad=False)
+            R_u, R_v, R_c = compute_residuals(field["u"], field["v"], field["p"], x, y, t, nu)
+            R_u_s, R_v_s, _ = scaler.scale_residuals(R_u, R_v, R_c)  # R_c's scaled form is unused here
 
-        sum_Ru2 += torch.sum(R_u_s ** 2).item()
-        sum_Rv2 += torch.sum(R_v_s ** 2).item()
-        n_done += chunk.shape[0]
+            sum_Ru2 += torch.sum(R_u_s ** 2).item()
+            sum_Rv2 += torch.sum(R_v_s ** 2).item()
+            n_done += chunk.shape[0]
+        return (sum_Ru2 / n_done) + (sum_Rv2 / n_done)
 
-    S_bc_local = (sum_Ru2 / n_done) + (sum_Rv2 / n_done)
-    return S_bc_local, n_near
+    near_residual = _mean_scaled_residual_sq(near_points)
+    far_residual = _mean_scaled_residual_sq(far_points)
+    Sbc = near_residual / (far_residual + 1e-15)
+    return Sbc, n_near
 
 
 def compute_energy_violation(model, T: float, params: dict, perturbation_name: str, epsilon: float,
@@ -524,7 +502,7 @@ def compute_relative_error(model, T: float, params: dict, perturbation_name: str
     Computes the relative L2 magnitude of the change a perturbation makes
     to the FULL field (u, v, p) -- non-dimensionalized consistently with
     the rest of this module (u, v divided by U0; p divided by scale_p =
-    U0^2, matching compute_boundary_violation's convention) before
+    U0^2, the same convention ResidualScaler uses) before
     pooling, so the three quantities contribute on a comparable footing
     rather than whichever has the largest raw magnitude dominating the sum.
 
@@ -608,7 +586,7 @@ def compute_phs_components(model, case_meta: dict, nu: float, T: float, scaler,
                             perturbation_name: str, epsilon: float,
                             n_interior: int = 20000, n_bc_per_axis: int = 1000,
                             n_time: int = 20, energy_res: int = 32, chunk_size: int = 8000,
-                            device: str = "cpu", bc_local_band_width: float = 0.3,
+                            device: str = "cpu", bc_local_band_width_fraction: float = 0.05,
                             bc_local_n_points: int = 20000, seed: int = None) -> dict:
     """
     Computes the 5 raw PHS components for ONE (case, perturbation, epsilon)
@@ -624,14 +602,21 @@ def compute_phs_components(model, case_meta: dict, nu: float, T: float, scaler,
         perturbation_name (str): One of PERTURBATION_NAMES, or "none" for
                                   the clean baseline.
         epsilon (float): Perturbation strength (ignored if "none").
-        n_interior, n_bc_per_axis, n_time, energy_res, chunk_size (int):
+        n_interior, n_time, energy_res, chunk_size (int):
             Resolution/sampling knobs, forwarded to the component functions
             above. Defaults match the project's other evaluation grids
             where a direct equivalent exists (64x64x20 total points
             informed n_interior/n_time; see evaluate_phs.py's parse_args).
+        n_bc_per_axis (int): Currently UNUSED here -- kept in the signature
+            for call-site compatibility (evaluate_phs.py's --n_bc flag still
+            forwards to it), since "bc" is now computed entirely via
+            compute_boundary_localization_violation's near/far ratio, which
+            uses n_points instead. The original boundary-pair sampling this
+            parameter fed has been deleted (see this module's docstring).
         device (str): Target hardware device ('cuda' or 'cpu').
-        bc_local_band_width, bc_local_n_points: Forwarded to
-            compute_boundary_localization_violation (see its docstring).
+        bc_local_band_width_fraction, bc_local_n_points: Forwarded to
+            compute_boundary_localization_violation (see its docstring),
+            which is what "bc" is now computed from.
         seed (int | None): If provided, passed through to every component
             function so this field's random points are reproducible. Pass
             the SAME seed (derived from case_id, not perturbation/epsilon)
@@ -640,8 +625,10 @@ def compute_phs_components(model, case_meta: dict, nu: float, T: float, scaler,
             _seeded's docstring for why this matters.
 
     Outputs:
-        dict: {"mom": Smom, "div": Sdiv, "bc": Sbc, "bc_local": S_bc_local,
-               "E": SE}, all float.
+        dict: {"mom": Smom, "div": Sdiv, "bc": Sbc (computed via the
+               boundary-LOCALIZED method -- see this module's docstring
+               for why the original periodicity-comparison Sbc was
+               replaced, not kept alongside), "E": SE}, all float.
     """
     params = {"U0": case_meta["U0"], "k": case_meta["k"], "T": T,
               "tau_decay": compute_decay_timescale(nu, case_meta["k"])}
@@ -649,19 +636,16 @@ def compute_phs_components(model, case_meta: dict, nu: float, T: float, scaler,
     Smom, Sdiv = compute_momentum_divergence_violation(
         model, T, params, perturbation_name, epsilon, nu, scaler, n_interior, chunk_size, device, seed,
     )
-    Sbc = compute_boundary_violation(
-        model, T, params, perturbation_name, epsilon, case_meta["U0"], scaler.scale_p, n_bc_per_axis, device, seed,
-    )
-    S_bc_local, _ = compute_boundary_localization_violation(
+    Sbc, _ = compute_boundary_localization_violation(
         model, T, params, perturbation_name, epsilon, nu, scaler,
-        bc_local_band_width, bc_local_n_points, chunk_size, device, seed,
+        bc_local_band_width_fraction, bc_local_n_points, chunk_size, device, seed,
     )
     SE = compute_energy_violation(
         model, T, params, perturbation_name, epsilon,
         case_meta["U0"], case_meta["k"], case_meta["phi_x"], case_meta["phi_y"], nu,
         n_time, energy_res, device,
     )
-    return {"mom": Smom, "div": Sdiv, "bc": Sbc, "bc_local": S_bc_local, "E": SE}
+    return {"mom": Smom, "div": Sdiv, "bc": Sbc, "E": SE}
 
 
 def compute_normalizers(valid_validation_rows: pd.DataFrame, component_names: list = None) -> dict:
@@ -719,8 +703,7 @@ def compute_baseline_scores(df: pd.DataFrame, baseline_definitions: dict = None)
         df (pd.DataFrame): Must already have the relevant "*_bar" columns
                             from normalize_components().
         baseline_definitions (dict | None): Defaults to BASELINE_DEFINITIONS
-            (Score1/Score2/Score3/Score4 -- Score4_PHS_full is the official
-            PHS; Score3 is kept as an ablation showing bc_local's contribution).
+            (Score1/Score2/Score3 -- Score3_PHS_full is the official PHS).
 
     Outputs:
         pd.DataFrame: `df` with new score columns appended (copy).

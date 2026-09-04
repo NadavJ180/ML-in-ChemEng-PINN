@@ -5,59 +5,56 @@ For every (case_id, perturbation_type, epsilon) row listed in
 data/hallucinations/hallucination_index.json (produced by Issue #8's
 src/hallucinations/generate_hallucinations.py), this script:
 
-  1. Loads that case's trained model once, then computes the 5 raw PHS
-     components (Smom, Sdiv, Sbc, S_bc_local, SE -- see src/detection/phs.py)
-     for every one of its rows DIRECTLY from the model + perturbation
-     functions, NOT from the saved data/hallucinations/*.pt bundles. Those
-     bundles store detached, no-grad predictions (see generate_hallucinations.py's
+  1. Loads that case's trained model once, then computes the 4 raw PHS
+     components (Smom, Sdiv, Sbc, SE -- see src/detection/phs.py) for every
+     one of its rows DIRECTLY from the model + perturbation functions, NOT
+     from the saved data/hallucinations/*.pt bundles. Those bundles store
+     detached, no-grad predictions (see generate_hallucinations.py's
      run_model_in_chunks); Smom/Sdiv need a live autograd graph for exact
      PDE residuals, so the field has to be recomputed here regardless. The
      index is still exactly what makes this script possible without
      re-deriving which (case, perturbation, epsilon, split, label) combos
      exist -- that enumeration is the part Issue #8's bundle was for.
-  2. Normalizes all 5 components using the VALIDATION split's clean-field
+     NOTE: "Sbc" here is computed via compute_boundary_localization_violation,
+     NOT the original periodicity-comparison formula from Section 8's literal
+     text -- see phs.py's module docstring for why that original formula was
+     REPLACED (checked directly: it was essentially blind to every
+     perturbation type in this benchmark, not just "boundary").
+  2. Normalizes all 4 components using the VALIDATION split's clean-field
      means [Section 8].
-  3. Computes 4 detection scores per field -- WP5's baselines plus an
-     ablation for the 5th component:
+  3. Computes 3 detection scores per field -- WP5's baselines plus PHS itself:
        Score1_momentum_only        = S_bar_mom
        Score2_momentum_divergence  = S_bar_mom + S_bar_div
-       Score3_without_bc_local     = S_bar_mom + S_bar_div + S_bar_bc + S_bar_E
-                                     (Section 8's original literal 4-term formula)
-       Score4_PHS_full             = S_bar_mom + S_bar_div + S_bar_bc + S_bar_bc_local + S_bar_E
-                                     (= PHS, the current official score -- see
-                                     phs.py's module docstring for why bc_local
-                                     was promoted from an optional add-on to a
-                                     permanent 5th term)
+       Score3_PHS_full             = S_bar_mom + S_bar_div + S_bar_bc + S_bar_E
+                                     (= PHS, the official score)
   4. Selects each score's threshold tau from the 95th percentile of its
      VALIDATION-split clean-field distribution [Section 8].
-  5. Evaluates detection (ROC-AUC, Precision, Recall, F1 @ tau) for all 4
+  5. Evaluates detection (ROC-AUC, Precision, Recall, F1 @ tau) for all 3
      scores on the held-out TEST split, per WP5's acceptance criterion
-     (AUC(PHS) > 0.90, ideally > AUC(Score2)) -- Score3 additionally shows
-     what including bc_local specifically changes versus not.
+     (AUC(PHS) > 0.90, ideally > AUC(Score2)).
 
 Outputs:
   data/phs_scores/phs_components_raw.csv / .json
       One row per (case, perturbation, epsilon) field: raw components,
-      normalized ("_bar") components, and all 4 score columns.
+      normalized ("_bar") components, and all 3 score columns.
   plots/phs_evaluation/normalizers_and_thresholds.json
-      The 5 component normalizers and the 4 scores' tau values.
+      The 4 component normalizers and the 3 scores' tau values.
   plots/phs_evaluation/detection_metrics_summary.csv / .json
       Per-score AUC / Precision / Recall / F1 on the test split.
   plots/phs_evaluation/roc_curves.png
-      ROC curves for all 4 scores overlaid (test split).
+      ROC curves for all 3 scores overlaid (test split).
   plots/phs_evaluation/score_distributions_comparison.png
-      Clean vs. hallucinated scores for every score (Score1/2/3/4), as a
+      Clean vs. hallucinated scores for every score (Score1/2/3), as a
       strip plot with epsilon as categorical x-axis positions (clean, then
       each epsilon value, light-to-dark color gradient) rather than a
       pooled histogram -- shows the dose-response structure per epsilon
       directly, including exactly which epsilon's fields sit below tau.
   plots/phs_evaluation/raw_components_vs_epsilon.png
-      Smom, Sdiv, Sbc, S_bc_local, SE (raw, pre-normalization) vs. epsilon,
-      one panel per perturbation type -- shows exactly which component(s)
-      each perturbation type activates (e.g. makes it visible directly that
-      Sbc itself stays flat for "boundary" while S_bc_local rises).
+      Smom, Sdiv, Sbc, SE (raw, pre-normalization) vs. epsilon, one panel
+      per perturbation type -- shows exactly which component(s) each
+      perturbation type activates.
   plots/phs_evaluation/scores_vs_epsilon.png
-      Score1 / Score2 / Score3 / Score4 (PHS) vs. epsilon, one panel per
+      Score1 / Score2 / Score3 (PHS) vs. epsilon, one panel per
       perturbation type -- shows how adding each successive component
       changes the detection signal.
 
@@ -179,11 +176,13 @@ def parse_args():
                              "case, clean and perturbed, is evaluated at identical random points, "
                              "removing an unnecessary noise source; see phs.py's _seeded() docstring). "
                              "Only useful for reproducing pre-seeding behavior/results.")
-    parser.add_argument("--bc_local_band_width", type=float, default=0.3,
-                        help="Distance from an edge counted as 'near-boundary' for S_bc_local "
-                             "(always computed -- see phs.py's compute_boundary_localization_violation).")
+    parser.add_argument("--bc_local_band_width_fraction", type=float, default=0.05,
+                        help="Distance from an edge, as a fraction of the domain length (2*pi), "
+                             "counted as 'near-boundary' for computing Sbc (see phs.py's "
+                             "compute_boundary_localization_violation, which Sbc is now computed from). "
+                             "Default 0.05 (5%%).")
     parser.add_argument("--bc_local_n_points", type=int, default=20000,
-                        help="Interior points sampled before the near/far split for S_bc_local.")
+                        help="Interior points sampled before the near/far split for computing Sbc.")
     parser.add_argument("--output_dir", type=str, default=None,
                         help="Root output directory for plots. Defaults to <project_root>/plots/phs_evaluation.")
     return parser.parse_args()
@@ -268,7 +267,7 @@ def score_all_fields(index_rows: list, case_meta_by_id: dict, models_dir: Path, 
                 n_interior=args.n_interior, n_bc_per_axis=args.n_bc,
                 n_time=args.n_time, energy_res=args.energy_res,
                 chunk_size=args.chunk_size, device=args.device,
-                bc_local_band_width=args.bc_local_band_width,
+                bc_local_band_width_fraction=args.bc_local_band_width_fraction,
                 bc_local_n_points=args.bc_local_n_points,
                 seed=case_seed,
             )
@@ -288,7 +287,7 @@ def evaluate_detection(df: pd.DataFrame, percentile: float) -> tuple[dict, dict,
 
     Inputs:
         df (pd.DataFrame): Output of score_all_fields(); must contain
-            "split", "label", "mom", "div", "bc", "bc_local", "E" columns.
+            "split", "label", "mom", "div", "bc", "E" columns.
         percentile (float): Threshold percentile, per Section 8 (95.0).
 
     Outputs:
@@ -389,7 +388,7 @@ def plot_roc_curves(df: pd.DataFrame, output_dir: Path):
     plt.close()
 
 
-def diagnose_misclassifications(df: pd.DataFrame, thresholds: dict, score_name: str = "Score4_PHS_full") -> pd.DataFrame:
+def diagnose_misclassifications(df: pd.DataFrame, thresholds: dict, score_name: str = "Score3_PHS_full") -> pd.DataFrame:
     """
     Builds a diagnostic table of every TEST-split field the given score got
     wrong at its calibrated threshold: hallucinated fields that "slipped
@@ -403,7 +402,7 @@ def diagnose_misclassifications(df: pd.DataFrame, thresholds: dict, score_name: 
             "label", "case_id", "perturbation_type", "epsilon", and the
             requested score column.
         thresholds (dict): Output of evaluate_detection() -- {score_name: tau}.
-        score_name (str): Which score to diagnose. Defaults to Score4_PHS_full.
+        score_name (str): Which score to diagnose. Defaults to Score3_PHS_full.
 
     Outputs:
         pd.DataFrame: Columns "case_id", "perturbation_type", "epsilon",
@@ -541,7 +540,7 @@ def evaluate_detection_by_perturbation_type(df: pd.DataFrame, thresholds: dict) 
 
     Inputs:
         df (pd.DataFrame): Post evaluate_detection() -- must have "split",
-            "label", "perturbation_type", "epsilon", and the 4 score columns.
+            "label", "perturbation_type", "epsilon", and the 3 score columns.
         thresholds (dict): Output of evaluate_detection() -- {score_name: tau}.
 
     Outputs:
@@ -567,7 +566,7 @@ def evaluate_detection_by_perturbation_type(df: pd.DataFrame, thresholds: dict) 
 
 def plot_recall_by_type(recall_df: pd.DataFrame, output_dir: Path):
     """
-    Plots per-perturbation-type recall (Score4_PHS_full only, at tau) vs.
+    Plots per-perturbation-type recall (Score3_PHS_full only, at tau) vs.
     epsilon, so any systematically under-detected perturbation type is
     immediately visible as a curve sitting below the others rather than
     hidden inside a single pooled recall number.
@@ -589,7 +588,7 @@ def plot_recall_by_type(recall_df: pd.DataFrame, output_dir: Path):
     Outputs:
         None. Saves plots/phs_evaluation/recall_by_type.png.
     """
-    phs_recall = recall_df[recall_df["score_name"] == "Score4_PHS_full"]
+    phs_recall = recall_df[recall_df["score_name"] == "Score3_PHS_full"]
     perturbation_types = sorted(phs_recall["perturbation_type"].unique())
 
     plt.figure(figsize=(8, 5.5))
@@ -621,7 +620,7 @@ def plot_raw_components_vs_epsilon(df: pd.DataFrame, output_dir: Path):
 
     Inputs:
         df (pd.DataFrame): Must have "perturbation_type", "epsilon",
-            "label", and the 5 raw component columns ("mom", "div", "bc", "bc_local", "E").
+            "label", and the 4 raw component columns ("mom", "div", "bc", "E").
         output_dir (Path): Where to save raw_components_vs_epsilon.png.
 
     Outputs:
@@ -657,16 +656,16 @@ def plot_raw_components_vs_epsilon(df: pd.DataFrame, output_dir: Path):
 
 def plot_all_scores_vs_epsilon(df: pd.DataFrame, output_dir: Path):
     """
-    Plots Score1 (momentum-only), Score2 (+divergence), Score3 (+boundary
-    +energy, without bc_local), and Score4/PHS (+bc_local) vs. epsilon, one
-    subplot per perturbation type, so you can see how adding each
-    successive component changes the detection signal's shape and
-    magnitude for each perturbation type. Semi-log axis (linear epsilon,
+    Plots Score1 (momentum-only), Score2 (+divergence), and Score3/PHS
+    (+boundary +energy) vs. epsilon, one subplot per perturbation type, so
+    you can see how adding each successive component changes the
+    detection signal's shape and magnitude for each perturbation type.
+    Semi-log axis (linear epsilon,
     log value) -- the project's standard convention for epsilon-response plots.
 
     Inputs:
         df (pd.DataFrame): Must have "perturbation_type", "epsilon",
-            "label", and the 4 score columns (post evaluate_detection()).
+            "label", and the 3 score columns (post evaluate_detection()).
         output_dir (Path): Where to save scores_vs_epsilon.png.
 
     Outputs:
@@ -694,7 +693,7 @@ def plot_all_scores_vs_epsilon(df: pd.DataFrame, output_dir: Path):
     for ax in axes[len(perturbation_types):]:
         ax.axis("off")
 
-    fig.suptitle("Score1 / Score2 / Score3 / Score4 (PHS) vs. Epsilon, by Perturbation Type (all splits)")
+    fig.suptitle("Score1 / Score2 / Score3 (PHS) vs. Epsilon, by Perturbation Type (all splits)")
     plt.tight_layout()
     plt.savefig(output_dir / "scores_vs_epsilon.png", dpi=150)
     plt.close()
@@ -784,7 +783,7 @@ def main():
     misclass_df.to_csv(output_dir / "misclassified_fields.csv", index=False)
     print(f"💾 Wrote {(output_dir / 'misclassified_fields.csv').relative_to(project_root)}")
     if len(misclass_df) > 0:
-        print(f"\n🔎 {len(misclass_df)} misclassified test field(s) at tau={thresholds['Score4_PHS_full']:.3f} "
+        print(f"\n🔎 {len(misclass_df)} misclassified test field(s) at tau={thresholds['Score3_PHS_full']:.3f} "
               f"(closest calls first):")
         print(misclass_df.to_string(index=False))
     else:

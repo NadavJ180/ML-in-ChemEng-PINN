@@ -1,23 +1,30 @@
 """
-Detection Sensitivity Analysis (extends below the canonical epsilon floor)
+Detection Sensitivity Analysis (probes the canonical epsilon grid against an existing calibration)
 
-HISTORY: this script originally existed because the canonical epsilon sweep
-(then [0.005, 0.01, 0.02, 0.05, 0.1]) gave a flat AUC=1.000 that didn't say
-where detection actually became unreliable. That finding led directly to
-EPSILON_VALUES itself being replaced (see perturbations.py) with a range
-centered on the real detection boundary (roughly eps=0.0003-0.0016, per the
-50%/90% recall crossings this script found). So the canonical
-evaluate_phs.py run NOW produces the sensitivity curve directly, as part of
-its standard output (recall_by_type.png, scores_vs_epsilon.png, etc. all
-already span the boundary) -- this script is no longer the only place that
-information exists.
+HISTORY: this script originally existed to probe BELOW the canonical epsilon
+floor using its own, separate SENSITIVITY_EPSILON_VALUES grid, because the
+canonical sweep (at the time [0.005, 0.01, 0.02, 0.05, 0.1], later several
+narrower revisions) gave a flat AUC=1.000 that didn't say where detection
+actually became unreliable. That finding led directly to EPSILON_VALUES
+itself being rebuilt around the real detection boundary. Maintaining two
+similar-but-different epsilon lists across the project (this script's own
+grid vs. perturbations.py's canonical one) then became its own source of
+confusion -- worth asking "why two lists" independent of what either one
+contained. Consolidated: this script now imports and uses the SAME
+EPSILON_VALUES every other script uses, rather than a separate grid. The
+one deliberate exception project-wide remains VISUAL_CHECK_EPSILONS in
+verify_hallucinations.py, independently justified by the write-up's own
+named visual-plausibility values.
 
-What it's still for: probing EVEN LOWER than the new canonical floor
-(0.0001), or checking specific epsilon values that aren't part of the
-standard sweep, using an EXISTING calibration rather than recomputing one.
-It never recalibrates anything -- normalizers and tau are loaded from disk
-(from a prior evaluate_phs.py run), so this never touches validation or
-test data in a way that could leak into the numbers it reports.
+WHAT THIS MEANS FOR THIS SCRIPT'S ROLE: it can no longer independently probe
+epsilon values below the canonical floor (there's only one floor now, and
+it's whatever EPSILON_VALUES's smallest value is). Its remaining, narrower
+purpose is re-scoring the SAME canonical epsilon values against an EXISTING,
+possibly older or frozen calibration (loaded from disk, never refit) --
+useful for checking whether a prior calibration still holds after retraining
+models, or as an independent consistency check against evaluate_phs.py's own
+fresh-calibration run, without needing a second, separate epsilon grid to do
+either of those things.
 
 Epsilon itself is not a fair cross-perturbation-type axis: it means "a
 fraction of U0" for one perturbation type, "a fraction of a boundary bump
@@ -33,11 +40,11 @@ means the same thing regardless of which perturbation produced them.
 Outputs:
   data/phs_scores/sensitivity_probe_raw.csv
       One row per (case, perturbation, epsilon): raw components, the
-      normalized Score4_PHS_full (using the LOADED calibration), relative
+      normalized Score3_PHS_full (using the LOADED calibration), relative
       L2 error, and whether it was detected.
   plots/phs_evaluation/sensitivity_recall_vs_epsilon.png
-      Recall vs. epsilon, one line per perturbation type, for whatever
-      grid this script was run with.
+      Recall vs. epsilon, one line per perturbation type, over the
+      canonical EPSILON_VALUES grid.
   plots/phs_evaluation/sensitivity_boundary_summary.csv / .json
       The epsilon and relative-error values where recall crosses 50% and
       90% (linear interpolation in log-space, over QUANTILE bins -- see
@@ -78,19 +85,8 @@ from src.models.pinn import BaselinePINN
 from src.models.scaling import ResidualScaler
 from src.physics.taylor_green import compute_nu, compute_T, compute_decay_timescale
 from src.hallucinations.generate_hallucinations import load_case_metadata
-from src.hallucinations.perturbations import PERTURBATION_NAMES
+from src.hallucinations.perturbations import PERTURBATION_NAMES, EPSILON_VALUES
 from src.detection.phs import compute_phs_components, compute_relative_error, PHS_COMPONENT_NAMES
-
-# Extends BELOW the canonical EPSILON_VALUES floor (0.0001, per perturbations.py) rather than
-# overlapping it, for anyone curious whether the boundary moves further once epsilon gets smaller
-# still -- plus a couple of points (0.0015, 0.002) reaching just past the canonical range's own 90%
-# crossing (confirmed at eps=0.002 in a full evaluate_phs.py run), so this script's own summary can
-# report a genuine 90% crossing point self-contained, rather than only ever saying "not reached in
-# this range" and requiring a cross-reference to a different script's output. The "6 values maximum"
-# constraint agreed for the canonical EPSILON_VALUES (which drives the full, expensive dataset
-# generation used everywhere) does not apply here -- this is a lighter-weight, standalone probe
-# against an already-existing calibration, not a size-constrained dataset.
-SENSITIVITY_EPSILON_VALUES = [0.00001, 0.00002, 0.00005, 0.0001, 0.0002, 0.0005, 0.001, 0.0015, 0.002]
 
 # Recall levels to report boundary crossings for.
 BOUNDARY_LEVELS = [0.5, 0.9]
@@ -158,7 +154,7 @@ def load_model(case_id: str, k: float, device: str):
 def probe_sensitivity(case_ids: list, case_meta_by_id: dict, models_dir: Path, args) -> pd.DataFrame:
     """
     For every case in `case_ids`, computes PHS components AND relative L2
-    error at every SENSITIVITY_EPSILON_VALUES x PERTURBATION_NAMES
+    error at every EPSILON_VALUES x PERTURBATION_NAMES
     combination.
 
     Inputs:
@@ -192,9 +188,9 @@ def probe_sensitivity(case_ids: list, case_meta_by_id: dict, models_dir: Path, a
         seed = 1000 + int(case_id.split("_")[1])
 
         print(f"[{case_id}] probing {len(PERTURBATION_NAMES)} perturbation types x "
-              f"{len(SENSITIVITY_EPSILON_VALUES)} epsilons...")
+              f"{len(EPSILON_VALUES)} epsilons...")
         for perturbation_name in PERTURBATION_NAMES:
-            for epsilon in SENSITIVITY_EPSILON_VALUES:
+            for epsilon in EPSILON_VALUES:
                 components = compute_phs_components(
                     model, case_meta, nu, T, scaler, perturbation_name, epsilon,
                     n_interior=args.n_interior, n_bc_per_axis=args.n_bc,
@@ -228,17 +224,17 @@ def score_against_existing_calibration(df: pd.DataFrame, normalizers: dict, tau:
             "mom", "div", "bc", "E" columns.
         normalizers (dict): {component_name: normalizer}, loaded from a
             prior evaluate_phs.py run's normalizers_and_thresholds.json.
-        tau (float): Score4_PHS_full's threshold, from the same file.
+        tau (float): Score3_PHS_full's threshold, from the same file.
 
     Outputs:
-        pd.DataFrame: `df` with "Score4_PHS_full" and "detected" columns
+        pd.DataFrame: `df` with "Score3_PHS_full" and "detected" columns
             appended (copy).
     """
     out = df.copy()
     for c in PHS_COMPONENT_NAMES:
         out[f"{c}_bar"] = out[c] / (normalizers[c] + 1e-12)
-    out["Score4_PHS_full"] = sum(out[f"{c}_bar"] for c in PHS_COMPONENT_NAMES)
-    out["detected"] = out["Score4_PHS_full"] > tau
+    out["Score3_PHS_full"] = sum(out[f"{c}_bar"] for c in PHS_COMPONENT_NAMES)
+    out["detected"] = out["Score3_PHS_full"] > tau
     return out
 
 
@@ -248,7 +244,7 @@ def _binned_recall(df: pd.DataFrame, x_col: str, n_bins: int = 15, min_points_pe
     bin's mean detection rate against its own mean x-value, sorted by x.
 
     WHY THIS EXISTS: "epsilon" is a small, shared, discrete grid (the same
-    SENSITIVITY_EPSILON_VALUES for every perturbation type), so grouping by
+    EPSILON_VALUES for every perturbation type), so grouping by
     its exact value already pools multiple (case, perturbation) rows
     together meaningfully. "relative_error" is NOT shared like that --
     different perturbation types produce different relative_error values
@@ -488,7 +484,7 @@ def main():
     with open(calibration_path, "r") as f:
         calibration = json.load(f)
     normalizers = calibration["normalizers"]
-    tau = calibration["thresholds"]["Score4_PHS_full"]
+    tau = calibration["thresholds"]["Score3_PHS_full"]
 
     metadata_path = project_root / "data" / "cases_metadata.json"
     case_meta_by_id = load_case_metadata(metadata_path)
@@ -511,7 +507,7 @@ def main():
     print(f"Using calibration from: {calibration_path.relative_to(project_root)}")
     print(f"tau = {tau:.4f}")
     print(f"Cases: {case_ids}")
-    print(f"Epsilon grid: {SENSITIVITY_EPSILON_VALUES}")
+    print(f"Epsilon grid: {EPSILON_VALUES}")
     print("=" * 60)
 
     df = probe_sensitivity(case_ids, case_meta_by_id, models_dir, args)

@@ -28,7 +28,6 @@ from src.physics.taylor_green import generate_tgv, compute_nu, compute_T
 from src.models.scaling import ResidualScaler
 from src.detection.phs import (
     compute_momentum_divergence_violation,
-    compute_boundary_violation,
     compute_boundary_localization_violation,
     compute_phs_components,
     compute_normalizers,
@@ -140,50 +139,17 @@ def test_pde_perturbations_raise_momentum_divergence(name, perfect_case):
     assert (Smom_large + Sdiv_large) > 1e-4  # meaningfully nonzero, not just "bigger than ~0"
 
 
-def test_boundary_perturbation_blind_to_sbc_but_not_smom(perfect_case):
-    """
-    Regression test for the documented Sbc blind spot (see phs.py's module
-    docstring): the "boundary" perturbation's m(x) satisfies m(0)=m(2*pi)
-    exactly (and its sin(3y) factor vanishes exactly at y=0 and y=2*pi),
-    so the perturbation contributes identically -- and therefore cancels
-    -- on both sides of every boundary pair. Sbc should therefore stay
-    ~unchanged from its clean value, while Smom should rise substantially.
-    This is what makes PHS's sum still detect this perturbation type
-    despite Sbc missing it (confirmed empirically in Issue #9's
-    residual_summary.json: whole-domain mse_Ru rose ~500x across the
-    epsilon sweep for this perturbation type while bc_u_mismatch stayed
-    frozen).
-
-    Inputs:
-        perfect_case (tuple): The (model, case_meta, nu, T, scaler) fixture.
-
-    Outputs:
-        None (raises via assert on failure).
-    """
-    model, case_meta, nu, T, scaler = perfect_case
-    params = {"U0": case_meta["U0"], "k": case_meta["k"], "T": T}
-
-    Sbc_clean = compute_boundary_violation(
-        model, T, params, "none", 0.0, case_meta["U0"], scaler.scale_p, n_bc_per_axis=500)
-    Sbc_perturbed = compute_boundary_violation(
-        model, T, params, "boundary", 0.1, case_meta["U0"], scaler.scale_p, n_bc_per_axis=500)
-    Smom_clean, _ = compute_momentum_divergence_violation(
-        model, T, params, "none", 0.0, nu, scaler, n_interior=3000, chunk_size=3000)
-    Smom_perturbed, _ = compute_momentum_divergence_violation(
-        model, T, params, "boundary", 0.1, nu, scaler, n_interior=3000, chunk_size=3000)
-
-    assert Sbc_perturbed == pytest.approx(Sbc_clean, abs=1e-6)
-    assert Smom_perturbed > 1e-4
-    assert Smom_perturbed > Smom_clean
 
 
 def test_boundary_localization_violation_catches_what_sbc_misses(perfect_case):
     """
-    Companion to the test above: verifies S_bc_local (the permanent,
-    spatially-localized 5th component added specifically because Sbc cannot
-    see the "boundary" perturbation, see phs.py's module docstring)
-    DOES rise substantially for that same perturbation, confirming the fix
-    actually closes the gap it was built for.
+    Companion to the test above: verifies compute_boundary_localization_violation
+    (what "bc" is now computed from, replacing the original periodicity-comparison
+    Sbc entirely -- see phs.py's module docstring for why: checked directly,
+    the original Sbc turned out to be nearly blind to EVERY perturbation type in
+    this benchmark, not just "boundary") DOES rise substantially for the
+    "boundary" perturbation specifically, confirming the replacement actually
+    closes the gap it was built for.
 
     Inputs:
         perfect_case (tuple): The (model, case_meta, nu, T, scaler) fixture.
@@ -194,13 +160,13 @@ def test_boundary_localization_violation_catches_what_sbc_misses(perfect_case):
     model, case_meta, nu, T, scaler = perfect_case
     params = {"U0": case_meta["U0"], "k": case_meta["k"], "T": T}
 
-    S_bc_local_clean, n_near = compute_boundary_localization_violation(
-        model, T, params, "none", 0.0, nu, scaler, band_width=0.3, n_points=5000, chunk_size=5000)
-    S_bc_local_perturbed, _ = compute_boundary_localization_violation(
-        model, T, params, "boundary", 0.1, nu, scaler, band_width=0.3, n_points=5000, chunk_size=5000)
+    Sbc_clean, n_near = compute_boundary_localization_violation(
+        model, T, params, "none", 0.0, nu, scaler, band_width_fraction=0.05, n_points=5000, chunk_size=5000)
+    Sbc_perturbed, _ = compute_boundary_localization_violation(
+        model, T, params, "boundary", 0.1, nu, scaler, band_width_fraction=0.05, n_points=5000, chunk_size=5000)
 
-    assert n_near > 0, "band_width=0.3 should capture some points from a 5000-point interior sample"
-    assert S_bc_local_perturbed > 10 * max(S_bc_local_clean, 1e-12)
+    assert n_near > 0, "band_width_fraction=0.05 should capture some points from a 5000-point interior sample"
+    assert Sbc_perturbed > 10 * max(Sbc_clean, 1e-12)
 
 
 # ---------------------------------------------------------------------
@@ -227,13 +193,12 @@ def test_normalize_and_baseline_scores_match_hand_computed_values():
         "mom": [1.0, 3.0, 2.0, 20.0],
         "div": [2.0, 2.0, 2.0, 40.0],
         "bc": [4.0, 4.0, 4.0, 4.0],
-        "bc_local": [5.0, 5.0, 5.0, 5.0],
         "E": [1.0, 1.0, 1.0, 1.0],
     })
     valid_val = df[(df["split"] == "validation") & (df["label"] == "clean")]
 
     normalizers = compute_normalizers(valid_val)
-    assert normalizers == pytest.approx({"mom": 2.0, "div": 2.0, "bc": 4.0, "bc_local": 5.0, "E": 1.0})
+    assert normalizers == pytest.approx({"mom": 2.0, "div": 2.0, "bc": 4.0, "E": 1.0})
 
     scored = compute_baseline_scores(normalize_components(df, normalizers))
     halluc_row = scored[(scored["split"] == "test") & (scored["label"] == "hallucinated")].iloc[0]
@@ -241,12 +206,10 @@ def test_normalize_and_baseline_scores_match_hand_computed_values():
     assert halluc_row["mom_bar"] == pytest.approx(10.0)  # 20 / 2
     assert halluc_row["div_bar"] == pytest.approx(20.0)  # 40 / 2
     assert halluc_row["bc_bar"] == pytest.approx(1.0)  # 4 / 4
-    assert halluc_row["bc_local_bar"] == pytest.approx(1.0)  # 5 / 5
     assert halluc_row["E_bar"] == pytest.approx(1.0)  # 1 / 1
     assert halluc_row["Score1_momentum_only"] == pytest.approx(10.0)
     assert halluc_row["Score2_momentum_divergence"] == pytest.approx(30.0)
-    assert halluc_row["Score3_without_bc_local"] == pytest.approx(32.0)  # mom+div+bc+E
-    assert halluc_row["Score4_PHS_full"] == pytest.approx(33.0)  # Score3 + bc_local
+    assert halluc_row["Score3_PHS_full"] == pytest.approx(32.0)  # mom+div+bc+E
 
 
 def test_select_threshold_is_the_95th_percentile():
@@ -266,12 +229,11 @@ def test_select_threshold_is_the_95th_percentile():
 
 def test_baseline_definitions_are_nested_subsets():
     """
-    Verifies Score1 subset-of Score2 subset-of Score3 subset-of Score4's
-    component sets, and that Score4 (the official PHS) covers all 5
-    components -- matching WP5's intent that each successive baseline is a
-    strict superset of the simpler ones it is compared against. If this
-    breaks, the AUC(PHS) > AUC(Score2) acceptance criterion stops meaning
-    what it's supposed to.
+    Verifies Score1 subset-of Score2 subset-of Score3's component sets, and
+    that Score3 (PHS) covers all 4 components -- matching WP5's intent that
+    each successive baseline is a strict superset of the simpler ones it is
+    compared against. If this breaks, the AUC(PHS) > AUC(Score2) acceptance
+    criterion stops meaning what it's supposed to.
 
     Inputs:
         None.
@@ -281,10 +243,9 @@ def test_baseline_definitions_are_nested_subsets():
     """
     s1 = set(BASELINE_DEFINITIONS["Score1_momentum_only"])
     s2 = set(BASELINE_DEFINITIONS["Score2_momentum_divergence"])
-    s3 = set(BASELINE_DEFINITIONS["Score3_without_bc_local"])
-    s4 = set(BASELINE_DEFINITIONS["Score4_PHS_full"])
-    assert s1 <= s2 <= s3 <= s4
-    assert s4 == set(PHS_COMPONENT_NAMES)
+    s3 = set(BASELINE_DEFINITIONS["Score3_PHS_full"])
+    assert s1 <= s2 <= s3
+    assert s3 == set(PHS_COMPONENT_NAMES)
 
 
 # ---------------------------------------------------------------------
@@ -321,11 +282,11 @@ def test_evaluate_detection_recovers_perfect_separation():
     for split, n_clean, n_halluc in [("validation", 5, 0), ("test", 5, 15)]:
         for _ in range(n_clean):
             rows.append({"split": split, "label": "clean",
-                         "mom": 1.0, "div": 1.0, "bc": 1.0, "bc_local": 1.0, "E": 1.0})
+                         "mom": 1.0, "div": 1.0, "bc": 1.0, "E": 1.0})
         for _ in range(n_halluc):
             rows.append({"split": split, "label": "hallucinated",
                          "mom": rng.uniform(9, 11), "div": rng.uniform(9, 11),
-                         "bc": 1.0, "bc_local": 1.0, "E": 1.0})
+                         "bc": 1.0, "E": 1.0})
     df = pd.DataFrame(rows)
 
     _, _, metrics_rows, _ = evaluate_detection(df, percentile=95.0)
@@ -351,7 +312,7 @@ def test_evaluate_detection_raises_without_validation_clean_fields():
     df = pd.DataFrame({
         "split": ["test", "test"],
         "label": ["clean", "hallucinated"],
-        "mom": [1.0, 10.0], "div": [1.0, 10.0], "bc": [1.0, 1.0], "bc_local": [1.0, 1.0], "E": [1.0, 1.0],
+        "mom": [1.0, 10.0], "div": [1.0, 10.0], "bc": [1.0, 1.0], "E": [1.0, 1.0],
     })
     with pytest.raises(RuntimeError):
         evaluate_detection(df, percentile=95.0)

@@ -54,7 +54,7 @@ This project does not aim to create a new PINN architecture or a faster CFD solv
 │   │   ├── generate_hallucinations.py  # Builds data/hallucinations/*.pt + hallucination_index.csv/json
 │   │   └── verify_hallucinations.py    # WP4 audit: visual plausibility + violation-activation checks
 │   ├── detection/                   # Issue #10: Physical Hallucination Score (Section 8, WP5)
-│   │   ├── phs.py                   # Pure formula module: Smom/Sdiv/Sbc/S_bc_local/SE, normalization, scoring
+│   │   ├── phs.py                   # Pure formula module: Smom/Sdiv/Sbc(ratio)/SE, normalization, scoring
 │   │   ├── evaluate_phs.py          # Full detection pipeline: scores every field, calibrates tau, evaluates
 │   │   ├── detection_sensitivity.py # Probes detection precision below the canonical epsilon floor
 │   │   └── publication_figures.py   # Issues #12-13: curated Figures 1-3 / Tables 1-2 for the paper
@@ -150,18 +150,20 @@ Writes per-case contour comparisons, a full epsilon-sweep, a high-epsilon (ε=1.
 demo, and a quantitative residual/violation table to `plots/hallucination_verification/{case_id}/`.
 
 ### Evaluating the Physical Hallucination Score (Issue #10)
-Computes 5 components (Smom, Sdiv, Sbc, S_bc_local, SE) for every field in the hallucination index,
+Computes 4 components (Smom, Sdiv, Sbc, SE) for every field in the hallucination index,
 calibrates normalizers/threshold from the validation split, and evaluates detection (ROC-AUC,
-Precision, Recall, F1) on the held-out test split against 3 baselines (Score1/2/3 -- Score4 is PHS itself):
+Precision, Recall, F1) on the held-out test split against 2 residual-only baselines plus PHS itself
+(Score1/2/3, Score3 = PHS):
 ```bash
 python src/detection/evaluate_phs.py                              # full run, all cases
 python src/detection/evaluate_phs.py --n_interior 3000 --n_time 8 --energy_res 16   # fast smoke test
 ```
 Writes the scored dataset to `data/phs_scores/`, and ROC curves, score distributions, per-type recall,
 and epsilon-response plots to `plots/phs_evaluation/`. See `src/detection/phs.py`'s module docstring for
-the exact formulas and every deliberate deviation from the write-up's literal notation (including the
-5th component, `bc_local` -- promoted from an optional add-on to a permanent part of PHS; see the
-Findings section below for why, and for an honest look at what it does and doesn't improve).
+the exact formulas and every deliberate deviation from the write-up's literal notation (including `Sbc`
+now being a near/far residual RATIO rather than the write-up's literal boundary-value comparison; see the
+Findings section below for why the original formula was replaced entirely, not kept alongside a
+replacement).
 
 ### Probing Detection Precision Below the Canonical Range
 Loads an *existing* calibration from a prior `evaluate_phs.py` run (never refits it) and sweeps epsilon
@@ -200,8 +202,8 @@ Based on the project blueprint, the following components are implemented or acti
       (`src/hallucinations/perturbations.py`, `generate_hallucinations.py`).
 - [x] **Perturbation Verification (Issue #9):** Visual-plausibility and violation-activation audit against
       WP4's acceptance criteria (`src/hallucinations/verify_hallucinations.py`).
-- [x] **Physical Hallucination Score (Issue #10):** Smom/Sdiv/Sbc/S_bc_local/SE components, validation-split
-      normalization, and threshold calibration (`src/detection/phs.py`).
+- [x] **Physical Hallucination Score (Issue #10):** Smom/Sdiv/Sbc(near/far ratio)/SE components,
+      validation-split normalization, and threshold calibration (`src/detection/phs.py`).
 - [x] **Detection Metrics & Baseline Comparison (Issue #11):** ROC-AUC/Precision/Recall/F1 for PHS vs. 3
       baselines, plus a per-perturbation-type recall breakdown (`src/detection/evaluate_phs.py`). Note:
       WP5's own acceptance bar (`AUC(PHS) > 0.90`) is not currently met on the harder, boundary-centered
@@ -248,28 +250,30 @@ residuals against the same interior collocation sample used for `Smom`/`Sdiv` ra
 edge values, and does rise for this perturbation type (confirmed: raw value climbed from `2e-5` to `3.4e-3`
 across the epsilon sweep, a ~170x increase, while `Sbc` stayed flat at `~2.9e-7`).
 
-**Current configuration: `S_bc_local` is a permanent 5th component of the official PHS.**
-`PHS_COMPONENT_NAMES = ["mom", "div", "bc", "bc_local", "E"]`, and `Score4_PHS_full` (all 5, summed after
-independent normalization) is now what "PHS" means throughout this project — a deliberate departure from
-Section 8's literal 4-term formula, made after `S_bc_local` was confirmed to close a real, structural gap
-`Sbc` cannot close by construction (not a casual drift from the spec). `Score3_without_bc_local` (the
-original 4-term formula) is kept as a standing ablation baseline specifically so the two can still be
-compared directly.
+**Historical note — this configuration was later superseded.** At the time this was written, `S_bc_local`
+was made a permanent 5th component alongside the original `Sbc` (`PHS_COMPONENT_NAMES = ["mom", "div",
+"bc", "bc_local", "E"]`, `Score4_PHS_full` summing all 5). **This is no longer the current state — see
+the later section "`Sbc` was found to be blind to nearly the whole benchmark..." below for what replaced
+it**: the original `Sbc` was deleted entirely (not kept alongside a working replacement), and
+`compute_boundary_localization_violation` was redesigned as a near/far RATIO rather than an absolute
+near-boundary value, becoming `"bc"` itself. PHS is back to exactly Section 8's 4-term shape and 3-score
+structure (`Score1`/`Score2`/`Score3=PHS`) — there is no more `Score4` or a separate
+`Score3_without_bc_local` ablation. The paragraph below (documenting an AUC comparison between the two
+variants) is kept for the historical record of the investigation that led to this decision, not as a
+description of the current pipeline.
 
-**An honest result from that comparison, once `EPSILON_VALUES` was widened to the harder range described
-below:** on the new, much harder epsilon sweep, `Score4_PHS_full` (AUC=0.850) does **not** clearly
-outperform `Score3_without_bc_local` (AUC=0.855) — the two are statistically indistinguishable at this
-sample size (5 test cases), and `Score4` even reads marginally *lower* in this particular run. This isn't
-a contradiction of the "boundary" finding above: `bc_local` still visibly helps that ONE perturbation
-type specifically (confirmed in `raw_components_vs_epsilon.png` — `S_bc_local` is the only component that
-separates "boundary" from the pack at low epsilon). What this shows instead is that adding a 5th
-independently-calibrated term — itself estimated from only 5 validation cases — introduces its own
-calibration noise into the pooled sum, and at this harder epsilon range (where every score's AUC dropped
-well below the old 1.000, so signal-to-noise matters more) that added noise roughly cancels out the
-added signal in the *overall* pooled number, even though it's a clear net positive for the specific
-perturbation type it targets. Reported here rather than smoothed over, since it's a genuinely useful
-caveat for the paper: `bc_local`'s value is best understood per-perturbation-type, not from the pooled
-AUC alone.
+**The comparison that motivated the change** (from `EPSILON_VALUES` widened to the harder range described
+below): `Score4_PHS_full` (AUC=0.850) did **not** clearly outperform `Score3_without_bc_local` (AUC=0.855)
+— the two were statistically indistinguishable at this sample size (5 test cases), and `Score4` even read
+marginally *lower* in that run. This wasn't a contradiction of the "boundary" finding above: `bc_local`
+still visibly helped that ONE perturbation type specifically (confirmed in `raw_components_vs_epsilon.png`
+— `S_bc_local` was the only component separating "boundary" from the pack at low epsilon). What it showed
+instead was that adding a 5th independently-calibrated term — itself estimated from only 5 validation
+cases — introduces its own calibration noise into the pooled sum, and at that harder epsilon range that
+added noise roughly cancelled the added signal in the *overall* pooled number, even though it was a clear
+net positive for the specific perturbation type it targeted. This is exactly the finding that motivated
+investigating (and later fixing) `bc_local`'s design — see the later section for the full investigation
+and the near/far ratio redesign that resolved it.
 
 ### `temporal_mismatch` was the hardest perturbation type to detect — fixed in place
 Across a 14-case evaluation run, the original `temporal_mismatch` definition had **72% recall** vs.
@@ -497,46 +501,188 @@ script's output: the reported "N epsilons" and the epsilon grid itself are compu
 The number changing between runs (7 before this fix, 9 after) reflects an intentional, separate grid for
 this script, not inconsistent output.
 
-### The canonical epsilon sweep now shows a complete rise-and-stabilization story in 6 points
-`EPSILON_VALUES` was widened from 5 values to the agreed maximum of 6:
-`[0.0001, 0.0005, 0.001, 0.002, 0.005, 0.01]` — inserting `0.002` into the climbing region specifically
-(the earlier 10-value exploratory run showed 0.001→0.76, 0.0015→0.84, 0.002→0.92, 0.003→1.00 recall, so
-0.002 sits right where the curve is still visibly rising but close to the ceiling) rather than extending
-either end further. The result, confirmed directly rather than assumed: pooled recall by epsilon is now
-**0.40 (floor) → [0.0005, 0.001, 0.002 climbing] → 1.00, 1.00 (two points confirming stabilization, not
-just one)** — a complete, small, six-point S-curve. Current AUCs on this range: Score1=0.800,
-Score2=0.880, Score3=0.841, Score4/PHS=0.836 (test split) — the same Score2-leads-pooled-AUC pattern
-documented above still holds at this slightly different range, for the same reasons.
+### One master epsilon list, not two — `detection_sensitivity.py`'s own grid retired
+Two similar-but-different epsilon lists (`EPSILON_VALUES` in `perturbations.py`, and
+`SENSITIVITY_EPSILON_VALUES` in `detection_sensitivity.py`, which extended below the canonical floor) had
+become their own source of confusion independent of what either one contained — worth asking "why two
+lists" regardless. Consolidated: there is now exactly **one** canonical epsilon list, imported by every
+script that needs one (`detection_sensitivity.py` included). `VISUAL_CHECK_EPSILONS` in
+`verify_hallucinations.py` remains the sole, deliberate exception — independently justified by the
+write-up's own named visual-plausibility values (`0.01`, `0.02`), not derived from the master list.
+`detection_sensitivity.py`'s role narrows as a result: it can no longer probe below the canonical floor
+with a separate, finer grid (there's only one floor now); what's left is re-scoring the same canonical
+values against an *existing*, possibly older calibration — useful after retraining, or as an independent
+consistency check, without needing a second grid to do either.
 
-### Score2 (momentum+divergence) currently beats Score3/Score4 in pooled AUC — a real trend, not a strong one
-On the current epsilon range, pooled test-split AUC ranks Score2=0.880 > Score3=0.841 > Score4/PHS=0.836 >
-Score1=0.800 — adding `bc`, `bc_local`, and `E` on top of momentum+divergence does not currently improve,
-and mildly hurts, the pooled ranking metric. This was first found (and the mechanism below investigated)
-on an earlier 5-value epsilon range, where the same ranking held with different absolute numbers
-(Score2=0.858 > Score3=0.822 > Score4=0.818 > Score1=0.786) — cited here for the record, since the
-bootstrap analysis below was run against that range and hasn't been repeated on the current 6-value one;
-the qualitative pattern (and the point estimates above) both still hold at the new range, but treat the
-specific confidence numbers as approximate rather than re-verified. Checked rather than assumed at the
-time: a case-level bootstrap (2000 resamples of the 5 test cases) gives `P(Score2 > Score4) = 92.5%` and
-`P(Score2 > Score3) = 92%` — a real, consistent direction, but well short of a strong statistical result
-at this sample size (the 95% CIs overlap substantially). The same pattern held even broken down by
-perturbation type, including "boundary," where `bc_local` was expected to show a clear win and didn't.
+### The master list widened to 6 values chosen to get PHS itself above 90% pooled AUC
+Per an explicit request to extend the range "until we reach AUC ≈ 90%" (observed at the time: 87%, matching
+`Score2_momentum_divergence`): tested several 6-value candidates directly (not guessed) by scoring the 5
+test cases at each candidate's epsilon values and computing pooled AUC. A first pass,
+`[0.0001, 0.001, 0.002, 0.01, 0.02, 0.03]`, got `Score2_momentum_divergence` to AUC=0.905 but left
+`Score4_PHS_full` (the officially-adopted score) at only 0.871 — per a follow-up request specifically
+targeting `Score4_PHS_full` (not just any score) above 0.90, with the top value raised to `0.05`: further
+candidates were tested, landing on **`[0.0001, 0.002, 0.01, 0.02, 0.03, 0.05]`** — dropping the second
+climbing point (`0.001`) in favor of a 4th high-epsilon value. This gets **`Score4_PHS_full` to
+AUC=0.909** (and `Score2_momentum_divergence` to 0.927) on the current retrained models, with recall
+0.40 → 0.84 → 1.00 → 1.00 → 1.00 → 1.00 — a slightly more compressed climb than the 3-point version (one
+climbing point instead of two) but still a genuine floor → climb → ceiling story, not a flat line.
 
-Likely mechanism: `Smom`/`Sdiv` respond robustly across all 5 perturbation types, while `Sbc`, `bc_local`,
-and `SE` are each strongly informative for only some types and mostly contribute their own calibration
-noise (each independently normalized from just 5 validation cases) for the rest. Every score here is a
-naive equal-weighted sum, so adding a component that isn't informative for a given perturbation type
-doesn't just fail to help that type's ranking — it adds variance on top of an already-good signal.
+**Worth being explicit about, since it's easy to read this the wrong way**: reaching a higher pooled AUC
+by extending the range and trading climbing points for high-epsilon ones is largely a *mechanical* effect
+of adding more easily-separable positives to the test set, not evidence the method became more precise at
+the hard end. AUC is a pairwise ranking statistic (the fraction of positive/negative pairs correctly
+ordered); adding unambiguous positives (fields at ε=0.02-0.05, which score far above any clean field) can
+only add *correctly*-ordered pairs, never incorrectly-ordered ones, so it mechanically pushes the fraction
+up. Recall at ε=0.0001 is exactly 0.40 on this list, same as every version before it — nothing about the
+method's actual sensitivity at the boundary changed. Extending the range (and choosing which points to
+keep within a fixed budget) answers "how far do we have to go, and how many easy points do we need, before
+this metric reads 90%," which is a legitimate, useful thing to know, but it's a different question from
+"how sensitive is PHS."
 
-This does not mean `bc`/`bc_local`/`E` add no value in an absolute sense — `bc_local` rising ~170x for
-the boundary perturbation specifically, and `SE` rising meaningfully for `temporal_mismatch` specifically,
-are both real, independently-confirmed physical signals (see the sections above). It means a naive sum
-doesn't currently translate that into a pooled-AUC improvement on this particular 5-case benchmark. Left
-as an open, documented finding rather than acted on: the Score4-as-PHS decision from earlier stands (it
-was made on structural grounds — closing Sbc's boundary blind spot — that this finding doesn't undo), and
-no weighted-combination alternative has been attempted, since fitting weights would need labeled
-hallucinated examples in calibration, a bigger shift away from the current "threshold from clean fields
-only" design than seemed worth taking on here.
+### `Sbc` was found to be blind to nearly the whole benchmark, `bc_local` was found to be mostly redundant — both addressed by deleting the original `Sbc` and replacing it with a near/far RATIO
+An earlier finding (below, kept for the record) showed Score2 (momentum+divergence) beating the
+5-component PHS in pooled AUC: on one epsilon range, Score2=0.927 > Score3(4-term, ablation)=0.911 >
+Score4/PHS(5-term)=0.909 > Score1=0.891 — adding the original `Sbc` and `bc_local` on top of
+momentum+divergence didn't help, and mildly hurt, the pooled ranking. A case-level bootstrap (2000
+resamples of the 5 test cases) confirmed this was a real, consistent direction (`P(Score2 > Score4) =
+92.5%`), though not an overwhelming one at this sample size.
+
+**Investigated why, rather than left as an unexplained trend.** Two things, checked directly rather than
+assumed:
+
+1. **The original `Sbc` (periodicity: `s|x=0` vs `s|x=2π`) turned out to be blind to essentially the
+   *entire* benchmark, not just "boundary".** Checked raw `Sbc` across every perturbation type and
+   epsilon: flat at `~3.5e-7`, indistinguishable from the `~3.3e-7` clean baseline, for `velocity_divergence`,
+   `momentum`, and `pressure` — only `temporal_mismatch` showed any response at all, and that was tiny.
+   Reason: `velocity_divergence`/`momentum`/`pressure` all add perturbation terms built from
+   **integer-frequency trig functions** (`sin(3x+0.7)sin(2y)`, `sin(4x)cos(3y)cos(2t)`, `cos(5x)cos(4y)`),
+   which are *exactly* periodic on `[0,2π]` by construction — adding them can never move `s(0)` away from
+   `s(2π)`, at any epsilon. This is a property of how the perturbations happen to be built (a very natural
+   choice on a periodic domain), not a flaw in checking periodicity itself — periodicity genuinely is the
+   correct boundary condition here, for any field regardless of internal symmetry (confirmed: it holds for
+   the analytical TGV solution at any phase, since `k` is always an integer, so `Sbc` was never assuming
+   anything about field symmetry beyond periodicity). But the practical result was the same either way:
+   `Sbc` contributed essentially zero discriminative signal.
+2. **`bc_local` (the near-boundary-only absolute residual) was found to be mostly a redundant, weaker echo
+   of `Smom` for every type except "boundary".** Compared how much each one rises (relative to its own
+   clean baseline) across types: for `boundary`, `bc_local` rose **3.17× more** than `Smom` did (150× vs.
+   47×) — genuine, non-redundant signal. For every other type, `bc_local`'s relative rise was *smaller*
+   than `Smom`'s (ratios of 0.75, 0.66, 0.62, 0.52) — a correlated, diluted copy of the same signal
+   `Smom` already captures, not new information. Summing it in adds mostly its own extra sampling noise
+   for those 4/5 types.
+
+**Resolution: the original `Sbc` (periodicity comparison) has been DELETED entirely** — not kept alongside
+a replacement, not kept for reference. `compute_boundary_violation` and its helper `_boundary_pair_mismatch`
+no longer exist in `phs.py`; the now-unused `sample_periodic_boundaries` import was removed too. `"bc"` in
+`PHS_COMPONENT_NAMES` is now computed by `compute_boundary_localization_violation`, **redesigned as a
+RATIO** — near-boundary residual ÷ far-from-boundary residual, both computed on the *same* field (whichever
+one it's called on, clean or a specific perturbed variant) — rather than the absolute near-boundary value
+alone. This restores the design Issue #9's own `boundary_localization_ratio` diagnostic already used (a
+near/far ratio), which was lost when it was first adapted for PHS scoring as an absolute value. **Why a
+ratio, and what it's compared against**: if a perturbation is applied uniformly across the whole domain
+(`momentum`, `pressure`, etc.), both the near-band and far-band residual rise together, so their *ratio*
+stays close to its clean-field value regardless of how large that uniform rise is — this is what cancels
+the redundancy with `Smom`. If a perturbation concentrates near the edges specifically (`boundary`), only
+the near-band residual rises, so the ratio spikes. The comparison is entirely internal to one field (near
+vs. far within it) — it is *not* a comparison against a stored clean-baseline value; that normalization
+still happens afterward, in the same `S_bar = S / mean(S_clean_validation)` step every other component
+goes through.
+
+**Confirmed working exactly as intended**: the new `bc`'s violation-signature row now shows `boundary=70.1`
+against `momentum=0.9`, `pressure=0.7`, `temporal_mismatch=0.7`, `velocity_divergence=0.6` (ε=0.05, test
+split) — genuinely boundary-specific, no longer a diluted copy of `Smom` for the other four types. This
+also returns PHS to `Section 8`'s original 3-score structure (`Score1`/`Score2`/`Score3=PHS`, no more
+Score4 or a separate "without bc_local" ablation) — `Score3_PHS_full` reaches **AUC=0.908** on the current
+epsilon range, essentially unchanged from the old 5-component version's 0.909, which makes sense: the fix
+targeted a *structural* problem (redundant noise vs. genuine signal), not necessarily a large pooled-AUC
+swing at this sample size.
+
+**One real cost, worth knowing**: computing both the near AND far residual (rather than only the near
+~19% subset, as the previous absolute-value version did) means this component now needs the expensive
+double-backward residual computation on close to the *full* point sample, not just a fifth of it — roughly
+doubling this component's own cost. See the section above on why `evaluate_phs.py` takes the time it does.
+
+**A concrete idea for later, not chased further here**: since `bc_local`/`bc`'s residual formula is exactly
+`Smom`'s formula restricted spatially, the "does this add real value or just noise" question generalizes —
+any future added component should ideally be checked for this same kind of correlation with what's already
+in the sum before being adopted permanently, not just checked for "does it individually rise for its
+target perturbation type."
+
+**One real bug this rename surfaced**: `detection_sensitivity.py` built its own `Score4_PHS_full` column
+by summing `PHS_COMPONENT_NAMES` directly, rather than importing the score definition from `phs.py` — a
+hardcoded name that broke (`KeyError`) the moment `evaluate_phs.py`'s calibration file stopped having a
+`Score4_PHS_full` key. Caught by actually running the script after the restructuring rather than assuming
+it still worked; renamed to `Score3_PHS_full` throughout. Worth remembering for next time: any script that
+independently re-derives a score name rather than importing it from `phs.py`'s own definitions is a latent
+source of exactly this kind of silent-until-run breakage during a rename.
+
+### `S_bc_local`'s band width is now a fraction of the domain, not a fixed number
+`compute_boundary_localization_violation`'s `band_width` parameter (how far from an edge counts as
+"near-boundary") was a fixed absolute distance (0.3, in the same units as the domain, `[0, 2\u03c0]`) — meaning
+its effective width as a *proportion* of the domain was really just a happy coincidence of that specific
+domain size (0.3 radians happened to be ~4.8% of `2\u03c0`), not something expressed in a way that stays
+meaningful if the domain scale were ever different. Renamed to `band_width_fraction` (default `0.05`, i.e.
+5% of `2\u03c0` from each edge), with the actual radian width computed internally
+(`band_width_fraction * 2\u03c0`). Threaded through `compute_phs_components`'s
+`bc_local_band_width_fraction` parameter and `evaluate_phs.py`'s `--bc_local_band_width_fraction` flag
+(same default). Purely a clarity/robustness change — 5% of `2\u03c0` ≈ 0.314, close enough to the old 0.3 that
+detection numbers are materially unchanged.
+
+### Publication Figure 3 went log → linear → log-color/linear-text, and Figure 2's histogram now shows epsilon structure
+Three follow-up fixes to `publication_figures.py`, all from direct feedback on the figures themselves:
+
+- **Figure 3**, round 1: originally used a log color scale AND log-transformed annotated numbers
+  (`log10(S_bar)`) to keep a wide dynamic range readable — technically correct, but any cell with
+  `S_bar < 1` produced a *negative* annotated number, which read as confusing/wrong at a glance regardless
+  of the underlying math being sound.
+- **Figure 3**, round 2: reverted to plain linear values throughout (color mapping AND annotated numbers)
+  to eliminate the negative-number confusion. This traded one problem for another: on a linear color
+  scale the single largest cell (`momentum`'s `S_bar_div`, in the thousands) visually dominated the whole
+  heatmap, and every other cell looked similarly dark/muted by comparison — confirmed directly to be
+  unusable, exactly as anticipated when this tradeoff was first flagged.
+- **Figure 3**, round 3 (current): **log-scale color mapping, but LINEAR (plain, always-positive) text
+  annotations** — the combination that avoids both prior problems at once. Cells are visually
+  distinguishable across the full ~4-order-of-magnitude range via color, while every annotated number is
+  a plain, unambiguous `S_bar` value with no possibility of a confusing negative sign. This is the
+  version to treat as final unless further feedback says otherwise.
+- **Figure 2**'s histogram (panel a) originally pooled every epsilon into one flat "hallucinated" color,
+  hiding the same dose-response structure that motivated `evaluate_phs.py`'s strip-plot redesign of
+  `score_distributions_comparison.png` earlier. Redesigned as a **stacked histogram colored by epsilon**
+  (light-to-dark red gradient for increasing epsilon, same convention as the strip plot), with clean fields
+  drawn **separately** in a fixed, distinct blue and a high z-order so they stay visible in front of the
+  stacked bars rather than buried inside them. This one worked well enough to keep as a histogram rather
+  than falling back to the strip-plot alternative that was the agreed-upon fallback if it didn't. A
+  vertical dashed line at `log10(tau)` was added afterward, marking the calibrated threshold directly on
+  the distribution rather than leaving the reader to infer where it falls from Panel (b)'s AUC alone.
+
+### Figure 1's residual panel switched to a difference map, and why `SE` only responds to `temporal_mismatch`
+Figure 1's 4th panel originally showed the raw hallucinated field's residual magnitude alone. Checked
+directly rather than assumed: the clean field's own residual has nearly identical statistics to the
+hallucinated one at the epsilon used for this figure (mean 2.51e-3 vs. 2.73e-3, standard deviation
+1.76e-3 for *both*) — meaning the speckled texture in the raw residual map is almost entirely the trained
+network's own intrinsic second-derivative approximation noise (present even with zero perturbation), not
+something the hallucination introduced. Switched the panel to `|R|_hallucinated - |R|_clean` (a diverging
+colormap centered at zero, since the difference can be locally negative from noise alone) to cancel that
+shared baseline and isolate just the perturbation's own contribution.
+
+Separately, investigated why `SE` (the energy-decay-curve check) only responds meaningfully to
+`temporal_mismatch` among the 5 perturbation types, checked with real computation rather than left as an
+unexplained pattern:
+- `pressure` cannot affect `E(t) = mean(u²+v²)/2` at all — it only modifies `p`, and `E(t)` depends solely
+  on velocity.
+- `velocity_divergence`/`momentum` do modify velocity, but their added terms are spatially zero-mean
+  oscillatory functions — checked directly, `E(t)` for a perturbed field differs from the clean field's by
+  only a tiny, roughly *time-constant* amount at every sampled t (e.g. 0.2819 vs. 0.2823 at t=0, 0.2181 vs.
+  0.2184 at t=T) — a small second-order self-energy contribution that shifts the curve slightly without
+  changing its *shape* relative to the expected decay, so it stays within the noise `SE` already has for a
+  clean field.
+- `temporal_mismatch` is mechanistically different: it doesn't add anything to the field, it reports the
+  model's genuine prediction for a *different*, shifted time. Checked directly: this produces a
+  substantial, clearly time-*varying* gap (0.255 vs. 0.282 at t=0, converging to exact equality at t=T
+  once the clamp saturates) — not about energy conservation (this flow properly decays, it doesn't
+  conserve energy), but because temporal mislabeling directly manifests as a mismatch between the reported
+  field's actual energy and what the analytical decay law predicts for the time it claims to be at, which
+  is exactly what `SE` is built to catch.
 
 ### One clean field can still score well above tau — traced to a real, fixable calibration gap
 Even with `temporal_mismatch` fixed and 100% recall, one or two clean test fields still land above tau by
@@ -548,6 +694,20 @@ cases: k=1 → 8.8e-6, k=2 → 6.8e-6, k=3 → 4.5e-6, monotonically decreasing)
 happened to allocate `k` unevenly: **validation is 20% k=1 (1 of 5 cases), test is 60% k=1 (3 of 5 cases)**.
 The threshold was calibrated mostly from the "quieter" k=2/k=3 family and then applied to a test split
 skewed toward the "naturally noisier" k=1 family — a real, mechanistic explanation, not calibration noise.
+**Confirmed this persists on the actual retrained models, not just the earlier ones**: `case_27` and
+`case_28` (both k=1) score **above tau at ε=0, i.e. on their own unperturbed clean fields** (Score4=6.99
+and 7.46 vs. tau=6.48); the other 3 test cases correctly score below tau at ε=0 and climb normally as
+epsilon increases.
+
+**This directly explains why the recall-vs-epsilon floor sits at 40%, not 0%, at the smallest epsilon
+values**: 2 of the 5 test cases (`case_27`, `case_28`) already read as "detected" *regardless of epsilon*,
+since their own clean baseline already exceeds tau — a barely-perturbed version of those two still scores
+above tau, which is really their case identity showing through the calibration gap above, not genuine
+sensitivity to that particular (tiny) epsilon. The other 3 test cases are the ones actually demonstrating
+real epsilon-dependent sensitivity, correctly starting below tau and climbing as epsilon increases. So the
+40% floor is not "PHS is 40% likely to notice an arbitrarily small change by chance" — it's exactly
+2 structurally-mislabeled-at-baseline cases out of 5, a fixed, explainable count, not a probabilistic
+sensitivity limit.
 
 **Root mechanism, checked directly rather than assumed:** the *raw*, un-scaled residual runs the OPPOSITE
 direction — it *increases* with k (higher spatial frequency is genuinely harder to fit to the same absolute

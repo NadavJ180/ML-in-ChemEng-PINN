@@ -177,14 +177,27 @@ def build_grid(T: float, res: int, time_frac: float, device: str):
 def make_figure1(args, case_meta_by_id, output_dir):
     """
     Figure 1: Valid field, hallucinated field, difference map, and residual
-    heatmap -- one representative (case, perturbation, epsilon) example.
+    DIFFERENCE heatmap -- one representative (case, perturbation, epsilon)
+    example.
 
     Uses the u-velocity component for the valid/hallucinated/difference
     panels (matching what verify_hallucinations.py's contour checks already
-    show), and the momentum residual magnitude sqrt(Ru^2 + Rv^2) for the
-    4th panel -- the piece that was missing entirely from every existing
-    plot in the repo (residual STATISTICS were already computed everywhere,
-    but never rendered as a spatial map).
+    show). The 4th panel is |R_hallucinated| - |R_clean| (momentum residual
+    magnitude, sqrt(Ru^2+Rv^2)), NOT the raw hallucinated-field residual on
+    its own -- an earlier version used the raw residual, but checked directly
+    (comparing clean vs. hallucinated residual statistics side by side) found
+    the two have nearly IDENTICAL standard deviation (clean: mean=2.51e-3,
+    std=1.76e-3; hallucinated at eps=0.001: mean=2.73e-3, std=1.76e-3) --
+    meaning the speckled texture in the raw residual map is almost entirely
+    the trained network's own intrinsic second-derivative approximation
+    noise (present even with zero perturbation), not something the
+    hallucination introduced. Taking the difference cancels that shared
+    baseline noise and isolates just the perturbation's own contribution,
+    which is a small quantity at this epsilon (chosen deliberately to be
+    visually subtle) -- plotted with a diverging colormap centered at zero
+    since the difference can be negative in places (where clean's own noise
+    happens to exceed hallucinated's at that specific point, from noise
+    alone, not a real effect).
 
     Inputs:
         args (argparse.Namespace): Must have case_id, perturbation_type,
@@ -209,8 +222,11 @@ def make_figure1(args, case_meta_by_id, output_dir):
     perturbed = apply_perturbation(args.perturbation_type, clean, coords, params, args.epsilon,
                                      model=model, no_grad=False)
 
-    Ru, Rv, _ = compute_residuals(perturbed["u"], perturbed["v"], perturbed["p"], x, y, t, nu)
-    residual_magnitude = torch.sqrt(Ru ** 2 + Rv ** 2).detach().cpu().numpy().reshape(args.res, args.res)
+    Ru_c, Rv_c, _ = compute_residuals(clean["u"], clean["v"], clean["p"], x, y, t, nu)
+    Ru_p, Rv_p, _ = compute_residuals(perturbed["u"], perturbed["v"], perturbed["p"], x, y, t, nu)
+    residual_clean = torch.sqrt(Ru_c ** 2 + Rv_c ** 2).detach().cpu().numpy().reshape(args.res, args.res)
+    residual_halluc = torch.sqrt(Ru_p ** 2 + Rv_p ** 2).detach().cpu().numpy().reshape(args.res, args.res)
+    residual_diff = residual_halluc - residual_clean
 
     u_clean = clean["u"].detach().cpu().numpy().reshape(args.res, args.res)
     u_halluc = perturbed["u"].detach().cpu().numpy().reshape(args.res, args.res)
@@ -219,11 +235,13 @@ def make_figure1(args, case_meta_by_id, output_dir):
     plt.rcParams.update({"font.size": FIGURE_FONT_SIZE})
     fig, axes = plt.subplots(1, 4, figsize=(IEEE_PAGE_WIDTH, IEEE_PAGE_WIDTH / 4 + 0.5))
 
+    diff_bound = max(abs(residual_diff.min()), abs(residual_diff.max()))
     panels = [
         (u_clean, "(a) Valid field (u)", "RdBu_r", None),
         (u_halluc, "(b) Hallucinated field (u)", "RdBu_r", None),
         (u_diff, "(c) |Difference|", "inferno", None),
-        (residual_magnitude, "(d) Residual |R|", "inferno", LogNorm()),
+        (residual_diff, "(d) Residual diff |R|$_{halluc}$-|R|$_{clean}$", "RdBu_r",
+         plt.Normalize(vmin=-diff_bound, vmax=diff_bound)),
     ]
     for ax, (data, title, cmap, norm) in zip(axes, panels):
         im = ax.imshow(data.T, origin="lower", extent=[0, 2 * np.pi, 0, 2 * np.pi],
@@ -241,44 +259,79 @@ def make_figure1(args, case_meta_by_id, output_dir):
     plt.close()
 
 
-def make_figure2(phs_df, output_dir):
+def make_figure2(phs_df, tau, output_dir):
     """
     Figure 2: Histogram of log10(PHS) and ROC curve -- both restricted to
-    Score4_PHS_full specifically (the official PHS), matching the
+    Score3_PHS_full specifically (the official PHS), matching the
     write-up's singular "the PHS" framing. The fuller multi-score ROC
     comparison (Score1-4 overlaid) remains available separately in
     evaluate_phs.py's own roc_curves.png for the ablation discussion --
     this figure is the clean, single-score headline version for the paper.
 
+    Panel (a)'s histogram is stratified by epsilon rather than pooling every
+    hallucinated field into one color, on the same reasoning that motivated
+    evaluate_phs.py's score_distributions_comparison.png strip-plot redesign:
+    a flat two-color histogram hides exactly the dose-response structure that
+    matters once EPSILON_VALUES spans from near the detection floor up to
+    the ceiling -- a wide, spread-out "hallucinated" mass with no visual
+    indication that "easy" (large epsilon) and "hard" (small epsilon) fields
+    are mixed together. Each epsilon's hallucinated fields get their own
+    stacked histogram layer, colored on a light-to-dark gradient for
+    increasing epsilon (same convention as score_distributions_comparison.png).
+    Clean fields are drawn SEPARATELY, in a fixed, distinct color (never
+    confusable with any epsilon shade) and with a high zorder so they are
+    always visible in front of the stacked hallucinated bars, even where
+    their bins overlap in x-range -- rather than stacked in among them, where
+    a thin clean layer could be visually buried under much larger
+    hallucinated counts. A vertical dashed line at log10(tau) marks the
+    calibrated detection threshold directly on the distribution.
+
     Inputs:
         phs_df (pd.DataFrame): evaluate_phs.py's phs_components_raw.csv,
-            already scored (must have "split", "label", "Score4_PHS_full").
+            already scored (must have "split", "label", "epsilon", "Score3_PHS_full").
+        tau (float): The calibrated Score3_PHS_full threshold, from
+            evaluate_phs.py's normalizers_and_thresholds.json.
         output_dir (Path): Where to save the figure.
 
     Outputs:
         None. Saves figure2_phs_histogram_and_roc.png.
     """
     test_df = phs_df[phs_df["split"] == "test"]
-    clean_scores = test_df.loc[test_df["label"] == "clean", "Score4_PHS_full"].values
-    halluc_scores = test_df.loc[test_df["label"] == "hallucinated", "Score4_PHS_full"].values
+    clean_scores = test_df.loc[test_df["label"] == "clean", "Score3_PHS_full"].values
+    halluc_df = test_df[test_df["label"] == "hallucinated"]
     y_true = (test_df["label"] == "hallucinated").astype(int).values
-    y_score = test_df["Score4_PHS_full"].values
+    y_score = test_df["Score3_PHS_full"].values
 
     plt.rcParams.update({"font.size": FIGURE_FONT_SIZE})
     fig, axes = plt.subplots(1, 2, figsize=(IEEE_PAGE_WIDTH, IEEE_PAGE_WIDTH / 2.4))
 
-    # Panel (a): histogram of log10(PHS)
-    all_positive = np.concatenate([clean_scores, halluc_scores])
+    # Panel (a): histogram of log10(PHS), stratified by epsilon
+    all_positive = np.concatenate([clean_scores, halluc_df["Score3_PHS_full"].values])
     all_positive = all_positive[all_positive > 0]
-    log_clean = np.log10(np.clip(clean_scores, all_positive.min(), None))
-    log_halluc = np.log10(np.clip(halluc_scores, all_positive.min(), None))
-    bins = np.linspace(min(log_clean.min(), log_halluc.min()), max(log_clean.max(), log_halluc.max()), 25)
-    axes[0].hist(log_clean, bins=bins, alpha=0.65, label=f"Clean (n={len(clean_scores)})", color="tab:blue")
-    axes[0].hist(log_halluc, bins=bins, alpha=0.65, label=f"Hallucinated (n={len(halluc_scores)})", color="tab:red")
+    floor = all_positive.min()
+    log_clean = np.log10(np.clip(clean_scores, floor, None))
+    log_all_halluc = np.log10(np.clip(halluc_df["Score3_PHS_full"].values, floor, None))
+    log_tau = np.log10(max(tau, floor))
+    bins = np.linspace(min(log_clean.min(), log_all_halluc.min(), log_tau),
+                        max(log_clean.max(), log_all_halluc.max(), log_tau), 25)
+
+    epsilon_values = sorted(halluc_df["epsilon"].unique())
+    cmap = plt.cm.Reds
+    n_eps = max(len(epsilon_values), 1)
+    epsilon_colors = [cmap(0.35 + 0.55 * i / max(n_eps - 1, 1)) for i in range(n_eps)]
+
+    stacked_logs = [np.log10(np.clip(halluc_df.loc[halluc_df["epsilon"] == eps, "Score3_PHS_full"].values,
+                                       floor, None)) for eps in epsilon_values]
+    axes[0].hist(stacked_logs, bins=bins, stacked=True, color=epsilon_colors,
+                 label=[f"\u03b5={eps:g}" for eps in epsilon_values], zorder=1)
+    axes[0].hist(log_clean, bins=bins, color="tab:blue", label=f"Clean (n={len(clean_scores)})",
+                 zorder=5)
+    axes[0].axvline(log_tau, color="black", linestyle="--", linewidth=1.5, zorder=6,
+                     label=f"\u03c4={tau:.2f}")
     axes[0].set_xlabel("log$_{10}$(PHS)")
     axes[0].set_ylabel("Count")
-    axes[0].set_title("(a) PHS distribution")
-    axes[0].legend(fontsize=FIGURE_FONT_SIZE - 1)
+    axes[0].set_title("(a) PHS distribution by epsilon")
+    axes[0].legend(fontsize=FIGURE_FONT_SIZE - 2, ncol=2)
 
     # Panel (b): ROC curve
     fpr, tpr, _ = roc_curve(y_true, y_score)
@@ -309,22 +362,26 @@ def make_figure3(phs_df, output_dir):
     is a per-component, relative-to-clean normalization; it does NOT (and
     isn't meant to) equalize how STRONGLY different perturbation types
     activate different components -- a perturbation genuinely can push one
-    component to ~800x its clean level while barely moving another, and
-    that contrast IS the finding this figure exists to show (e.g. Sbc
-    staying near 1 even for "boundary" is the blind spot; S_bar_local
-    responding broadly rather than boundary-only). So the wide spread
-    across cells (~1 up to ~800+) is real, not evidence of missing
-    normalization to fix.
+    component to several hundred times its clean level while barely moving
+    another, and that contrast IS the finding this figure exists to show
+    (e.g. Sbc staying near 1 even for "boundary" is the blind spot;
+    S_bar_local responding broadly rather than boundary-only). So the wide
+    spread across cells is real, not evidence of missing normalization to fix.
 
-    What IS worth fixing is display: annotating cells with the raw S_bar
-    number makes that same correct, wide dynamic range hard to read at a
-    glance (single-digit and 3-digit numbers side by side). The color
-    mapping already uses a log scale for exactly this reason; the
-    annotated numbers now do too (log10(S_bar), shown in the colorbar
-    label) so the ON-SCREEN numbers are visually comparable across cells,
-    while the underlying data and PHS's actual score computation elsewhere
-    in this project still use the untransformed S_bar -- only this
-    figure's displayed digits are log-scaled, not any stored or scored value.
+    Uses a LOG-SCALE color mapping (the wide spread across cells genuinely
+    spans roughly three orders of magnitude, and a linear color scale makes
+    the single largest cell dominate the whole heatmap, leaving nearly
+    everything else looking similarly dark and undifferentiated -- tried
+    directly and confirmed unusable) but LINEAR, un-transformed numbers in
+    the cell annotations. An earlier version log-transformed the annotated
+    numbers too (to match the color scale) for readability across that same
+    wide range, but that produced NEGATIVE annotated numbers for any cell
+    below 1.0 (log10 of a value less than 1 is negative), which read as
+    confusing/wrong at a glance even though it was mathematically
+    consistent -- reverted the TEXT to plain values while keeping the COLOR
+    log-scaled, which is the combination that avoids both problems: cells
+    are visually distinguishable via color across the full dynamic range,
+    and every annotated number is a plain, always-positive S_bar value.
 
     Inputs:
         phs_df (pd.DataFrame): evaluate_phs.py's phs_components_raw.csv,
@@ -351,20 +408,21 @@ def make_figure3(phs_df, output_dir):
     im = ax.imshow(matrix, cmap="viridis", norm=LogNorm(vmin=max(matrix[matrix > 0].min(), 1e-3),
                                                           vmax=matrix.max()), aspect="auto")
     ax.set_xticks(range(len(PHS_COMPONENT_NAMES)))
-    # Underscores inside an already-subscripted mathtext label (e.g. "bc_local") trigger a second,
-    # nested subscript and render as a stray vertical bar -- replace with a comma for display only.
+    # Underscores inside an already-subscripted mathtext label trigger a second, nested subscript
+    # and render as a stray vertical bar -- .replace('_', ',') is a defensive no-op now that
+    # PHS_COMPONENT_NAMES (mom, div, bc, E) has none, kept in case a future component name does
+    # (this exact bug hit the former "bc_local" column before it was renamed to "bc").
     ax.set_xticklabels([f"$\\bar{{S}}_{{{c.replace('_', ',')}}}$" for c in PHS_COMPONENT_NAMES])
     ax.set_yticks(range(len(perturbation_types)))
     ax.set_yticklabels(perturbation_types)
     ax.set_title(f"Violation signature at \u03b5={max_epsilon:g} (test split, mean $\\bar{{S}}_j$)")
     for i in range(len(perturbation_types)):
         for j in range(len(PHS_COMPONENT_NAMES)):
-            # Cell text shows log10(S_bar) for readability across a ~3-order-of-magnitude range
-            # (see docstring); the underlying value/color mapping is unaffected.
-            log_val = np.log10(max(matrix[i, j], 1e-12))
-            ax.text(j, i, f"{log_val:.1f}", ha="center", va="center",
+            # Text is the plain (linear) S_bar value, even though the color mapping above is log-scaled
+            # -- see docstring for why the two use different scales.
+            ax.text(j, i, f"{matrix[i, j]:.1f}", ha="center", va="center",
                     color="white" if matrix[i, j] < matrix.max() ** 0.5 else "black", fontsize=FIGURE_FONT_SIZE - 1)
-    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="log$_{10}(\\bar{S}_j)$")
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="$\\bar{S}_j$ (log scale)")
     plt.tight_layout()
     plt.savefig(output_dir / "figure3_violation_signature_heatmap.png", dpi=FIGURE_DPI)
     plt.close()
@@ -374,8 +432,8 @@ def _escape_latex(text: str) -> str:
     """
     Escapes underscores for safe inclusion in a raw LaTeX table cell.
     Needed because several values written into these tables come directly
-    from Python identifiers (PERTURBATION_NAMES, PHS_COMPONENT_NAMES) that
-    contain underscores -- e.g. "velocity_divergence", "bc_local" -- and an
+    from Python identifiers (e.g. PERTURBATION_NAMES) that contain
+    underscores -- e.g. "velocity_divergence", "temporal_mismatch" -- and an
     unescaped underscore in LaTeX text mode is a reserved math-mode
     character that would either fail to compile or render as an
     unintended subscript. The CSV outputs are left with plain underscores
@@ -444,9 +502,14 @@ def make_table2(metrics_summary_path, output_dir):
     divergence, and full PHS -- read directly from evaluate_phs.py's own
     detection_metrics_summary.csv rather than recomputed, so this table
     can never disagree with the numbers evaluate_phs.py itself reports.
-    Includes Score3 (without bc_local) as a 4th row beyond the write-up's
-    literal 3-way ask, since it's a meaningful ablation already computed
-    as a side effect of the Score4-as-PHS decision (see the README).
+    Exactly the write-up's literal 3-way comparison now -- an earlier
+    version also carried a 4th "Score3, without bc_local" ablation row from
+    when PHS had 5 components; that structure was replaced (see the
+    README's Findings section: the original Sbc was found to be blind to
+    nearly every perturbation type in this benchmark, and was replaced by
+    the boundary-localized computation rather than kept alongside it), so
+    there is no longer a separate "with/without bc_local" distinction to
+    show here.
 
     Inputs:
         metrics_summary_path (Path): evaluate_phs.py's detection_metrics_summary.csv.
@@ -459,8 +522,7 @@ def make_table2(metrics_summary_path, output_dir):
     display_names = {
         "Score1_momentum_only": "Momentum only",
         "Score2_momentum_divergence": "Momentum + divergence",
-        "Score3_without_bc_local": "Full PHS, no bc_local (ablation)",
-        "Score4_PHS_full": "Full PHS",
+        "Score3_PHS_full": "Full PHS",
     }
     metrics = metrics.copy()
     metrics["Score"] = metrics["score_name"].map(display_names)
@@ -507,6 +569,12 @@ def main():
     if not metrics_summary_path.exists():
         raise FileNotFoundError(f"Cannot find {metrics_summary_path}. Run src/detection/evaluate_phs.py first.")
 
+    thresholds_path = project_root / "plots" / "phs_evaluation" / "normalizers_and_thresholds.json"
+    if not thresholds_path.exists():
+        raise FileNotFoundError(f"Cannot find {thresholds_path}. Run src/detection/evaluate_phs.py first.")
+    with open(thresholds_path, "r") as f:
+        tau = json.load(f)["thresholds"]["Score3_PHS_full"]
+
     output_dir = Path(args.output_dir) if args.output_dir else project_root / "plots" / "paper_figures"
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -517,7 +585,7 @@ def main():
     make_figure1(args, case_meta_by_id, output_dir)
     print(f"🖼️  Wrote figure1_valid_hallucinated_diff_residual.png")
 
-    make_figure2(phs_df, output_dir)
+    make_figure2(phs_df, tau, output_dir)
     print(f"🖼️  Wrote figure2_phs_histogram_and_roc.png")
 
     make_figure3(phs_df, output_dir)
