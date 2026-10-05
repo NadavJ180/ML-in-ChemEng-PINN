@@ -27,6 +27,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from src.utils.console import enable_utf8_output
+
 PROJECT_ROOT = Path(__file__).parent
 
 # Each stage: (name, module, description, extra_args(args) -> list[str]).
@@ -141,4 +143,5 @@ def main():
 
 
 if __name__ == "__main__":
+    enable_utf8_output()
     main()

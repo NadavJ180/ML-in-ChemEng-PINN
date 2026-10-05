@@ -109,6 +109,7 @@ from src.detection.phs import (
     PHS_COMPONENT_NAMES,
     BASELINE_DEFINITIONS,
 )
+from src.utils.console import enable_utf8_output
 
 # Cycled through (by index, wrapping) for every multi-line plot in this module. Relying on color
 # alone breaks down whenever two lines sit close together or land exactly on top of each other (e.g.
@@ -851,4 +852,5 @@ def main():
 
 
 if __name__ == "__main__":
+    enable_utf8_output()
     main()

@@ -31,6 +31,7 @@ from src.physics.taylor_green import compute_nu, compute_T, generate_tgv # Neede
 from src.physics.navier_stokes import compute_residuals # Needed for evaluation
 from src.hallucinations.perturbations import apply_perturbation, PERTURBATION_NAMES, EPSILON_VALUES
 from src.utils.seed import set_global_seed
+from src.utils.console import enable_utf8_output
 
 def print_vram_instructions():
     """Prints a clear banner with instructions for handling GPU Out-Of-Memory errors."""
@@ -794,4 +795,5 @@ def main():
           f"Total Execution Time: {int(hours)}h {int(minutes)}m {int(seconds)}s\n{'='*50}")
 
 if __name__ == "__main__":
+    enable_utf8_output()
     main()

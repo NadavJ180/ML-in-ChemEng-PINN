@@ -20,6 +20,7 @@ sys.path.append(str(project_root))
 from src.data.point_samplers import generate_case_dataset
 from src.physics.taylor_green import compute_T, compute_nu, generate_tgv
 from src.utils.seed import set_global_seed
+from src.utils.console import enable_utf8_output
 
 def main():
     # Lock the random number generator so everyone gets the exact same points
@@ -84,4 +85,5 @@ def main():
     print(f"✅ Successfully generated and exported {len(all_cases)} datasets to {output_dir}")
 
 if __name__ == "__main__":
+    enable_utf8_output()
     main()

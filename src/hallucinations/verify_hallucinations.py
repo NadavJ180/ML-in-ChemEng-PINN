@@ -64,6 +64,7 @@ from src.hallucinations.perturbations import (
     PERTURBATION_NAMES,
 )
 from src.hallucinations.generate_hallucinations import load_case_metadata
+from src.utils.console import enable_utf8_output
 
 # The two epsilon values the visual imperceptibility check is restricted to,
 # per the task specification.
@@ -1208,4 +1209,5 @@ def main():
 
 
 if __name__ == "__main__":
+    enable_utf8_output()
     main()

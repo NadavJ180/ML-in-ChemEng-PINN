@@ -12,6 +12,7 @@ sys.path.append(str(project_root))
 
 from src.models.pinn import BaselinePINN
 from src.physics.taylor_green import compute_nu, generate_tgv
+from src.utils.console import enable_utf8_output
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Verify a trained PINN against the analytical TGV solution.")
@@ -169,6 +170,7 @@ def verify_case(case_id="case_00", show: bool = True):
 
 
 if __name__ == "__main__":
+    enable_utf8_output()
     args = parse_args()
     if args.all_cases:
         models_dir = project_root / "models"

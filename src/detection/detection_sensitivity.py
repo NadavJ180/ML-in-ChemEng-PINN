@@ -87,6 +87,7 @@ from src.physics.taylor_green import compute_nu, compute_T, compute_decay_timesc
 from src.hallucinations.generate_hallucinations import load_case_metadata
 from src.hallucinations.perturbations import PERTURBATION_NAMES, EPSILON_VALUES
 from src.detection.phs import compute_phs_components, compute_relative_error, PHS_COMPONENT_NAMES
+from src.utils.console import enable_utf8_output
 
 # Recall levels to report boundary crossings for.
 BOUNDARY_LEVELS = [0.5, 0.9]
@@ -563,4 +564,5 @@ def main():
 
 
 if __name__ == "__main__":
+    enable_utf8_output()
     main()

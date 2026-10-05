@@ -42,6 +42,7 @@ from src.hallucinations.perturbations import (
     EPSILON_VALUES,
     PERTURBATION_NAMES,
 )
+from src.utils.console import enable_utf8_output
 
 
 def parse_args():
@@ -423,4 +424,5 @@ def main():
 
 
 if __name__ == "__main__":
+    enable_utf8_output()
     main()
