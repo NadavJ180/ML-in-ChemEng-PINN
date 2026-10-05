@@ -680,7 +680,7 @@ def main():
         
         # --- CHECKPOINT LOGIC ---
         # Check if this case has already been successfully trained and saved
-        expected_model_path = project_root / "models" / f"{case_id}_best.pth"
+        expected_model_path = project_root / "models" / f"{case_id}.pth"
         if expected_model_path.exists():
             print(f"\n{'='*50}\n[{idx+1}/{total_cases}] Skipping {case_id}: Model already exists.\n{'='*50}")
             continue
@@ -741,7 +741,7 @@ def main():
                 print(f"\n✅ Case {case_id} PASSED all usability criteria.")
                 # Save model
                 try:
-                    torch.save(model.state_dict(), models_dir / f"{case_id}_best.pth")
+                    torch.save(model.state_dict(), models_dir / f"{case_id}.pth")
                 except Exception as e:
                     print(f"⚠️ Failed to save model for {case_id}: {e}")
             else:
