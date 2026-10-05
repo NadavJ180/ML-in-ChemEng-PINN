@@ -109,6 +109,7 @@ from src.detection.phs import (
     PHS_COMPONENT_NAMES,
     BASELINE_DEFINITIONS,
 )
+from src.utils.console import enable_utf8_output
 
 # Cycled through (by index, wrapping) for every multi-line plot in this module. Relying on color
 # alone breaks down whenever two lines sit close together or land exactly on top of each other (e.g.
@@ -216,7 +217,7 @@ def load_model(case_id: str, k: float, device: str):
     Outputs:
         model (nn.Module): The loaded, float64, eval-mode model on `device`.
     """
-    model_path = project_root / "models" / f"{case_id}_best.pth"
+    model_path = project_root / "models" / f"{case_id}.pth"
     model = BaselinePINN(k=k)
     model.load_state_dict(torch.load(model_path, map_location="cpu"))
     model.to(device)
@@ -234,7 +235,7 @@ def score_all_fields(index_rows: list, case_meta_by_id: dict, models_dir: Path, 
         index_rows (list[dict]): Rows from hallucination_index.json,
             already filtered to the case(s) being processed.
         case_meta_by_id (dict): Output of load_case_metadata().
-        models_dir (Path): Directory containing {case_id}_best.pth files.
+        models_dir (Path): Directory containing {case_id}.pth files.
         args (argparse.Namespace): Parsed CLI arguments (resolution knobs, device).
 
     Outputs:
@@ -247,7 +248,7 @@ def score_all_fields(index_rows: list, case_meta_by_id: dict, models_dir: Path, 
 
     results = []
     for case_id, rows in sorted(rows_by_case.items()):
-        model_path = models_dir / f"{case_id}_best.pth"
+        model_path = models_dir / f"{case_id}.pth"
         if not model_path.exists():
             print(f"⏭️  Skipping {case_id}: no trained model found at {model_path}")
             continue
@@ -790,7 +791,7 @@ def main():
 
     df = score_all_fields(index_rows, case_meta_by_id, models_dir, args)
     if df.empty:
-        raise RuntimeError("No fields were scored -- check that models/ contains the matching *_best.pth files.")
+        raise RuntimeError("No fields were scored -- check that models/ contains the matching *.pth files.")
 
     normalizers, thresholds, metrics_rows, df = evaluate_detection(df, args.percentile)
 
@@ -851,4 +852,5 @@ def main():
 
 
 if __name__ == "__main__":
+    enable_utf8_output()
     main()

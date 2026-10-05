@@ -16,6 +16,7 @@ from typing import Dict, List, Any
 
 sys.path.append(str(Path(__file__).parent.parent.parent))
 from src.utils.seed import set_global_seed
+from src.utils.console import enable_utf8_output
 
 
 def generate_randomized_cases(num_cases: int = 30, seed: int = 42) -> List[Dict[str, Any]]:
@@ -95,6 +96,7 @@ def export_dataset(dataset: Dict[str, Any], output_path: Path) -> None:
 
 
 if __name__ == "__main__":
+    enable_utf8_output()
     # Define the top-level data directory
     project_root = Path(__file__).parent.parent.parent
     data_dir = project_root / "data"

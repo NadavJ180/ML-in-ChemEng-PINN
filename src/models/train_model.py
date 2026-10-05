@@ -31,6 +31,7 @@ from src.physics.taylor_green import compute_nu, compute_T, generate_tgv # Neede
 from src.physics.navier_stokes import compute_residuals # Needed for evaluation
 from src.hallucinations.perturbations import apply_perturbation, PERTURBATION_NAMES, EPSILON_VALUES
 from src.utils.seed import set_global_seed
+from src.utils.console import enable_utf8_output
 
 def print_vram_instructions():
     """Prints a clear banner with instructions for handling GPU Out-Of-Memory errors."""
@@ -680,7 +681,7 @@ def main():
         
         # --- CHECKPOINT LOGIC ---
         # Check if this case has already been successfully trained and saved
-        expected_model_path = project_root / "models" / f"{case_id}_best.pth"
+        expected_model_path = project_root / "models" / f"{case_id}.pth"
         if expected_model_path.exists():
             print(f"\n{'='*50}\n[{idx+1}/{total_cases}] Skipping {case_id}: Model already exists.\n{'='*50}")
             continue
@@ -741,7 +742,7 @@ def main():
                 print(f"\n✅ Case {case_id} PASSED all usability criteria.")
                 # Save model
                 try:
-                    torch.save(model.state_dict(), models_dir / f"{case_id}_best.pth")
+                    torch.save(model.state_dict(), models_dir / f"{case_id}.pth")
                 except Exception as e:
                     print(f"⚠️ Failed to save model for {case_id}: {e}")
             else:
@@ -794,4 +795,5 @@ def main():
           f"Total Execution Time: {int(hours)}h {int(minutes)}m {int(seconds)}s\n{'='*50}")
 
 if __name__ == "__main__":
+    enable_utf8_output()
     main()

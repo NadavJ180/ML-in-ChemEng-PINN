@@ -64,6 +64,7 @@ from src.hallucinations.perturbations import (
     PERTURBATION_NAMES,
 )
 from src.hallucinations.generate_hallucinations import load_case_metadata
+from src.utils.console import enable_utf8_output
 
 # The two epsilon values the visual imperceptibility check is restricted to,
 # per the task specification.
@@ -114,7 +115,7 @@ def load_model(case_id: str, k: float, device: str):
     Outputs:
         model (nn.Module): The loaded, float64, eval-mode model on `device`.
     """
-    model_path = project_root / "models" / f"{case_id}_best.pth"
+    model_path = project_root / "models" / f"{case_id}.pth"
     model = BaselinePINN(k=k)
     model.load_state_dict(torch.load(model_path, map_location="cpu"))
     model.to(device)
@@ -1104,7 +1105,7 @@ def main():
 
     trained_case_ids = sorted(
         cid for cid in case_meta_by_id
-        if (models_dir / f"{cid}_best.pth").exists()
+        if (models_dir / f"{cid}.pth").exists()
     )
     if not trained_case_ids:
         raise FileNotFoundError(f"No trained models found in {models_dir}")
@@ -1208,4 +1209,5 @@ def main():
 
 
 if __name__ == "__main__":
+    enable_utf8_output()
     main()

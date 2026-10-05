@@ -12,6 +12,7 @@ sys.path.append(str(project_root))
 
 from src.models.pinn import BaselinePINN
 from src.physics.taylor_green import compute_nu, generate_tgv
+from src.utils.console import enable_utf8_output
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Verify a trained PINN against the analytical TGV solution.")
@@ -65,7 +66,7 @@ def verify_case(case_id="case_00", show: bool = True):
     print(f"🔍 Verifying {case_id} | Re: {Re:.2f}, U0: {U0:.2f}, k: {k}, phi_x: {phi_x:.3f}, phi_y: {phi_y:.3f}")
 
     # 2. Load the Trained Model
-    model_path = project_root / "models" / f"{case_id}_best.pth"
+    model_path = project_root / "models" / f"{case_id}.pth"
     if not model_path.exists():
         raise FileNotFoundError(f"Model weights not found at {model_path}")
 
@@ -169,10 +170,11 @@ def verify_case(case_id="case_00", show: bool = True):
 
 
 if __name__ == "__main__":
+    enable_utf8_output()
     args = parse_args()
     if args.all_cases:
         models_dir = project_root / "models"
-        case_ids = sorted(p.stem.replace("_best", "") for p in models_dir.glob("*_best.pth"))
+        case_ids = sorted(p.stem for p in models_dir.glob("*.pth"))
         if not case_ids:
             raise FileNotFoundError(f"No trained models found in {models_dir}")
         for cid in case_ids:

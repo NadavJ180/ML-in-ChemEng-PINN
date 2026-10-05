@@ -9,7 +9,7 @@ pipeline, it does not duplicate any of its logic.
 See PIPELINE.md for what each stage produces, how expensive it is, and
 when it is safe to skip: sampling and dataset generation are deterministic
 (safe to skip once data/cases_metadata.json and data/tensors/ exist);
-training already skips any case_id that has a models/{case_id}_best.pth
+training already skips any case_id that has a models/{case_id}.pth
 checkpoint; every stage after training regenerates its outputs in full
 each run (no skip-if-exists logic), which PIPELINE.md flags per stage.
 
@@ -27,6 +27,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from src.utils.console import enable_utf8_output
+
 PROJECT_ROOT = Path(__file__).parent
 
 # Each stage: (name, module, description, extra_args(args) -> list[str]).
@@ -39,7 +41,7 @@ STAGES = [
      "Generate data/tensors/{case_id}.pt point clouds for every case.",
      lambda a: []),
     ("train", "src.models.train_model",
-     "Train a PINN per case -> models/{case_id}_best.pth (skips cases already trained).",
+     "Train a PINN per case -> models/{case_id}.pth (skips cases already trained).",
      lambda a: (["--device", a.device] if a.device else [])
                + (["--case_id", a.case_id] if a.case_id else [])),
     ("verify_model", "src.models.verify_model",
@@ -141,4 +143,5 @@ def main():
 
 
 if __name__ == "__main__":
+    enable_utf8_output()
     main()

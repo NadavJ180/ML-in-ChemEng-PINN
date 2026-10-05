@@ -73,6 +73,7 @@ from src.physics.navier_stokes import compute_residuals
 from src.hallucinations.generate_hallucinations import load_case_metadata
 from src.hallucinations.perturbations import apply_perturbation, PERTURBATION_NAMES, EPSILON_VALUES
 from src.detection.phs import PHS_COMPONENT_NAMES
+from src.utils.console import enable_utf8_output
 
 # IEEE double-column page conventions (inches). The full text width spanning both columns is
 # ~7.16in. Font sizes are set explicitly (see FIGURE_FONT_SIZE) since matplotlib's defaults
@@ -130,7 +131,7 @@ def load_model(case_id: str, k: float, device: str):
     Outputs:
         model (nn.Module): The loaded, float64, eval-mode model on `device`.
     """
-    model_path = project_root / "models" / f"{case_id}_best.pth"
+    model_path = project_root / "models" / f"{case_id}.pth"
     model = BaselinePINN(k=k)
     model.load_state_dict(torch.load(model_path, map_location="cpu"))
     model.to(device)
@@ -598,4 +599,5 @@ def main():
 
 
 if __name__ == "__main__":
+    enable_utf8_output()
     main()

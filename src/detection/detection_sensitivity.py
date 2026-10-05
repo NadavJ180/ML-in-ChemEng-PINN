@@ -87,6 +87,7 @@ from src.physics.taylor_green import compute_nu, compute_T, compute_decay_timesc
 from src.hallucinations.generate_hallucinations import load_case_metadata
 from src.hallucinations.perturbations import PERTURBATION_NAMES, EPSILON_VALUES
 from src.detection.phs import compute_phs_components, compute_relative_error, PHS_COMPONENT_NAMES
+from src.utils.console import enable_utf8_output
 
 # Recall levels to report boundary crossings for.
 BOUNDARY_LEVELS = [0.5, 0.9]
@@ -142,7 +143,7 @@ def load_model(case_id: str, k: float, device: str):
     Outputs:
         model (nn.Module): The loaded, float64, eval-mode model on `device`.
     """
-    model_path = project_root / "models" / f"{case_id}_best.pth"
+    model_path = project_root / "models" / f"{case_id}.pth"
     model = BaselinePINN(k=k)
     model.load_state_dict(torch.load(model_path, map_location="cpu"))
     model.to(device)
@@ -160,7 +161,7 @@ def probe_sensitivity(case_ids: list, case_meta_by_id: dict, models_dir: Path, a
     Inputs:
         case_ids (list[str]): Which cases to probe.
         case_meta_by_id (dict): Output of load_case_metadata().
-        models_dir (Path): Directory containing {case_id}_best.pth files.
+        models_dir (Path): Directory containing {case_id}.pth files.
         args (argparse.Namespace): Parsed CLI arguments.
 
     Outputs:
@@ -170,7 +171,7 @@ def probe_sensitivity(case_ids: list, case_meta_by_id: dict, models_dir: Path, a
     """
     rows = []
     for case_id in case_ids:
-        model_path = models_dir / f"{case_id}_best.pth"
+        model_path = models_dir / f"{case_id}.pth"
         if not model_path.exists():
             print(f"⏭️  Skipping {case_id}: no trained model found at {model_path}")
             continue
@@ -512,7 +513,7 @@ def main():
 
     df = probe_sensitivity(case_ids, case_meta_by_id, models_dir, args)
     if df.empty:
-        raise RuntimeError("No fields were probed -- check that models/ contains the matching *_best.pth files.")
+        raise RuntimeError("No fields were probed -- check that models/ contains the matching *.pth files.")
 
     df = score_against_existing_calibration(df, normalizers, tau)
 
@@ -563,4 +564,5 @@ def main():
 
 
 if __name__ == "__main__":
+    enable_utf8_output()
     main()

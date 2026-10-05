@@ -1,7 +1,7 @@
 """
 Hallucination Dataset Generator
 
-For every case_id that has a trained, saved PINN (models/{case_id}_best.pth),
+For every case_id that has a trained, saved PINN (models/{case_id}.pth),
 this script:
 
   1. Loads the model and its evaluation grid (reusing the exact grid the
@@ -42,6 +42,7 @@ from src.hallucinations.perturbations import (
     EPSILON_VALUES,
     PERTURBATION_NAMES,
 )
+from src.utils.console import enable_utf8_output
 
 
 def parse_args():
@@ -189,7 +190,7 @@ def generate_case_hallucinations(case_id, case_meta, project_root, device, chunk
     T = compute_T(U0, Re, k)
 
     # 1. Load the trained model
-    model_path = project_root / "models" / f"{case_id}_best.pth"
+    model_path = project_root / "models" / f"{case_id}.pth"
     model = BaselinePINN(k=k)
     model.load_state_dict(torch.load(model_path, map_location="cpu"))
     model.to(device)
@@ -374,7 +375,7 @@ def main():
     print("=" * 60)
 
     for case_id in case_ids:
-        model_path = models_dir / f"{case_id}_best.pth"
+        model_path = models_dir / f"{case_id}.pth"
         if not model_path.exists():
             print(f"⏭️  Skipping {case_id}: no trained model found at {model_path}")
             n_skipped += 1
@@ -423,4 +424,5 @@ def main():
 
 
 if __name__ == "__main__":
+    enable_utf8_output()
     main()
