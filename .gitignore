@@ -30,3 +30,14 @@ plots/
 # Generated PyTorch Tensors
 data/tensors/
 *.pt
+
+# Local deliverables sent to collaborators by email (never commit)
+barak_package_*/
+barak_package_*.zip
+email_to_barak_*.md
+
+# Final iteration: small outputs that ARE tracked (see #47).
+# Must stay at the end of the file: later rules override earlier ones.
+!models/confirmation/**/*.pth
+!models/confirmation/**/*.log
+!results/**/*.png
