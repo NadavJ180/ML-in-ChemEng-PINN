@@ -1,0 +1,4 @@
+# Final iteration: the trained checkpoints, sidecars, loss histories and logs are
+# stored byte for byte (no line-ending conversion), so models/confirmation/MANIFEST.sha256
+# checks out the same on Windows, macOS and Linux (#40).
+models/confirmation/** -text

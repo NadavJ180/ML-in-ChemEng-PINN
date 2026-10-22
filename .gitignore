@@ -9,6 +9,8 @@ data/*
 !data/.gitkeep
 *.pt
 *.pth
+# Half-written files that a killed run can leave behind (src/models/checkpoints.py)
+*.tmp
 
 # IDE and OS files
 .vscode/
