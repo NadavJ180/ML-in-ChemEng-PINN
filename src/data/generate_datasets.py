@@ -3,8 +3,13 @@ Dataset Generator
 
 Executes the point sampling pipeline for all TGV cases and exports
 the resulting dictionaries of tensors as .pt files for PINN training.
+
+Usage:
+    python src/data/generate_datasets.py      # data/cases_metadata.json -> data/tensors/
+    python src/data/generate_datasets.py --metadata cases/confirmation_cases.json --output_dir <folder>
 """
 
+import argparse
 import json
 import torch
 import sys
@@ -22,16 +27,39 @@ from src.physics.taylor_green import compute_T, compute_nu, generate_tgv
 from src.utils.seed import set_global_seed
 from src.utils.console import enable_utf8_output
 
+# Case lists a case file can hold: data/cases_metadata.json has the first three,
+# cases/confirmation_cases.json has "confirmation". Cases are generated in this order.
+SPLITS = ("train", "validation", "test", "confirmation")
+
+
+def parse_args():
+    """
+    Parses command-line arguments.
+
+    Outputs:
+        args (argparse.Namespace): metadata and output_dir (None means the default path).
+    """
+    parser = argparse.ArgumentParser(description="Generate the .pt point clouds for every case in a case file")
+    parser.add_argument("--metadata", type=str, default=None,
+                        help="Case file to read (default: data/cases_metadata.json). Every case in its "
+                             "train/validation/test/confirmation lists is generated.")
+    parser.add_argument("--output_dir", type=str, default=None,
+                        help="Folder to write {case_id}.pt into (default: data/tensors)")
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
+
     # Lock the random number generator so everyone gets the exact same points
     set_global_seed(42)
 
     # Setup paths
     project_root = Path(__file__).parent.parent.parent
-    metadata_path = project_root / "data" / "cases_metadata.json"
+    metadata_path = Path(args.metadata) if args.metadata else project_root / "data" / "cases_metadata.json"
 
     # We will save the tensors in a dedicated subfolder to keep data/ clean
-    output_dir = project_root / "data" / "tensors"
+    output_dir = Path(args.output_dir) if args.output_dir else project_root / "data" / "tensors"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if not metadata_path.exists():
@@ -40,12 +68,22 @@ def main():
     with open(metadata_path, "r") as f:
         dataset = json.load(f)
 
-    all_cases = dataset["train"] + dataset["validation"] + dataset["test"]
+    all_cases = [case for split in SPLITS for case in dataset.get(split, [])]
+    if not all_cases:
+        raise ValueError(f"No cases in {metadata_path}: expected a list under one of {SPLITS}.")
 
     print(f"Generating PyTorch tensors for {len(all_cases)} cases...")
 
     for case in all_cases:
         case_id = case["case_id"]
+
+        # A pre-registered case carries its own seed for its points, so its
+        # tensors are the same whichever other cases are generated with it.
+        # The original 30 cases have no seed_points and keep drawing from the
+        # single seed-42 stream above, so their tensors do not change.
+        if "seed_points" in case:
+            set_global_seed(case["seed_points"])
+
         T = compute_T(
             Re=case["Re"],
             k=case["k"],

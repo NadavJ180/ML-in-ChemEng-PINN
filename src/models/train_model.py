@@ -3,6 +3,16 @@ Baseline PINN Training Script
 
 Executes the hybrid Adam + L-BFGS training loop for all generated TGV cases.
 Includes memory-safe dynamic mini-batching designed for GPUs with <= 6GB VRAM.
+
+Usage:
+    # The original 30 cases, today's layout: models/{case_id}.pth (saved only if it passes)
+    python src/models/train_model.py
+
+    # A case file into its own folder: every case gets {models_dir}/{case_id}/ with
+    # adam_XXXXX.pth checkpoints, lbfgs_final.pth (always, PASSED or FAILED in its
+    # .json sidecar) and loss_history.json. Rerunning skips cases that have lbfgs_final.pth.
+    python src/models/train_model.py --metadata cases/confirmation_cases.json \
+        --tensors_dir <tensors folder> --models_dir models/confirmation
 """
 
 import argparse
@@ -27,6 +37,7 @@ sys.path.append(str(project_root))
 from src.models.pinn import BaselinePINN
 from src.models.loss import LossEvaluator
 from src.models.scaling import ResidualScaler
+from src.models.checkpoints import save_checkpoint
 from src.physics.taylor_green import compute_nu, compute_T, generate_tgv # Needed for analytical equations
 from src.physics.navier_stokes import compute_residuals # Needed for evaluation
 from src.hallucinations.perturbations import apply_perturbation, PERTURBATION_NAMES, EPSILON_VALUES
@@ -48,6 +59,36 @@ def print_vram_instructions():
     print("\nThis will dynamically slice smaller batches from the data without needing")
     print("to regenerate the .pt files.")
     print("="*60 + "\n")
+
+DEFAULT_SAVE_STEPS = "100,500,1000,2500,4000,5000"
+
+# Case lists a case file can hold: data/cases_metadata.json has the first three,
+# cases/confirmation_cases.json has "confirmation".
+SPLITS = ("train", "validation", "test", "confirmation")
+
+
+def parse_save_steps(text: str) -> list:
+    """
+    Parses --save_steps: a comma-separated list of Adam steps, e.g. "100,500".
+    An empty string means no intermediate checkpoints.
+
+    Outputs:
+        list[int]: The steps, sorted and without duplicates.
+    """
+    steps = set()
+    for part in text.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            step = int(part)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"--save_steps: '{part}' is not an integer")
+        if step < 1:
+            raise argparse.ArgumentTypeError(f"--save_steps: steps start at 1, got {step}")
+        steps.add(step)
+    return sorted(steps)
+
 
 def parse_args():
     """
@@ -86,6 +127,24 @@ def parse_args():
                           "Defaults to the first case successfully trained in this run.")
     parser.add_argument("--skip_distortion_demo", action="store_true",
                      help="Disable generating the flow field distortion demo entirely.")
+
+    # Where cases are read from and models are written to (defaults: today's paths)
+    parser.add_argument("--metadata", type=str, default=None,
+                     help="Case file to train (default: data/cases_metadata.json). Every case in its "
+                          "train/validation/test/confirmation lists is trained.")
+    parser.add_argument("--tensors_dir", type=str, default=None,
+                     help="Folder with the {case_id}.pt files from generate_datasets.py (default: data/tensors)")
+    parser.add_argument("--models_dir", type=str, default=None,
+                     help="Folder for this run's models, one {case_id}/ subfolder per case (default: models/). "
+                          "When given, the final model is always saved as {case_id}/lbfgs_final.pth with "
+                          "PASSED or FAILED in its .json sidecar, a case that already has it is skipped, and "
+                          "the loss plots, summary table and training_summary.log go into this folder too. "
+                          "When omitted, today's behavior is kept: models/{case_id}.pth is saved only if the "
+                          "case passes, and a case is skipped if that file exists.")
+    parser.add_argument("--save_steps", type=parse_save_steps, default=parse_save_steps(DEFAULT_SAVE_STEPS),
+                     help=f"Comma-separated Adam steps after which a checkpoint is saved as "
+                          f"{{models_dir}}/{{case_id}}/adam_XXXXX.pth (default: {DEFAULT_SAVE_STEPS}). "
+                          f"Pass an empty string to save none.")
 
     return parser.parse_args()
 
@@ -134,7 +193,7 @@ def sample_minibatch(case_data: dict, n_int: int, n_ic: int, n_bc: int, device: 
     
     return batch, ic_true
 
-def train_adam(model, case_data, case_meta, args):
+def train_adam(model, case_data, case_meta, args, checkpoint_fn=None):
     """
     Executes Phase 1 of PINN training using the Adam optimizer.
     Utilizes dynamic mini-batching to maintain strict VRAM limits.
@@ -144,6 +203,9 @@ def train_adam(model, case_data, case_meta, args):
         case_data (dict): The loaded Float64 dataset.
         case_meta (dict): The metadata containing Re, U0, and k for this case.
         args (argparse.Namespace): The parsed command-line arguments.
+        checkpoint_fn (callable | None): Called as checkpoint_fn(step, model, metrics)
+                      right after each Adam step listed in args.save_steps (step counts
+                      from 1). It only reads the model, so training is unchanged.
 
     Outputs:
         model (nn.Module): The trained model after Adam optimization.
@@ -161,7 +223,8 @@ def train_adam(model, case_data, case_meta, args):
     optimizer = optim.Adam(model.parameters(), lr=1e-3) 
     
     # Dictionary to track loss history
-    history = {'Total': [], 'L_NS': [], 'L_div': [], 'L_IC': [], 'L_BC': [], 'L_p': []}
+    history = {'Total': [], 'L_NS': [], 'L_div': [], 'L_IC': [], 'L_BC': [], 'L_p': [], 'L_NS_raw': []}
+    save_steps = set(getattr(args, "save_steps", []))
     
     model.train()
     
@@ -191,12 +254,18 @@ def train_adam(model, case_data, case_meta, args):
         history['L_IC'].append(metrics['L_IC'])
         history['L_BC'].append(metrics['L_BC'])
         history['L_p'].append(metrics['L_p'])   
+        history['L_NS_raw'].append(metrics['L_NS_raw'])
         
         # 4. Progress logging
         if epoch % 100 == 0 or epoch == args.adam_epochs - 1:
             print(f"Epoch {epoch:04d}/{args.adam_epochs} | Total Loss: {total_loss.item():.4e} | "
                   f"L_NS(s): {metrics['L_NS']:.2e} | L_NS(raw): {metrics['L_NS_raw']:.2e} | L_div: {metrics['L_div']:.2e} | "
                   f"L_IC: {metrics['L_IC']:.2e} | L_BC: {metrics['L_BC']:.2e} | L_p: {metrics['L_p']:.2e}")
+
+        # 5. Intermediate checkpoint right after this step's weight update
+        step = epoch + 1
+        if checkpoint_fn is not None and step in save_steps:
+            checkpoint_fn(step, model, metrics)
                   
     return model, criterion, history
 
@@ -245,7 +314,7 @@ def train_lbfgs(model, criterion, case_data, case_meta, args, device, eval_inter
     )
     
     # Dictionary to track loss history
-    history = {'Total': [], 'L_NS': [], 'L_div': [], 'L_IC': [], 'L_BC': [], 'L_p': []}
+    history = {'Total': [], 'L_NS': [], 'L_div': [], 'L_IC': [], 'L_BC': [], 'L_p': [], 'L_NS_raw': []}
     rel_l2_history = []   # Tracks (iteration, RelL2) pairs
     iteration = 0
     
@@ -265,6 +334,7 @@ def train_lbfgs(model, criterion, case_data, case_meta, args, device, eval_inter
         history['L_IC'].append(metrics['L_IC'])
         history['L_BC'].append(metrics['L_BC'])
         history['L_p'].append(metrics['L_p'])
+        history['L_NS_raw'].append(metrics['L_NS_raw'])
         
         # Logging (L-BFGS handles its own loop, so we log inside the closure)
         if iteration % 100 == 0:
@@ -631,38 +701,64 @@ def main():
     set_global_seed(args.seed)
 
     project_root = Path(__file__).parent.parent.parent
-    metadata_path = project_root / "data" / "cases_metadata.json"
-    tensors_dir = project_root / "data" / "tensors"
-    
-    plots_dir = project_root / "plots"
-    plots_dir.mkdir(exist_ok=True)
+    metadata_path = Path(args.metadata) if args.metadata else project_root / "data" / "cases_metadata.json"
+    tensors_dir = Path(args.tensors_dir) if args.tensors_dir else project_root / "data" / "tensors"
 
-    # Per-case loss-history folders, plus a general cross-case tracking folder
-    loss_history_root = plots_dir / "loss_history"
-    loss_history_root.mkdir(exist_ok=True)
-    loss_summary_dir = loss_history_root / "_summary"
-    loss_summary_dir.mkdir(exist_ok=True)
+    # With --models_dir, the final model is always kept (lbfgs_final, PASSED or FAILED)
+    # and everything the run writes stays inside that folder. Without it, today's
+    # layout and pass-only saving are kept.
+    keep_final = args.models_dir is not None
 
-    # Folder for the flow field distortion demo(s)
-    distortion_demo_dir = plots_dir / "perturbation_demo"
-    distortion_demo_dir.mkdir(exist_ok=True)
+    if keep_final:
+        models_dir = Path(args.models_dir)
+        # {models_dir}/{case_id}/ holds the case's checkpoints, loss history and plots
+        loss_history_root = models_dir
+        loss_summary_dir = models_dir / "_summary"
+        distortion_demo_dir = loss_summary_dir
+        log_file = models_dir / "training_summary.log"
+    else:
+        models_dir = project_root / "models"
+        plots_dir = project_root / "plots"
+        # Per-case loss-history folders, plus a general cross-case tracking folder
+        loss_history_root = plots_dir / "loss_history"
+        loss_summary_dir = loss_history_root / "_summary"
+        # Folder for the flow field distortion demo(s)
+        distortion_demo_dir = plots_dir / "perturbation_demo"
+        log_file = project_root / "training_summary.log"
 
-    models_dir = project_root / "models"
-    models_dir.mkdir(exist_ok=True)
+    for folder in (models_dir, loss_history_root, loss_summary_dir, distortion_demo_dir):
+        folder.mkdir(parents=True, exist_ok=True)
 
     if not metadata_path.exists():
-        raise FileNotFoundError("cases_metadata.json not found.")
+        raise FileNotFoundError(f"{metadata_path} not found.")
         
     with open(metadata_path, "r") as f:
         dataset = json.load(f)
         
     # Combine all datasets into one execution list, tagging each case with its
     # split so it can be carried through to the loss summary table.
-    all_cases = (
-        [{**c, "split": "train"} for c in dataset["train"]]
-        + [{**c, "split": "validation"} for c in dataset["validation"]]
-        + [{**c, "split": "test"} for c in dataset["test"]]
-    )
+    all_cases = [{**c, "split": split} for split in SPLITS for c in dataset.get(split, [])]
+    if not all_cases:
+        raise ValueError(f"No cases in {metadata_path}: expected a list under one of {SPLITS}.")
+
+    # Training settings recorded in every checkpoint's sidecar
+    run_config = {
+        "adam_epochs": args.adam_epochs,
+        "adam_lr": 1e-3,
+        "lbfgs_iters": args.lbfgs_iters,
+        "lbfgs_min_iters": args.lbfgs_min_iters,
+        "lbfgs_check_window": args.lbfgs_check_window,
+        "lbfgs_rel_tol": args.lbfgs_rel_tol,
+        "n_int": args.n_int,
+        "n_ic": args.n_ic,
+        "n_bc": args.n_bc,
+        "device": args.device,
+        "global_seed": args.seed,
+    }
+
+    unreachable = [step for step in args.save_steps if step > args.adam_epochs]
+    if unreachable:
+        print(f"Note: --save_steps {unreachable} are beyond --adam_epochs {args.adam_epochs} and will not be saved.")
     
     # SORT BY DIFFICULTY: Easiest (low k, low Re) to Hardest (high k, high Re)
     all_cases = sort_cases_by_difficulty(all_cases)
@@ -680,8 +776,15 @@ def main():
         case_id = case["case_id"]
         
         # --- CHECKPOINT LOGIC ---
-        # Check if this case has already been successfully trained and saved
-        expected_model_path = project_root / "models" / f"{case_id}.pth"
+        # Check if this case has already been trained and saved. With --models_dir
+        # that is lbfgs_final.pth, which is only written once the case's training,
+        # loss history and evaluation are complete, so a crashed run can simply be
+        # started again; without it, the pass-only models/{case_id}.pth as before.
+        case_models_dir = models_dir / case_id
+        if keep_final:
+            expected_model_path = case_models_dir / "lbfgs_final.pth"
+        else:
+            expected_model_path = models_dir / f"{case_id}.pth"
         if expected_model_path.exists():
             print(f"\n{'='*50}\n[{idx+1}/{total_cases}] Skipping {case_id}: Model already exists.\n{'='*50}")
             continue
@@ -696,11 +799,23 @@ def main():
         pt_path = tensors_dir / f"{case_id}.pt"
         case_data = torch.load(pt_path, map_location="cpu")
         
+        # A pre-registered case trains from its own seed (weight init and
+        # mini-batches), so its result does not depend on which cases ran before
+        # it. The original 30 cases have no seed_train and keep drawing from the
+        # global --seed stream, as before.
+        if "seed_train" in case:
+            set_global_seed(case["seed_train"])
+
         # Initialize the fresh model for this case
         model = BaselinePINN(k=case["k"]).to(args.device)
+
+        def save_adam_checkpoint(step, model, metrics):
+            path, _ = save_checkpoint(model, case_models_dir / f"adam_{step:05d}.pth", case,
+                                      phase="adam", adam_steps=step, losses=dict(metrics), config=run_config)
+            print(f"💾 Saved checkpoint {path} (+ .json)")
         
         # Train
-        model, criterion, adam_hist = train_adam(model, case_data, case, args)
+        model, criterion, adam_hist = train_adam(model, case_data, case, args, checkpoint_fn=save_adam_checkpoint)
         model, lbfgs_hist, rel_l2_hist = train_lbfgs(model, criterion, case_data, case, args, args.device)
 
         # Everything for this case lives in its own subfolder
@@ -708,13 +823,20 @@ def main():
         case_dir.mkdir(exist_ok=True)
 
         plot_case_history(case_id, adam_hist, lbfgs_hist, case_dir)
-        print(f"📈 Saved loss history plot to {case_dir.relative_to(project_root)}/loss_history.png")
+        print(f"📈 Saved loss history plot to {case_dir / 'loss_history.png'}")
         
-        # Export the history log as .json for future analysis
+        # Export the full history log as .json for future analysis: every loss
+        # component of every Adam step and L-BFGS closure evaluation (Adam first),
+        # where the phases split, and the periodic RelL2 checks during L-BFGS.
         combined_hist = {k: adam_hist[k] + lbfgs_hist[k] for k in adam_hist.keys()}
         history_file = case_dir / "loss_history.json"
         with open(history_file, "w") as f:
-            json.dump(combined_hist, f)
+            json.dump({
+                **combined_hist,
+                "adam_steps": len(adam_hist["Total"]),
+                "lbfgs_evals": len(lbfgs_hist["Total"]),
+                "lbfgs_rel_l2": [[it, val] for it, val in rel_l2_hist],
+            }, f)
 
         if rel_l2_hist:
             iters, rel_l2_vals = zip(*rel_l2_hist)
@@ -733,21 +855,36 @@ def main():
         eval_grid = case_data["eval_grid"]
         passed, rel_l2, mse_rc, mse_rm = evaluate_model(model, case, eval_grid, args.device)
         
-        # Only checkpoint cases that pass the acceptance criteria; failing cases are
-        # logged for follow-up rather than silently included in the delivered model set.
-        log_file = project_root / "training_summary.log"
+        # Without --models_dir, only cases that pass the acceptance criteria are
+        # checkpointed; failing cases are logged for follow-up rather than silently
+        # included in the delivered model set. With --models_dir, the final model is
+        # always kept as lbfgs_final, and its sidecar says PASSED or FAILED.
         with open(log_file, "a") as f:
             if passed:
                 f.write(f"PASSED: {case_id} | RelL2: {rel_l2:.4f}\n")
                 print(f"\n✅ Case {case_id} PASSED all usability criteria.")
                 # Save model
-                try:
-                    torch.save(model.state_dict(), models_dir / f"{case_id}.pth")
-                except Exception as e:
-                    print(f"⚠️ Failed to save model for {case_id}: {e}")
+                if not keep_final:
+                    try:
+                        torch.save(model.state_dict(), models_dir / f"{case_id}.pth")
+                    except Exception as e:
+                        print(f"⚠️ Failed to save model for {case_id}: {e}")
             else:
                 f.write(f"FAILED: {case_id} | RelL2: {rel_l2:.4f}\n")
                 print(f"\n⚠️ Case {case_id} FAILED criteria -- flagged in {log_file.name} for follow-up.")
+
+        if keep_final:
+            path, _ = save_checkpoint(
+                model, case_models_dir / "lbfgs_final.pth", case,
+                phase="lbfgs",
+                adam_steps=len(adam_hist["Total"]),
+                lbfgs_evals=len(lbfgs_hist["Total"]),
+                status="PASSED" if passed else "FAILED",
+                metrics={"rel_l2": rel_l2, "mse_rc": mse_rc, "mse_rm": mse_rm},
+                losses={k: v[-1] for k, v in combined_hist.items() if v},
+                config=run_config,
+            )
+            print(f"💾 Saved final model {path} (+ .json, {'PASSED' if passed else 'FAILED'})")
 
         case_elapsed = time.time() - case_start
 
