@@ -37,7 +37,7 @@ sys.path.append(str(project_root))
 from src.models.pinn import BaselinePINN
 from src.models.loss import LossEvaluator
 from src.models.scaling import ResidualScaler
-from src.models.checkpoints import save_checkpoint
+from src.models.checkpoints import ADAM_SAVE_STEPS, FINAL_STAGE, adam_stage, save_checkpoint
 from src.physics.taylor_green import compute_nu, compute_T, generate_tgv # Needed for analytical equations
 from src.physics.navier_stokes import compute_residuals # Needed for evaluation
 from src.hallucinations.perturbations import apply_perturbation, PERTURBATION_NAMES, EPSILON_VALUES
@@ -60,7 +60,10 @@ def print_vram_instructions():
     print("to regenerate the .pt files.")
     print("="*60 + "\n")
 
-DEFAULT_SAVE_STEPS = "100,500,1000,2500,4000,5000"
+DEFAULT_SAVE_STEPS = ",".join(str(step) for step in ADAM_SAVE_STEPS)
+
+# Adam learning rate (also recorded in every checkpoint's sidecar)
+ADAM_LR = 1e-3
 
 # Case lists a case file can hold: data/cases_metadata.json has the first three,
 # cases/confirmation_cases.json has "confirmation".
@@ -90,12 +93,12 @@ def parse_save_steps(text: str) -> list:
     return sorted(steps)
 
 
-def parse_args():
+def parse_args(argv=None):
     """
     Parses command-line arguments for VRAM-safe training configuration.
 
     Inputs:
-        None (Reads directly from standard terminal sys.argv inputs).
+        argv (list[str] | None): The arguments; None reads them from sys.argv.
 
     Outputs:
         args (argparse.Namespace): An object containing all the parsed hyperparameters.
@@ -141,12 +144,19 @@ def parse_args():
                           "the loss plots, summary table and training_summary.log go into this folder too. "
                           "When omitted, today's behavior is kept: models/{case_id}.pth is saved only if the "
                           "case passes, and a case is skipped if that file exists.")
-    parser.add_argument("--save_steps", type=parse_save_steps, default=parse_save_steps(DEFAULT_SAVE_STEPS),
+    parser.add_argument("--save_steps", type=parse_save_steps, default=None,
                      help=f"Comma-separated Adam steps after which a checkpoint is saved as "
-                          f"{{models_dir}}/{{case_id}}/adam_XXXXX.pth (default: {DEFAULT_SAVE_STEPS}). "
-                          f"Pass an empty string to save none.")
+                          f"{{models_dir}}/{{case_id}}/adam_XXXXX.pth (default: {DEFAULT_SAVE_STEPS} with "
+                          f"--models_dir, none without it). Pass an empty string to save none.")
 
-    return parser.parse_args()
+    args = parser.parse_args(argv)
+
+    # Intermediate checkpoints by default only for a --models_dir run, so a plain
+    # run keeps today's outputs exactly
+    if args.save_steps is None:
+        args.save_steps = parse_save_steps(DEFAULT_SAVE_STEPS) if args.models_dir is not None else []
+
+    return args
 
 def sample_minibatch(case_data: dict, n_int: int, n_ic: int, n_bc: int, device: str):
     """
@@ -220,11 +230,11 @@ def train_adam(model, case_data, case_meta, args, checkpoint_fn=None):
         k=case_meta["k"]
     )
     
-    optimizer = optim.Adam(model.parameters(), lr=1e-3) 
-    
+    optimizer = optim.Adam(model.parameters(), lr=ADAM_LR)
+
     # Dictionary to track loss history
     history = {'Total': [], 'L_NS': [], 'L_div': [], 'L_IC': [], 'L_BC': [], 'L_p': [], 'L_NS_raw': []}
-    save_steps = set(getattr(args, "save_steps", []))
+    save_steps = set(getattr(args, "save_steps", None) or [])
     
     model.train()
     
@@ -462,6 +472,39 @@ def evaluate_model(model, case_meta, eval_grid, device, chunk_size=5000, verbose
     
     return passed_all, rel_l2, mse_rc, (mse_ru + mse_rv)
 
+def make_adam_checkpoint_fn(case, case_data, case_models_dir, run_config, device, case_start):
+    """
+    Builds the checkpoint_fn that train_adam() calls right after each Adam step in
+    --save_steps. It evaluates the model on the case's eval grid (the same
+    acceptance check as the final model) and saves it as {case_models_dir}/adam_XXXXX.
+
+    The evaluation only reads the model and draws no random numbers, so training
+    is unchanged (tests/test_checkpoints.py checks this).
+
+    Inputs:
+        case (dict): The case's entry from the case file.
+        case_data (dict): The loaded case tensors; only "eval_grid" is used.
+        case_models_dir (Path): The case's checkpoint folder.
+        run_config (dict): Training settings recorded in the sidecar.
+        device (str): The training device.
+        case_start (float): time.time() when the case's training started.
+
+    Outputs:
+        callable: checkpoint_fn(step, model, losses).
+    """
+    def save_adam_checkpoint(step, model, losses):
+        passed, rel_l2, mse_rc, mse_rm = evaluate_model(model, case, case_data["eval_grid"], device, verbose=False)
+        model.train()   # evaluate_model sets model.eval() internally; switch back
+        path, _ = save_checkpoint(
+            model, case_models_dir / f"{adam_stage(step)}.pth", case,
+            phase="adam", adam_steps=step,
+            metrics={"rel_l2": rel_l2, "mse_rc": mse_rc, "mse_rm": mse_rm, "passed": passed},
+            losses=dict(losses), config=run_config, wall_time_s=time.time() - case_start,
+        )
+        print(f"💾 Saved checkpoint {path} (+ .json) | RelL2={rel_l2:.4f}")
+
+    return save_adam_checkpoint
+
 def plot_case_history(case_id, adam_hist, lbfgs_hist, case_dir):
     """Generates and saves a logarithmic loss curve plot for a single case, inside its own per-case folder."""
     keys = ['Total', 'L_NS', 'L_div', 'L_IC', 'L_BC', 'L_p']
@@ -695,9 +738,9 @@ def sort_cases_by_difficulty(cases):
     # Sorts first by 'k', and if 'k's are tied, sorts by 'Re'
     return sorted(cases, key=lambda c: (c['k'], c['Re']))
 
-def main():
+def main(argv=None):
     print_vram_instructions()
-    args = parse_args()
+    args = parse_args(argv)
     set_global_seed(args.seed)
 
     project_root = Path(__file__).parent.parent.parent
@@ -711,10 +754,11 @@ def main():
 
     if keep_final:
         models_dir = Path(args.models_dir)
-        # {models_dir}/{case_id}/ holds the case's checkpoints, loss history and plots
+        # {models_dir}/{case_id}/ holds the case's checkpoints, loss history and plots;
+        # the cross-case loss summary, overlay plot and log sit in {models_dir}/ itself
         loss_history_root = models_dir
-        loss_summary_dir = models_dir / "_summary"
-        distortion_demo_dir = loss_summary_dir
+        loss_summary_dir = models_dir
+        distortion_demo_dir = models_dir
         log_file = models_dir / "training_summary.log"
     else:
         models_dir = project_root / "models"
@@ -744,7 +788,7 @@ def main():
     # Training settings recorded in every checkpoint's sidecar
     run_config = {
         "adam_epochs": args.adam_epochs,
-        "adam_lr": 1e-3,
+        "adam_lr": ADAM_LR,
         "lbfgs_iters": args.lbfgs_iters,
         "lbfgs_min_iters": args.lbfgs_min_iters,
         "lbfgs_check_window": args.lbfgs_check_window,
@@ -782,7 +826,7 @@ def main():
         # started again; without it, the pass-only models/{case_id}.pth as before.
         case_models_dir = models_dir / case_id
         if keep_final:
-            expected_model_path = case_models_dir / "lbfgs_final.pth"
+            expected_model_path = case_models_dir / f"{FINAL_STAGE}.pth"
         else:
             expected_model_path = models_dir / f"{case_id}.pth"
         if expected_model_path.exists():
@@ -809,11 +853,9 @@ def main():
         # Initialize the fresh model for this case
         model = BaselinePINN(k=case["k"]).to(args.device)
 
-        def save_adam_checkpoint(step, model, metrics):
-            path, _ = save_checkpoint(model, case_models_dir / f"adam_{step:05d}.pth", case,
-                                      phase="adam", adam_steps=step, losses=dict(metrics), config=run_config)
-            print(f"💾 Saved checkpoint {path} (+ .json)")
-        
+        save_adam_checkpoint = make_adam_checkpoint_fn(case, case_data, case_models_dir, run_config,
+                                                       args.device, case_start)
+
         # Train
         model, criterion, adam_hist = train_adam(model, case_data, case, args, checkpoint_fn=save_adam_checkpoint)
         model, lbfgs_hist, rel_l2_hist = train_lbfgs(model, criterion, case_data, case, args, args.device)
@@ -875,14 +917,15 @@ def main():
 
         if keep_final:
             path, _ = save_checkpoint(
-                model, case_models_dir / "lbfgs_final.pth", case,
+                model, case_models_dir / f"{FINAL_STAGE}.pth", case,
                 phase="lbfgs",
                 adam_steps=len(adam_hist["Total"]),
                 lbfgs_evals=len(lbfgs_hist["Total"]),
                 status="PASSED" if passed else "FAILED",
-                metrics={"rel_l2": rel_l2, "mse_rc": mse_rc, "mse_rm": mse_rm},
+                metrics={"rel_l2": rel_l2, "mse_rc": mse_rc, "mse_rm": mse_rm, "passed": passed},
                 losses={k: v[-1] for k, v in combined_hist.items() if v},
                 config=run_config,
+                wall_time_s=time.time() - case_start,
             )
             print(f"💾 Saved final model {path} (+ .json, {'PASSED' if passed else 'FAILED'})")
 

@@ -130,16 +130,18 @@ pytest tests/
 (saved only if the case passes) and skips every case that already has one. To train another case file into
 its own folder, generate its tensors and pass `--models_dir`:
 ```bash
-python src/data/generate_datasets.py --metadata cases/confirmation_cases.json --output_dir data/tensors/confirmation
+python src/data/generate_datasets.py --metadata cases/confirmation_cases.json --output_dir data/confirmation/tensors
 python src/models/train_model.py --metadata cases/confirmation_cases.json \
-    --tensors_dir data/tensors/confirmation --models_dir models/confirmation
+    --tensors_dir data/confirmation/tensors --models_dir models/confirmation
 ```
 Each case then gets `models/confirmation/{case_id}/` with `adam_00100`, `adam_00500`, `adam_01000`, `adam_02500`,
 `adam_04000`, `adam_05000` (change with `--save_steps`) and `lbfgs_final`, each a `.pth` state_dict plus a `.json`
-sidecar describing it; `lbfgs_final` is kept even when the case fails, and its sidecar says `PASSED` or `FAILED`.
-The folder also holds the case's full `loss_history.json`, and rerunning skips cases that already have
-`lbfgs_final.pth`. Cases with `seed_points`/`seed_train` (the confirmation cases) get their own fixed points and
-training seed. Load any checkpoint, or an old `models/case_XX.pth`, with `src.models.checkpoints.load_checkpoint()`.
+sidecar describing it, including the model's RelL2 and residual errors on the case's eval grid; `lbfgs_final` is
+kept even when the case fails, and its sidecar says `PASSED` or `FAILED`. The case folder also holds its full
+`loss_history.json`, and `models/confirmation/` itself holds `loss_summary.csv` and `training_summary.log`.
+Rerunning skips cases that already have `lbfgs_final.pth`. Cases with `seed_points`/`seed_train` (the
+confirmation cases) get their own fixed points and training seed. Load any checkpoint, or an old
+`models/case_XX.pth`, with `src.models.checkpoints.load_checkpoint()`.
 
 ### Visualizing Analytical Solutions
 Launch Jupyter to explore the Taylor-Green Vortex generator and verify the initial flow fields:

@@ -6,8 +6,9 @@ A checkpoint is two files that share a name:
                  models/case_XX.pth files, so torch.load + load_state_dict
                  still opens it.
     <name>.json  The sidecar: which case it is, which phase and step it was
-                 saved at, the seeds, the training settings and, for
-                 lbfgs_final, PASSED/FAILED with the acceptance metrics.
+                 saved at, the seeds, the training settings, the model's
+                 acceptance metrics on the case's eval grid and, for
+                 lbfgs_final, PASSED/FAILED.
 
 load_checkpoint() opens both these checkpoints and the old models/case_XX.pth
 files (no sidecar), so later stages can treat old and new models alike.
@@ -29,6 +30,19 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 SIDECAR_VERSION = 1
 
+# The Adam steps a run saves by default (train_model.py --save_steps), and the
+# checkpoint names of one case folder in that run, in training order.
+ADAM_SAVE_STEPS = (100, 500, 1000, 2500, 4000, 5000)
+FINAL_STAGE = "lbfgs_final"
+
+
+def adam_stage(step: int) -> str:
+    """Returns the checkpoint name of the model saved right after Adam step `step`, e.g. "adam_00100"."""
+    return f"adam_{step:05d}"
+
+
+STAGES = tuple(adam_stage(step) for step in ADAM_SAVE_STEPS) + (FINAL_STAGE,)
+
 # Every sidecar has exactly these keys, in this order. A key that does not
 # apply to a checkpoint is null, never missing.
 SIDECAR_FIELDS = (
@@ -39,8 +53,9 @@ SIDECAR_FIELDS = (
     "adam_steps",      # Adam steps taken when the copy was made
     "lbfgs_evals",     # L-BFGS closure evaluations taken (0 during Adam)
     "status",          # "PASSED" or "FAILED" for lbfgs_final, else null
-    "metrics",         # {"rel_l2", "mse_rc", "mse_rm"} on the eval grid for lbfgs_final, else null
-    "losses",          # Loss components of the last training step (evaluated before that step's update)
+    "metrics",         # {"rel_l2", "mse_rc", "mse_rm", "passed"} of this model on the case's eval grid
+    "losses",          # Loss components of the last training step (its mini-batch, evaluated before
+                       # that step's update); use "metrics" for the model's accuracy
     "k",
     "Re",
     "U0",
@@ -49,12 +64,15 @@ SIDECAR_FIELDS = (
     "split",
     "seed_points",     # Seed of the case's tensors (null for the original 30 cases)
     "seed_train",      # Seed of weight init + mini-batches (null for the original 30 cases)
+    "seed_scoring",    # Seed of the case's PHS scoring points (null for the original 30 cases)
     "config",          # Training settings of the run (epochs, L-BFGS limits, batch sizes, device)
     "architecture",
     "dtype",
     "torch_version",
-    "git_commit",
+    "git_commit",      # Full hash of the checked-out commit
+    "git_dirty",       # True if tracked files had uncommitted changes (untracked outputs don't count)
     "created_utc",
+    "wall_time_s",     # Seconds since the case's training started
 )
 
 STATUSES = (None, "PASSED", "FAILED")
@@ -67,16 +85,28 @@ DEFAULT_METADATA_PATHS = (
 SPLITS = ("train", "validation", "test", "confirmation")
 
 
-def _git_commit():
-    """Returns the short hash of the checked-out commit, or None outside a git checkout."""
+def _git(*args):
+    """Runs a git command in the project root; returns its stdout, or None outside a git checkout."""
     try:
-        result = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=PROJECT_ROOT,
-                                capture_output=True, text=True, timeout=10)
+        result = subprocess.run(["git", *args], cwd=PROJECT_ROOT, capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError):
         return None
     if result.returncode != 0:
         return None
-    return result.stdout.strip() or None
+    return result.stdout
+
+
+def _git_state():
+    """
+    Returns (commit, dirty): the full hash of the checked-out commit, and whether
+    tracked files have uncommitted changes. Untracked files are not counted, since
+    a training run writes its own untracked outputs. (None, None) outside a git checkout.
+    """
+    commit = _git("rev-parse", "HEAD")
+    status = _git("status", "--porcelain", "--untracked-files=no")
+    if commit is None or status is None:
+        return None, None
+    return commit.strip(), bool(status.strip())
 
 
 def _atomic_write(path: Path, write) -> None:
@@ -101,7 +131,7 @@ def _atomic_write(path: Path, write) -> None:
 
 
 def save_checkpoint(model, path, case: dict, *, phase: str, adam_steps: int, lbfgs_evals: int = 0,
-                    status=None, metrics=None, losses=None, config=None):
+                    status=None, metrics=None, losses=None, config=None, wall_time_s=None):
     """
     Saves the model's weights to <path>.pth and a sidecar to <path>.json.
 
@@ -123,9 +153,10 @@ def save_checkpoint(model, path, case: dict, *, phase: str, adam_steps: int, lbf
         adam_steps (int): Adam steps taken so far.
         lbfgs_evals (int): L-BFGS closure evaluations taken so far.
         status (str | None): "PASSED" or "FAILED" for the final model, else None.
-        metrics (dict | None): Acceptance metrics for the final model.
+        metrics (dict | None): Acceptance metrics of this model on the case's eval grid.
         losses (dict | None): Loss components of the last training step.
         config (dict | None): Training settings of the run.
+        wall_time_s (float | None): Seconds since the case's training started.
 
     Outputs:
         (Path, Path): The .pth path and the sidecar path.
@@ -137,6 +168,7 @@ def save_checkpoint(model, path, case: dict, *, phase: str, adam_steps: int, lbf
 
     pth_path = Path(path).with_suffix(".pth")
     sidecar_path = pth_path.with_suffix(".json")
+    git_commit, git_dirty = _git_state()
 
     sidecar = {
         "format_version": SIDECAR_VERSION,
@@ -156,19 +188,23 @@ def save_checkpoint(model, path, case: dict, *, phase: str, adam_steps: int, lbf
         "split": case.get("split"),
         "seed_points": case.get("seed_points"),
         "seed_train": case.get("seed_train"),
+        "seed_scoring": case.get("seed_scoring"),
         "config": config,
         "architecture": type(model).__name__,
         "dtype": str(next(model.parameters()).dtype).replace("torch.", ""),
         "torch_version": torch.__version__,
-        "git_commit": _git_commit(),
+        "git_commit": git_commit,
+        "git_dirty": git_dirty,
         "created_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "wall_time_s": None if wall_time_s is None else float(wall_time_s),
     }
     assert tuple(sidecar) == SIDECAR_FIELDS
 
     state_dict = OrderedDict((name, tensor.detach().cpu()) for name, tensor in model.state_dict().items())
 
     def write_sidecar(tmp):
-        with open(tmp, "w") as f:
+        # LF on every platform, so a sidecar has the same bytes wherever it was written
+        with open(tmp, "w", newline="\n") as f:
             json.dump(sidecar, f, indent=2)
 
     _atomic_write(sidecar_path, write_sidecar)
@@ -205,7 +241,7 @@ def _legacy_info(pth_path: Path, k, metadata_paths) -> dict:
 
     case = _find_case(pth_path.stem, metadata_paths)
     if case is not None:
-        for field in ("k", "Re", "U0", "phi_x", "phi_y", "split", "seed_points", "seed_train"):
+        for field in ("k", "Re", "U0", "phi_x", "phi_y", "split", "seed_points", "seed_train", "seed_scoring"):
             info[field] = case.get(field)
     if k is not None:
         info["k"] = k
