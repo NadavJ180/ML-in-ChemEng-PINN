@@ -38,7 +38,7 @@ from src.models.pinn import BaselinePINN
 from src.models.loss import LossEvaluator
 from src.models.scaling import ResidualScaler
 from src.models.checkpoints import ADAM_SAVE_STEPS, FINAL_STAGE, adam_stage, save_checkpoint
-from src.physics.taylor_green import compute_nu, compute_T, generate_tgv # Needed for analytical equations
+from src.physics.taylor_green import compute_nu, compute_T, compute_decay_timescale, generate_tgv # Needed for analytical equations
 from src.physics.navier_stokes import compute_residuals # Needed for evaluation
 from src.hallucinations.perturbations import apply_perturbation, PERTURBATION_NAMES, EPSILON_VALUES
 from src.utils.seed import set_global_seed
@@ -660,7 +660,7 @@ def generate_distortion_demo(model, case_id: str, case_meta: dict, device: str, 
     """
     U0, k, Re = case_meta["U0"], case_meta["k"], case_meta["Re"]
     T = compute_T(U0, Re, k)
-    params = {"U0": U0, "k": k, "T": T}
+    params = {"U0": U0, "k": k, "T": T, "tau_decay": compute_decay_timescale(compute_nu(U0, Re, k), k)}
     t_val = time_frac * T
 
     x_lin = torch.linspace(0, 2 * math.pi, res, dtype=torch.float64)
