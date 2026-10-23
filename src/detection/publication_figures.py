@@ -68,7 +68,7 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.append(str(project_root))
 
 from src.models.pinn import BaselinePINN
-from src.physics.taylor_green import compute_nu, compute_T
+from src.physics.taylor_green import compute_nu, compute_T, compute_decay_timescale
 from src.physics.navier_stokes import compute_residuals
 from src.hallucinations.generate_hallucinations import load_case_metadata
 from src.hallucinations.perturbations import apply_perturbation, PERTURBATION_NAMES, EPSILON_VALUES
@@ -211,7 +211,7 @@ def make_figure1(args, case_meta_by_id, output_dir):
 
     x, y, t = build_grid(T, args.res, 0.5, args.device)
     coords = {"x": x, "y": y, "t": t}
-    params = {"U0": U0, "k": k, "T": T}
+    params = {"U0": U0, "k": k, "T": T, "tau_decay": compute_decay_timescale(nu, k)}
 
     preds = model(torch.cat([x, y, t], dim=1))
     clean = {"u": preds[:, 0:1], "v": preds[:, 1:2], "p": preds[:, 2:3]}
