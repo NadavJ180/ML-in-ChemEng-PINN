@@ -14,6 +14,16 @@ wide. So:
     clopper_pearson()  gives the exact 95% range of a count, such as
                        "2 false alarms out of 30 clean fields".
 
+Which one to use:
+    case_bootstrap   for a metric over several fields per case: AUC, precision,
+                     F1, or recall over all damage strengths.
+    clopper_pearson  for a count where each case gives at most one field: false
+                     alarms on the clean fields, or recall at one damage type and
+                     strength. Those fields are independent, and the bootstrap
+                     fails exactly where it matters there: when none or all of
+                     them are flagged, every resample is the same, so its range
+                     has zero width.
+
 Example:
     from sklearn.metrics import roc_auc_score
     from src.detection.grouped_eval import case_bootstrap, clopper_pearson
@@ -39,7 +49,7 @@ class BootstrapCI(NamedTuple):
     n_boot: int      # Resamples the range is based on: all of them, unless stat_fn returned NaN on some
 
 
-def case_bootstrap(df: pd.DataFrame, stat_fn, n_boot: int = 2000, seed: int = 0, strata="k",
+def case_bootstrap(df: pd.DataFrame, stat_fn, n_boot: int = 2000, seed: int = 0, strata: str | None = "k",
                    case_col: str = "case_id", alpha: float = 0.05) -> BootstrapCI:
     """
     Returns stat_fn(df) and its case-level bootstrap range.
@@ -56,7 +66,13 @@ def case_bootstrap(df: pd.DataFrame, stat_fn, n_boot: int = 2000, seed: int = 0,
 
     A resample on which stat_fn returns NaN, because the metric is undefined
     there (for example recall when no drawn field is damaged), is left out of
-    the range, and the result's n_boot says how many resamples were used.
+    the range, and the result's n_boot says how many resamples were used. So
+    stat_fn must return NaN there, not 0 and not an error:
+      - sklearn's recall, precision and F1 return 0 when undefined, which would
+        count as a real 0. Pass zero_division=np.nan.
+      - When a filter leaves no rows, return NaN yourself: sklearn raises on an
+        empty input, which would stop the whole bootstrap.
+      - roc_auc_score already returns NaN when only one class is left.
 
     Inputs:
         df (pd.DataFrame): One row per field, with case_col and strata columns.
@@ -71,6 +87,8 @@ def case_bootstrap(df: pd.DataFrame, stat_fn, n_boot: int = 2000, seed: int = 0,
     Outputs:
         BootstrapCI: (estimate, low, high, n_boot).
     """
+    if df.empty:
+        raise ValueError("df has no rows")
     if n_boot < 1:
         raise ValueError(f"n_boot must be at least 1, got {n_boot}")
     if not 0 < alpha < 1:

@@ -7,6 +7,7 @@ Verifies that case_bootstrap():
   - Gives the same result for the same seed, whatever the row order.
   - Treats a case as one unit: repeating each case's field 31 times leaves the range unchanged.
   - Returns the percentiles of the resampled values, leaving out undefined (NaN) ones.
+  - Refuses inputs it can't handle: an empty table, or a case with two k values.
 and that clopper_pearson() matches scipy's exact binomial interval.
 """
 
@@ -161,6 +162,12 @@ def test_undefined_resamples_are_left_out():
     never_defined = case_bootstrap(df, lambda fields: np.nan, n_boot=50)
     assert never_defined.n_boot == 0
     assert np.isnan(never_defined.low) and np.isnan(never_defined.high)
+
+
+def test_an_empty_table_is_refused():
+    # A filter that leaves no rows should fail clearly, not deep inside numpy
+    with pytest.raises(ValueError, match="no rows"):
+        case_bootstrap(make_fields().iloc[0:0], mean_value, n_boot=10)
 
 
 def test_a_case_with_two_k_values_is_refused():
