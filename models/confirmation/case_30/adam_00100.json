@@ -1,0 +1,53 @@
+{
+  "format_version": 1,
+  "case_id": "case_30",
+  "checkpoint": "adam_00100",
+  "phase": "adam",
+  "adam_steps": 100,
+  "lbfgs_evals": 0,
+  "status": null,
+  "metrics": {
+    "rel_l2": 0.4614900123607057,
+    "mse_rc": 0.009932640518301433,
+    "mse_rm": 0.08280411816773123,
+    "passed": false
+  },
+  "losses": {
+    "L_NS": 0.08342198328365916,
+    "L_div": 0.00917293644438174,
+    "L_IC": 0.021830507988136228,
+    "L_BC": 0.01114703652986123,
+    "L_p": 3.5665378897388294e-07,
+    "L_NS_raw": 0.029082715538194415,
+    "Total": 0.5049271495612401
+  },
+  "k": 1,
+  "Re": 113.14263175094183,
+  "U0": 0.7684022205131542,
+  "phi_x": 2.9359339525740427,
+  "phi_y": 2.3279234682275796,
+  "split": "confirmation",
+  "seed_points": 3030,
+  "seed_train": 4030,
+  "seed_scoring": 1030,
+  "config": {
+    "adam_epochs": 5000,
+    "adam_lr": 0.001,
+    "lbfgs_iters": 5000,
+    "lbfgs_min_iters": 300,
+    "lbfgs_check_window": 100,
+    "lbfgs_rel_tol": 0.001,
+    "n_int": 4000,
+    "n_ic": 1000,
+    "n_bc": 500,
+    "device": "cuda",
+    "global_seed": 42
+  },
+  "architecture": "BaselinePINN",
+  "dtype": "float64",
+  "torch_version": "2.10.0",
+  "git_commit": "2442c8dfca2f8a73f10ce4d7bf9ef5fc12f3eaa2",
+  "git_dirty": false,
+  "created_utc": "2026-10-23T18:46:57Z",
+  "wall_time_s": 13.424892902374268
+}
