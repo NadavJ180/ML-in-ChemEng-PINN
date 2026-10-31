@@ -165,6 +165,9 @@ def apply(df: pd.DataFrame, calib: dict) -> pd.DataFrame:
     flagged_<score> = score > tau. Columns that already have these names, such as
     the old pipeline's, are replaced.
 
+    A field with a missing (NaN) component is refused: its scores would be NaN,
+    and NaN > tau is False, so it would silently count as not flagged.
+
     Inputs:
         df (pd.DataFrame): One row per field, with the raw components "mom", "div", "bc", "E".
         calib (dict): Output of fit() or load().
@@ -173,6 +176,10 @@ def apply(df: pd.DataFrame, calib: dict) -> pd.DataFrame:
         pd.DataFrame: A copy of df with those columns.
     """
     normalizers = calib["normalizers"]
+    missing = df[list(normalizers)].isna().any(axis=1)
+    if missing.any():
+        raise ValueError(f"{int(missing.sum())} field(s) have a missing component, which would count as not "
+                         "flagged; find out why before scoring them")
     out = normalize_components(df, normalizers, eps=calib["normalizer_eps"], component_names=list(normalizers))
     out = compute_baseline_scores(out, calib["scores"])
     for score_name, tau in calib["thresholds"].items():

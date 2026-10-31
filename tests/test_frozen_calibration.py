@@ -8,7 +8,8 @@ Verifies that:
     with any other number of clean fields.
   - apply() and the --calibration path use only the saved numbers: no fitting
     function runs, and each field's scores follow from the frozen normalizers
-    and tau alone, whatever the other fields are.
+    and tau alone, whatever the other fields are. A field with a missing
+    component is refused rather than counted as not flagged.
   - A saved calibration reads back exactly, and is written the same way twice.
   - calibration/source_phs_components_raw.csv is the old package's file, byte for byte.
   - The committed calibration/frozen_calibration.json is exactly what fit() gives on
@@ -185,6 +186,16 @@ def test_apply_uses_only_the_saved_numbers(tmp_path):
     tenfold[PHS_COMPONENT_NAMES] *= 10
     np.testing.assert_allclose(frozen_calibration.apply(tenfold, calib)["Score3_PHS_full"],
                                10 * scored["Score3_PHS_full"], rtol=1e-12)
+
+
+def test_apply_refuses_a_missing_component(tmp_path):
+    calib = fit_table(tmp_path, make_fields())
+    new = make_fields(seed=1)
+    new.loc[3, "E"] = np.nan
+
+    # Its scores would be NaN, which is never above tau: it would silently count as not flagged
+    with pytest.raises(ValueError, match="missing component"):
+        frozen_calibration.apply(new, calib)
 
 
 def test_a_field_exactly_at_tau_is_not_flagged(tmp_path):

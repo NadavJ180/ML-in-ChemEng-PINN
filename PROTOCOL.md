@@ -82,7 +82,7 @@ The residuals are scaled for each case (`ResidualScaler`) before they are square
 | `Score4_PHS_no_bc` | S̄_mom + S̄_div + S̄_E |
 | `Score5_PHS_no_E` | S̄_mom + S̄_div + S̄_bc |
 
-A field is **flagged** by a score when the score is above that score's alarm level τ (strictly: score > τ).
+A field is **flagged** by a score when the score is above that score's alarm level τ (strictly: score > τ). A field with a missing component stops the scoring with an error; it is never counted as not flagged.
 
 **The frozen calibration.** Barak: "Use only the 30 existing clean fields to calculate the component normalizers and each score's empirical 95th-percentile threshold. Freeze these before evaluating the new cases."
 - The calibration is fitted once, on the clean fields of the 30 old cases `case_00`–`case_29` (all of them: 20 train, 5 validation and 5 test), and on nothing else. No damaged field and no new case is used.
@@ -104,7 +104,8 @@ A field is **flagged** by a score when the score is above that score's alarm lev
 
 - New fields are scored with these numbers only, never refitted: by `evaluate_phs.py --calibration calibration/frozen_calibration.json` (#35) and by `frozen_calibration.apply()` (#39).
 - What to expect from τ: with 30 fields, linear interpolation puts τ between the 3rd and 2nd largest of the 30 calibration scores, so each score flags exactly 2 of its own 30 fields (6.7%). If the new clean fields behave like the old ones, expect a false-alarm rate a little above 5%: on average between 2/31 and 3/31 (about 6.5% to 9.7%), because τ comes from only 30 fields.
-- This differs from the old paper's calibration, which took N_j and τ from the 5 clean validation fields only, and had only Score1 to Score3.
+- Clean scores also depend on k. On the 30 old clean fields, the median of Score3 is 4.2 for k = 1, 3.3 for k = 2 and 2.6 for k = 3 (the k effect described in `src/detection/phs.py`). Since one τ serves all k, expect more false alarms for k = 1 than for k = 3; the results by k will show how many.
+- This differs from the old paper's calibration, which took N_j and τ from the 5 clean validation fields only, and had only Score1 to Score3 (τ = 1.381, 2.706 and 4.827). With those numbers, 6 of the 30 old clean fields would raise a false alarm.
 
 ## 6. True error (#37)
 
@@ -138,6 +139,7 @@ Every false alarm and every missed damaged field is listed.
 - `case_bootstrap`, for a metric over several fields per case (AUC, precision, F1, recall over all strengths): 2000 resamples. Each resample redraws whole cases with replacement, never single fields, separately within each k, so it always has 10 cases per k. Seed 0. The range is the 2.5th to 97.5th percentile of the resampled values. A resample on which the metric is undefined is left out, and the tables say how many were used (`n_boot`).
 - `clopper_pearson`, the exact 95% range of a count, for counts where each case gives at most one field: the false alarms on clean fields, and recall at one damage type and strength.
 - With only 10 cases per k, the bootstrap ranges run slightly narrow: in the #41 simulation they held the true value about 92% of the time, not 95%.
+- All these ranges treat the frozen τ as fixed. They show how much the results would vary with other new cases, not with another set of 30 calibration fields.
 - The resamples come from numpy's random generator (`np.random.default_rng`), so the exact ranges depend on the numpy version. We use numpy 2.5.1 (`requirements.txt`).
 
 ## 8. What `protocol-v1` freezes
