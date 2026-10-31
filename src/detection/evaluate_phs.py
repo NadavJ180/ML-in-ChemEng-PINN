@@ -65,6 +65,15 @@ Outputs:
       perturbation type -- shows how adding each successive component
       changes the detection signal.
 
+FROZEN CALIBRATION (--calibration, #45): steps 2-4 above are replaced by
+src/detection/frozen_calibration.py's apply(), which reads the normalizers and
+tau from the given JSON instead of fitting them on the validation split, and
+computes all five scores of phs.SCORE_DEFINITIONS. Step 5 is skipped: only the
+scored table is written, to data/phs_scores/phs_components_frozen.csv (raw and
+normalized components, the 5 scores and the 5 flagged_<score> columns), and
+none of the metrics and plots above are made, since they are defined on the
+old validation/test split. Without --calibration nothing changes.
+
 CAVEAT (historical): models committed before commit `be9b8ff` predated a phase-mismatch
 bug identified during the hallucination-verification audit (see verify_hallucinations.py's
 phase_amplitude_fit_diagnostic -- clean predictions matched the analytical TGV solution at
@@ -79,6 +88,7 @@ Usage:
     python src/detection/evaluate_phs.py --device cpu
     python src/detection/evaluate_phs.py --case_id case_00 --case_id case_25
     python src/detection/evaluate_phs.py --n_interior 4000 --n_time 8 --energy_res 16   # fast smoke test
+    python src/detection/evaluate_phs.py --calibration calibration/frozen_calibration.json
 """
 
 import argparse
@@ -109,7 +119,11 @@ from src.detection.phs import (
     PHS_COMPONENT_NAMES,
     BASELINE_DEFINITIONS,
 )
+from src.detection import frozen_calibration
 from src.utils.console import enable_utf8_output
+
+# Written instead of phs_components_raw.csv with --calibration, so the two calibrations' tables never mix
+FROZEN_SCORES_FILE = "phs_components_frozen.csv"
 
 # Cycled through (by index, wrapping) for every multi-line plot in this module. Relying on color
 # alone breaks down whenever two lines sit close together or land exactly on top of each other (e.g.
@@ -161,7 +175,7 @@ def parse_args():
         args (argparse.Namespace): Parsed arguments with fields
             case_id (list[str] | None), device (str), n_interior (int),
             n_bc (int), n_time (int), energy_res (int), chunk_size (int),
-            percentile (float), output_dir (str).
+            percentile (float), output_dir (str), calibration (str | None).
     """
     parser = argparse.ArgumentParser(description="Evaluate the Physical Hallucination Score.")
     parser.add_argument("--case_id", action="append", default=None,
@@ -182,7 +196,8 @@ def parse_args():
     parser.add_argument("--chunk_size", type=int, default=8000,
                         help="Chunk size for the interior Smom/Sdiv pass (VRAM safety).")
     parser.add_argument("--percentile", type=float, default=95.0,
-                        help="Threshold percentile tau is drawn from.")
+                        help="Threshold percentile tau is drawn from. Not used with --calibration, whose "
+                             "tau values are fixed in the file.")
     parser.add_argument("--no_seed_points", action="store_true",
                         help="Disable per-case point-sampling seeding (default: ON -- every field of a "
                              "case, clean and perturbed, is evaluated at identical random points, "
@@ -197,6 +212,11 @@ def parse_args():
                         help="Interior points sampled before the near/far split for computing Sbc.")
     parser.add_argument("--output_dir", type=str, default=None,
                         help="Root output directory for plots. Defaults to <project_root>/plots/phs_evaluation.")
+    parser.add_argument("--calibration", type=str, default=None,
+                        help="Frozen calibration JSON (calibration/frozen_calibration.json, #45). With it, the "
+                             "normalizers and tau are read from the file instead of fitted on the validation "
+                             f"split, all five scores are computed, and only data/phs_scores/{FROZEN_SCORES_FILE} "
+                             "is written. Without it, nothing changes.")
     return parser.parse_args()
 
 
@@ -360,6 +380,26 @@ def evaluate_detection(df: pd.DataFrame, percentile: float) -> tuple[dict, dict,
         })
 
     return normalizers, thresholds, metrics_rows, df
+
+
+def write_frozen_scores(df: pd.DataFrame, calibration: dict, data_dir: Path) -> pd.DataFrame:
+    """
+    The --calibration path, used instead of evaluate_detection(): scores every
+    field with the frozen calibration (frozen_calibration.apply(): the saved
+    normalizers and tau, all five scores, nothing fitted on df) and writes the
+    table to data_dir/phs_components_frozen.csv.
+
+    Inputs:
+        df (pd.DataFrame): Output of score_all_fields().
+        calibration (dict): Output of frozen_calibration.load().
+        data_dir (Path): Folder to write the table into.
+
+    Outputs:
+        pd.DataFrame: The table that was written.
+    """
+    scored = frozen_calibration.apply(df, calibration)
+    scored.to_csv(data_dir / FROZEN_SCORES_FILE, index=False)
+    return scored
 
 
 def plot_roc_curves(df: pd.DataFrame, output_dir: Path):
@@ -755,9 +795,12 @@ def main():
     Outputs:
         None. Writes data/phs_scores/phs_components_raw.csv/.json and
         plots/phs_evaluation/* (see module docstring), and prints a
-        summary to stdout.
+        summary to stdout. With --calibration, writes only
+        data/phs_scores/phs_components_frozen.csv.
     """
     args = parse_args()
+    # Read before the long scoring run, so a wrong path or file fails at once
+    calibration = frozen_calibration.load(args.calibration) if args.calibration else None
 
     metadata_path = project_root / "data" / "cases_metadata.json"
     if not metadata_path.exists():
@@ -792,6 +835,19 @@ def main():
     df = score_all_fields(index_rows, case_meta_by_id, models_dir, args)
     if df.empty:
         raise RuntimeError("No fields were scored -- check that models/ contains the matching *.pth files.")
+
+    if calibration is not None:
+        df = write_frozen_scores(df, calibration, data_dir)
+        print(f"\n💾 Wrote {data_dir / FROZEN_SCORES_FILE}")
+        print("\n" + "=" * 60)
+        print(f"✅ Fields above tau, frozen calibration {args.calibration} (no detection metrics are made here):")
+        clean = df["label"] == "clean"
+        for score_name, tau in calibration["thresholds"].items():
+            flagged = df[f"flagged_{score_name}"]
+            print(f"  {score_name:28s} tau={tau:8.3f}  clean {flagged[clean].sum():4d}/{clean.sum()}  "
+                  f"damaged {flagged[~clean].sum():4d}/{(~clean).sum()}")
+        print("=" * 60)
+        return
 
     normalizers, thresholds, metrics_rows, df = evaluate_detection(df, args.percentile)
 

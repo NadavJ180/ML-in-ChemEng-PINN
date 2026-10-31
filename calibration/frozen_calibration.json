@@ -1,0 +1,82 @@
+{
+  "format_version": 1,
+  "description": "Frozen calibration of the final iteration (#45): normalizers and alarm levels fitted once on the clean fields of the 30 old cases. Score new fields with src/detection/frozen_calibration.py apply(); never refit.",
+  "source_csv": "calibration/source_phs_components_raw.csv",
+  "source_csv_sha256": "ee3dd7d1e2bfa571d9cb752cc92076640bd4c4d5686ba5e6816af57a089d15bd",
+  "fit_case_ids": [
+    "case_00",
+    "case_01",
+    "case_02",
+    "case_03",
+    "case_04",
+    "case_05",
+    "case_06",
+    "case_07",
+    "case_08",
+    "case_09",
+    "case_10",
+    "case_11",
+    "case_12",
+    "case_13",
+    "case_14",
+    "case_15",
+    "case_16",
+    "case_17",
+    "case_18",
+    "case_19",
+    "case_20",
+    "case_21",
+    "case_22",
+    "case_23",
+    "case_24",
+    "case_25",
+    "case_26",
+    "case_27",
+    "case_28",
+    "case_29"
+  ],
+  "normalizers": {
+    "mom": 7.541958536021579e-06,
+    "div": 5.150714157513257e-07,
+    "bc": 1.6912805183024846,
+    "E": 1.458200494316046e-06
+  },
+  "normalizer_eps": 1e-12,
+  "scores": {
+    "Score1_momentum_only": [
+      "mom"
+    ],
+    "Score2_momentum_divergence": [
+      "mom",
+      "div"
+    ],
+    "Score3_PHS_full": [
+      "mom",
+      "div",
+      "bc",
+      "E"
+    ],
+    "Score4_PHS_no_bc": [
+      "mom",
+      "div",
+      "E"
+    ],
+    "Score5_PHS_no_E": [
+      "mom",
+      "div",
+      "bc"
+    ]
+  },
+  "thresholds": {
+    "Score1_momentum_only": 1.5858370872103984,
+    "Score2_momentum_divergence": 2.8881725981194877,
+    "Score3_PHS_full": 7.739236723862816,
+    "Score4_PHS_no_bc": 6.853411304216312,
+    "Score5_PHS_no_E": 4.275268300007948
+  },
+  "percentile": 95.0,
+  "percentile_method": "linear",
+  "flag_rule": "score > tau",
+  "git_commit": "f81010c47f4340e57e3fccb1f500d0cf7824d798",
+  "git_dirty": false
+}

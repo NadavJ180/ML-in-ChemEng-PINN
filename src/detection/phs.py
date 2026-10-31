@@ -32,6 +32,16 @@ otherwise Score1/Score2 would inherit the raw cross-case scale problem
 described below, making the baseline comparison meaningless. This module
 always operates on S_bar_j.
 
+FINAL ITERATION (#45): SCORE_DEFINITIONS adds two PHS ablations to the three
+scores above, each leaving out one component:
+    Score4_PHS_no_bc           = S_bar_mom + S_bar_div + S_bar_E
+    Score5_PHS_no_E            = S_bar_mom + S_bar_div + S_bar_bc
+All five are scored with the frozen calibration only, whose normalizers and
+tau come from all 30 clean fields of the old cases instead of the
+validation split (see src/detection/frozen_calibration.py). The default
+evaluate_phs.py run still uses BASELINE_DEFINITIONS, so its outputs are
+unchanged.
+
 WHY Sbc IS A NEAR/FAR RATIO, NOT A LITERAL PERIODICITY COMPARISON:
 the "boundary" perturbation's m(x) = exp(-x^2/sigma^2) + exp(-(2*pi-x)^2/sigma^2)
 satisfies m(0) == m(2*pi) by construction, so a check that only compares
@@ -103,6 +113,15 @@ BASELINE_DEFINITIONS = {
     "Score1_momentum_only": ["mom"],
     "Score2_momentum_divergence": ["mom", "div"],
     "Score3_PHS_full": ["mom", "div", "bc", "E"],
+}
+
+# The five scores of the final iteration (#45): the three above, plus PHS without its boundary
+# term and PHS without its energy term. Kept apart from BASELINE_DEFINITIONS so the default
+# evaluate_phs.py run keeps writing exactly the three old scores.
+SCORE_DEFINITIONS = {
+    **BASELINE_DEFINITIONS,
+    "Score4_PHS_no_bc": ["mom", "div", "E"],
+    "Score5_PHS_no_E": ["mom", "div", "bc"],
 }
 
 
