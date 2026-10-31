@@ -50,7 +50,7 @@ The strengths are ε = 0.0001, 0.002, 0.01, 0.02, 0.03 and 0.05. That gives 31 f
 
 ## 4. Scoring settings
 
-Every field is scored with the default settings of `src/detection/evaluate_phs.py`. #39 imports the same scoring functions rather than copying them. The code that computes the components has not changed since commit `4437907`, whose run produced the calibration's source scores (section 5).
+Every field is scored with the default settings of `src/detection/evaluate_phs.py`. #39 imports the same scoring functions rather than copying them. The code that computes the components has not changed since commit `4437907`, whose run produced the calibration's source scores (section 5). As a check, rescoring all 930 old fields at commit `f81010c` (`evaluate_phs.py --calibration`, on a CPU) gave every component of the source scores back exactly, bit for bit (31 Oct 2026).
 
 | Setting | Value |
 |---|---|

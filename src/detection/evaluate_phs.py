@@ -65,14 +65,14 @@ Outputs:
       perturbation type -- shows how adding each successive component
       changes the detection signal.
 
-FROZEN CALIBRATION (--calibration, #45): steps 2-5 above are replaced by
+FROZEN CALIBRATION (--calibration, #45): steps 2-4 above are replaced by
 src/detection/frozen_calibration.py's apply(), which reads the normalizers and
 tau from the given JSON instead of fitting them on the validation split, and
-computes all five scores of phs.SCORE_DEFINITIONS. Only the scored table is
-written, to data/phs_scores/phs_components_frozen.csv (raw and normalized
-components, the 5 scores and the 5 flagged_<score> columns); the metrics and
-plots above are not made, since they are defined on the old validation/test
-split. Without --calibration nothing changes.
+computes all five scores of phs.SCORE_DEFINITIONS. Step 5 is skipped: only the
+scored table is written, to data/phs_scores/phs_components_frozen.csv (raw and
+normalized components, the 5 scores and the 5 flagged_<score> columns), and
+none of the metrics and plots above are made, since they are defined on the
+old validation/test split. Without --calibration nothing changes.
 
 CAVEAT (historical): models committed before commit `be9b8ff` predated a phase-mismatch
 bug identified during the hallucination-verification audit (see verify_hallucinations.py's
