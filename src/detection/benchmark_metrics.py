@@ -6,8 +6,10 @@ Reads the scores of the benchmark's fields, written by
     python src/detection/evaluate_phs.py --calibration calibration/frozen_calibration.json ...
 
 (30 cases x 31 fields: the clean field of each case's lbfgs_final model, and the
-5 damage types at the 6 strengths), the frozen calibration, and each case's
-lbfgs_final.json sidecar, and writes every table of the benchmark into
+5 damage types at the 6 strengths), the frozen calibration, the case file
+(cases/confirmation_cases.json: every case in it must be scored, since no case
+is dropped, PROTOCOL.md section 1), and each case's lbfgs_final.json sidecar,
+and writes every table of the benchmark into
 results/benchmark/. It loads no model and fits nothing. A field is flagged by a
 score when the score is above that score's frozen tau (PROTOCOL.md section 5);
 the metrics follow PROTOCOL.md section 7.
@@ -67,8 +69,8 @@ the booktabs and longtable packages):
 Usage:
     python src/detection/benchmark_metrics.py
     python src/detection/benchmark_metrics.py --scores data/confirmation/phs_scores/phs_components_frozen.csv \\
-        --calibration calibration/frozen_calibration.json --models_dir models/confirmation \\
-        --output_dir results/benchmark
+        --calibration calibration/frozen_calibration.json --metadata cases/confirmation_cases.json \\
+        --models_dir models/confirmation --output_dir results/benchmark
 """
 
 import argparse
@@ -86,12 +88,14 @@ sys.path.append(str(PROJECT_ROOT))
 from src.detection import frozen_calibration
 from src.detection.grouped_eval import case_bootstrap, clopper_pearson
 from src.detection.phs import PHS_COMPONENT_NAMES, SCORE_DEFINITIONS
+from src.hallucinations.generate_hallucinations import load_case_metadata
 from src.hallucinations.perturbations import PERTURBATION_NAMES
 from src.models.checkpoints import FINAL_STAGE
 from src.utils.console import enable_utf8_output
 
 DEFAULT_SCORES_CSV = PROJECT_ROOT / "data" / "confirmation" / "phs_scores" / "phs_components_frozen.csv"
 DEFAULT_CALIBRATION_JSON = PROJECT_ROOT / "calibration" / "frozen_calibration.json"
+DEFAULT_METADATA = PROJECT_ROOT / "cases" / "confirmation_cases.json"
 DEFAULT_MODELS_DIR = PROJECT_ROOT / "models" / "confirmation"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "results" / "benchmark"
 
@@ -169,6 +173,28 @@ def check_layout(fields: pd.DataFrame) -> None:
     n_k = fields.groupby("case_id")["k"].nunique()
     if (n_k != 1).any():
         raise ValueError(f"Cases with several k values: {n_k.index[n_k != 1].tolist()}")
+
+
+def check_cases(fields: pd.DataFrame, cases: dict) -> None:
+    """
+    Refuses scores that don't cover exactly the cases of the case file, each with
+    its k. No case is dropped or added (PROTOCOL.md section 1), so scores from a
+    --case_id run of evaluate_phs.py, or from another case file, stop here
+    instead of giving tables of fewer cases.
+
+    Inputs:
+        fields (pd.DataFrame): One row per field, with case_id and k.
+        cases (dict): {case_id: case} of the case file, from load_case_metadata().
+    """
+    scored = fields.groupby("case_id")["k"].first()
+    missing = sorted(set(cases) - set(scored.index))
+    extra = sorted(set(scored.index) - set(cases))
+    if missing or extra:
+        raise ValueError(f"The scores must cover every case of the case file: missing {missing}, "
+                         f"not in the case file {extra}")
+    wrong_k = [case_id for case_id, k in scored.items() if k != cases[case_id]["k"]]
+    if wrong_k:
+        raise ValueError(f"Cases whose k differs from the case file: {wrong_k}")
 
 
 def read_passed_acceptance(models_dir, cases: pd.Series) -> dict:
@@ -632,7 +658,7 @@ def list_latex(table: pd.DataFrame, caption: str, label: str) -> str:
 
 CAPTIONS = {
     "confirmation_scores_raw": "All fields of the 30 new cases: raw and normalized components, the five scores, "
-                               "their flags (score above $\\tau$), passed\\_acceptance and preflagged\\_<score>.",
+                               "their flags (score above $\\tau$), passed\\_acceptance and preflagged\\_$<$score$>$.",
     "metrics_overall": "Detection of the damaged fields, all cases. " + METRICS_CAPTION,
     "metrics_by_k": "Detection of the damaged fields, by $k$. " + METRICS_CAPTION,
     "metrics_by_type": "Detection of the damaged fields, by damage type (against all clean fields, so the false "
@@ -719,15 +745,18 @@ def write_tables(tables: dict, output_dir) -> list:
 
 
 def run(scores_csv=DEFAULT_SCORES_CSV, calibration_json=DEFAULT_CALIBRATION_JSON, models_dir=DEFAULT_MODELS_DIR,
-        output_dir=DEFAULT_OUTPUT_DIR, n_boot: int = N_BOOT, seed: int = BOOT_SEED) -> dict:
+        output_dir=DEFAULT_OUTPUT_DIR, n_boot: int = N_BOOT, seed: int = BOOT_SEED,
+        metadata=DEFAULT_METADATA) -> dict:
     """
     Reads the inputs, builds every table and writes them. See the module docstring.
+    metadata is the case file whose every case must be in scores_csv.
 
     Outputs:
         dict: {table name: DataFrame}, as written.
     """
     calib = frozen_calibration.load(calibration_json)
     scores = load_scores(scores_csv, calib)
+    check_cases(scores, load_case_metadata(Path(metadata)))
     passed = read_passed_acceptance(models_dir, scores.groupby("case_id")["k"].first())
     tables = make_tables(scores, passed, calib["thresholds"], n_boot, seed)
     write_tables(tables, output_dir)
@@ -758,7 +787,7 @@ def parse_args(argv=None):
     Parses the command line.
 
     Outputs:
-        argparse.Namespace: scores, calibration, models_dir, output_dir (str).
+        argparse.Namespace: scores, calibration, metadata, models_dir, output_dir (str).
     """
     parser = argparse.ArgumentParser(description="Write the tables of the perturbation benchmark (#35) from the "
                                                  "scored fields and the frozen calibration.")
@@ -768,6 +797,9 @@ def parse_args(argv=None):
     parser.add_argument("--calibration", type=str, default=str(DEFAULT_CALIBRATION_JSON),
                         help="The frozen calibration the fields were scored with "
                              "(default: calibration/frozen_calibration.json).")
+    parser.add_argument("--metadata", type=str, default=str(DEFAULT_METADATA),
+                        help="The case file the fields were made from; every case in it must be scored "
+                             "(default: cases/confirmation_cases.json).")
     parser.add_argument("--models_dir", type=str, default=str(DEFAULT_MODELS_DIR),
                         help="Folder with the {case_id}/lbfgs_final.json sidecars, for passed_acceptance "
                              "(default: models/confirmation).")
@@ -779,7 +811,7 @@ def parse_args(argv=None):
 def main(argv=None):
     """Writes every table of the benchmark and prints the headline numbers."""
     args = parse_args(argv)
-    tables = run(args.scores, args.calibration, args.models_dir, args.output_dir)
+    tables = run(args.scores, args.calibration, args.models_dir, args.output_dir, metadata=args.metadata)
     print(f"Wrote {len(tables)} tables (.csv + .tex) to {args.output_dir}")
     if PASSED_ONLY not in tables:
         print("Every run passed, so metrics_passed_only was not written")

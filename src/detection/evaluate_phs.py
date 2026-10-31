@@ -868,7 +868,7 @@ def main():
 
     df = score_all_fields(index_rows, case_meta_by_id, models_dir, args)
     if df.empty:
-        raise RuntimeError("No fields were scored -- check that models/ contains the matching *.pth files.")
+        raise RuntimeError(f"No fields were scored -- check that {models_dir} contains the matching models.")
 
     if calibration is not None:
         df = write_frozen_scores(df, calibration, data_dir)

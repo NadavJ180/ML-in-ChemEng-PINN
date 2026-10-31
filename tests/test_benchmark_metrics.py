@@ -14,8 +14,8 @@ fields; worked out by hand below), verifies that:
   - failed runs stay in every table and are counted, and metrics_passed_only is
     written only when a run failed;
   - every table is written as .csv and .tex, and reads back exactly;
-  - scores that don't match the frozen calibration, a broken table, or a bad sidecar
-    are refused.
+  - scores that don't match the frozen calibration, a broken table, scores that miss or
+    add a case of the case file, or a bad sidecar are refused.
 and that the path flags of generate_hallucinations.py and evaluate_phs.py default to
 today's paths.
 """
@@ -114,20 +114,27 @@ def write_sidecars(models_dir: Path, failed=()):
         (case_dir / "lbfgs_final.json").write_text(json.dumps(sidecar))
 
 
+def write_case_file(path: Path, cases: dict = CASES):
+    """A case file of the made-up cases, laid out like cases/confirmation_cases.json."""
+    path.write_text(json.dumps({"confirmation": [{"case_id": case_id, "k": k} for case_id, (k, _, _) in cases.items()]}))
+
+
 def make_inputs(folder: Path, failed=()) -> SimpleNamespace:
-    """Writes the scores (as evaluate_phs.py --calibration does), the calibration and the sidecars."""
+    """Writes the scores (as evaluate_phs.py --calibration does), the calibration, the case file and the sidecars."""
     folder.mkdir(parents=True, exist_ok=True)
     calib = make_calibration()
     calibration = folder / "calibration.json"
     frozen_calibration.save(calib, calibration)
     evaluate_phs.write_frozen_scores(make_fields(), frozen_calibration.load(calibration), folder)
+    write_case_file(folder / "cases.json")
     write_sidecars(folder / "models", failed)
     return SimpleNamespace(scores=folder / evaluate_phs.FROZEN_SCORES_FILE, calibration=calibration,
-                           models_dir=folder / "models", output_dir=folder / "out")
+                           metadata=folder / "cases.json", models_dir=folder / "models", output_dir=folder / "out")
 
 
 def run_benchmark(inputs: SimpleNamespace) -> dict:
-    return bm.run(inputs.scores, inputs.calibration, inputs.models_dir, inputs.output_dir, n_boot=N_BOOT)
+    return bm.run(inputs.scores, inputs.calibration, inputs.models_dir, inputs.output_dir, n_boot=N_BOOT,
+                  metadata=inputs.metadata)
 
 
 @pytest.fixture(scope="module")
@@ -394,6 +401,29 @@ def test_refuses_a_broken_layout(tmp_path, change):
     scores.to_csv(inputs.scores, index=False)
     with pytest.raises(ValueError):
         run_benchmark(inputs)
+
+
+@pytest.mark.parametrize("change", ["missing_case", "extra_case", "wrong_k"])
+def test_refuses_scores_that_dont_cover_the_case_file(tmp_path, change):
+    inputs = make_inputs(tmp_path)
+    cases = dict(CASES)
+    if change == "missing_case":  # As from a --case_id run: case_51 is in the case file but not scored
+        scores = pd.read_csv(inputs.scores, float_precision="round_trip")
+        scores[scores["case_id"] != "case_51"].to_csv(inputs.scores, index=False)
+    elif change == "extra_case":  # case_51 is scored but not in the case file
+        del cases["case_51"]
+    else:  # case_51 is scored with k = 3, but the case file says k = 2
+        cases["case_51"] = (2, None, None)
+    write_case_file(inputs.metadata, cases)
+    with pytest.raises(ValueError, match="case file"):
+        run_benchmark(inputs)
+
+
+def test_committed_results_cover_the_case_file():
+    repo = Path(__file__).parent.parent
+    fields = pd.read_csv(repo / "results" / "benchmark" / "confirmation_scores_raw.csv")
+    bm.check_cases(fields, generate_hallucinations.load_case_metadata(bm.DEFAULT_METADATA))
+    assert Path(bm.parse_args([]).metadata) == repo.resolve() / "cases" / "confirmation_cases.json"
 
 
 @pytest.mark.parametrize("sidecar_change", [{"status": None}, {"metrics": {"passed": False}}, {"k": 2}])
