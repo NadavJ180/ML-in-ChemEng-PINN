@@ -1,11 +1,13 @@
 """
 Hallucination Dataset Generator
 
-For every case_id that has a trained, saved PINN (models/{case_id}.pth),
-this script:
+For every case_id in the case file (data/cases_metadata.json), this script:
 
-  1. Loads the model and its evaluation grid (reusing the exact grid the
-     model was trained/evaluated on when available, for consistency).
+  1. Loads the case's trained model -- models/{case_id}.pth, or the
+     lbfgs_final.pth of its case folder (models/confirmation/{case_id}/) --
+     and its evaluation grid (reusing the exact grid the model was
+     trained/evaluated on when available, for consistency). A case with no
+     model stops the run: no case is skipped.
   2. Runs one clean forward pass to obtain the valid (u, v, p) baseline.
   3. Applies every registered perturbation function (PERTURBATION_NAMES) at
      every canonical epsilon strength (EPSILON_VALUES, see perturbations.py)
@@ -34,7 +36,7 @@ import torch
 project_root = Path(__file__).parent.parent.parent
 sys.path.append(str(project_root))
 
-from src.models.pinn import BaselinePINN
+from src.models.checkpoints import SPLITS, load_final_model
 from src.physics.taylor_green import compute_nu, compute_T, compute_decay_timescale
 from src.data.point_samplers import generate_evaluation_grid
 from src.hallucinations.perturbations import (
@@ -68,12 +70,14 @@ def parse_args():
 
 def load_case_metadata(metadata_path: Path):
     """
-    Loads cases_metadata.json and flattens the train/validation/test splits
-    into a single lookup dictionary keyed by case_id.
+    Loads a case file and flattens its splits into a single lookup dictionary
+    keyed by case_id: train/validation/test for cases_metadata.json, and the
+    single confirmation list for cases/confirmation_cases.json (the 30 new cases).
 
     IMPORTANT: each case is tagged with a "split" field ("train", "validation",
     or "test") indicating which of sampler.py's partitions it belongs to
-    (20 train / 5 validation / 5 test, per src/data/sampler.py). This field
+    (20 train / 5 validation / 5 test, per src/data/sampler.py), or
+    "confirmation" for a new case. This field
     is not used to change WHICH cases get processed here -- generating
     hallucinations for all 30 is harmless data preparation. It exists so
     downstream PHS threshold calibration/evaluation code can correctly
@@ -85,19 +89,23 @@ def load_case_metadata(metadata_path: Path):
     tag, that information is silently lost after this flattening step.
 
     Inputs:
-        metadata_path (Path): Path to data/cases_metadata.json.
+        metadata_path (Path): Path to the case file (data/cases_metadata.json
+                              or cases/confirmation_cases.json).
 
     Outputs:
         dict: Mapping of case_id (str) -> case metadata dict
               (containing "Re", "U0", "k", "phi_x", "phi_y", "seed", "split", etc.).
+              Raises ValueError if the file lists no cases under any split.
     """
     with open(metadata_path, "r") as f:
         dataset = json.load(f)
 
     case_meta_by_id = {}
-    for split in ("train", "validation", "test"):
-        for c in dataset[split]:
+    for split in SPLITS:
+        for c in dataset.get(split, []):
             case_meta_by_id[c["case_id"]] = {**c, "split": split}
+    if not case_meta_by_id:
+        raise ValueError(f"No cases in {metadata_path}: expected a list under one of {SPLITS}.")
     return case_meta_by_id
 
 
@@ -158,7 +166,7 @@ def run_model_in_chunks(model, coords: torch.Tensor, device: str, chunk_size: in
     return torch.cat(u_chunks, dim=0), torch.cat(v_chunks, dim=0), torch.cat(p_chunks, dim=0)
 
 
-def generate_case_hallucinations(case_id, case_meta, project_root, device, chunk_size):
+def generate_case_hallucinations(case_id, case_meta, models_dir, tensors_dir, device, chunk_size):
     """
     Builds the full clean + hallucinated-variant bundle for a single case:
     loads the trained model, runs one clean forward pass on the evaluation
@@ -168,7 +176,12 @@ def generate_case_hallucinations(case_id, case_meta, project_root, device, chunk
     Inputs:
         case_id (str): The case identifier (e.g. "case_00").
         case_meta (dict): This case's metadata dict, containing "Re", "U0", "k".
-        project_root (Path): Repository root, used to locate models/ and data/.
+        models_dir (Path): The models folder: models/ (the old {case_id}.pth
+                            files) or models/confirmation/ (one folder per case,
+                            whose lbfgs_final.pth is used). A missing model raises
+                            FileNotFoundError (see checkpoints.load_final_model).
+        tensors_dir (Path): Folder with the cases' {case_id}.pt tensor files
+                             (see get_evaluation_grid).
         device (str): Target hardware device for inference ('cuda' or 'cpu').
         chunk_size (int): Number of points to process per forward-pass chunk.
 
@@ -189,15 +202,10 @@ def generate_case_hallucinations(case_id, case_meta, project_root, device, chunk
     nu = compute_nu(U0, Re, k)
     T = compute_T(U0, Re, k)
 
-    # 1. Load the trained model
-    model_path = project_root / "models" / f"{case_id}.pth"
-    model = BaselinePINN(k=k)
-    model.load_state_dict(torch.load(model_path, map_location="cpu"))
-    model.to(device)
-    model.to(torch.float64)
+    # 1. Load the trained model (float64, on `device`)
+    model, _ = load_final_model(models_dir, case_meta, device)
 
     # 2. Load / build the evaluation grid and get the clean baseline
-    tensors_dir = project_root / "data" / "tensors"
     eval_grid = get_evaluation_grid(case_id, T, tensors_dir)
 
     x = eval_grid[:, 0:1]
@@ -335,7 +343,8 @@ def _temporal_mismatch_chunked(model, coords, params, epsilon, device, chunk_siz
 def main():
     """
     Entry point for the hallucination sweep. Loads cases_metadata.json,
-    iterates over every case_id that has a trained model saved in models/,
+    iterates over every case_id in it (each must have its trained model in
+    models/: a missing one stops the run),
     builds and saves its clean + 25-variant hallucination bundle via
     generate_case_hallucinations(), and writes a combined categorization
     index (CSV + JSON) covering every case's clean and hallucinated entries.
@@ -357,16 +366,19 @@ def main():
     case_meta_by_id = load_case_metadata(metadata_path)
 
     models_dir = project_root / "models"
+    tensors_dir = project_root / "data" / "tensors"
     output_dir = project_root / "data" / "hallucinations"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if args.case_id:
+        if args.case_id not in case_meta_by_id:
+            raise ValueError(f"{args.case_id} is not in {metadata_path}")
         case_ids = [args.case_id]
     else:
         case_ids = sorted(case_meta_by_id.keys())
 
     all_index_rows = []
-    n_generated, n_skipped = 0, 0
+    n_generated = 0
 
     print("=" * 60)
     print("🧪 GENERATING PHYSICAL HALLUCINATION DATASET")
@@ -375,22 +387,10 @@ def main():
     print("=" * 60)
 
     for case_id in case_ids:
-        model_path = models_dir / f"{case_id}.pth"
-        if not model_path.exists():
-            print(f"⏭️  Skipping {case_id}: no trained model found at {model_path}")
-            n_skipped += 1
-            continue
-
-        case_meta = case_meta_by_id.get(case_id)
-        if case_meta is None:
-            print(f"⏭️  Skipping {case_id}: not found in cases_metadata.json")
-            n_skipped += 1
-            continue
-
         print(f"\n[{case_id}] Generating {len(PERTURBATION_NAMES) * len(EPSILON_VALUES)} "
               f"hallucinated variants + clean baseline...")
         bundle, index_rows = generate_case_hallucinations(
-            case_id, case_meta, project_root, args.device, args.chunk_size
+            case_id, case_meta_by_id[case_id], models_dir, tensors_dir, args.device, args.chunk_size
         )
 
         save_path = output_dir / f"{case_id}_hallucinations.pt"
@@ -416,7 +416,7 @@ def main():
         print(f"📊 Wrote categorization index: {index_json_path.relative_to(project_root)}")
 
     print("\n" + "=" * 60)
-    print(f"✅ Generated hallucinations for {n_generated} case(s). Skipped {n_skipped}.")
+    print(f"✅ Generated hallucinations for {n_generated} case(s).")
     print(f"Each generated case contains 1 clean baseline + "
           f"{len(PERTURBATION_NAMES)} x {len(EPSILON_VALUES)} = "
           f"{len(PERTURBATION_NAMES) * len(EPSILON_VALUES)} hallucinated variants.")

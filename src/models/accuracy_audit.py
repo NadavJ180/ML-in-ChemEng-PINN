@@ -50,14 +50,14 @@ import torch
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
-from src.models.checkpoints import FINAL_STAGE, SPLITS, STAGES, load_checkpoint
+from src.models.checkpoints import (FINAL_STAGE, LEGACY_CHECKPOINT, SPLITS, STAGES, check_sidecar,
+                                    load_checkpoint)
 from src.physics.taylor_green import compute_nu, compute_T, generate_tgv
 from src.utils.console import enable_utf8_output
 
 GRID_N = 64               # Values of x, and of y
 GRID_NT = 11              # Values of t
 INACCURATE_ABOVE = 0.10   # A model is inaccurate when relL2_uv > this (Barak, 18 Oct 2026)
-LEGACY_STAGE = "legacy"   # The stage of an old models/case_XX.pth (load_checkpoint's "checkpoint")
 
 # The columns of the output CSV, in order:
 #   case_id, k, split   from the case file
@@ -71,9 +71,6 @@ LEGACY_STAGE = "legacy"   # The stage of an old models/case_XX.pth (load_checkpo
 #   inaccurate          relL2_uv > INACCURATE_ABOVE
 CSV_COLUMNS = ("case_id", "k", "split", "stage", "adam_step", "relL2_uv", "relL2_p", "relL2_uv_T",
                "passed_acceptance", "inaccurate")
-
-# Sidecar entries that must equal the case file's, so a checkpoint is never scored as another case
-CASE_KEYS = ("case_id", "k", "Re", "U0", "phi_x", "phi_y", "split", "seed_points", "seed_train", "seed_scoring")
 
 
 def accuracy_grid(T: float):
@@ -164,19 +161,8 @@ def case_checkpoints(case_id: str, models_dir) -> list:
         return checkpoints
     legacy_path = models_dir / f"{case_id}.pth"
     if legacy_path.exists():
-        return [(LEGACY_STAGE, legacy_path)]
+        return [(LEGACY_CHECKPOINT, legacy_path)]
     raise FileNotFoundError(f"No model for {case_id}: neither {case_dir}/ nor {legacy_path} exists")
-
-
-def _check_sidecar(info: dict, case: dict, stage: str, path) -> None:
-    """Refuses a checkpoint whose sidecar describes another stage or case than the case file."""
-    if info["checkpoint"] != stage:
-        raise ValueError(f"{path}: its sidecar says checkpoint {info['checkpoint']!r}, expected {stage!r}")
-    if stage == LEGACY_STAGE:
-        return
-    wrong = {key: (info.get(key), case.get(key)) for key in CASE_KEYS if info.get(key) != case.get(key)}
-    if wrong:
-        raise ValueError(f"{path} does not match its case in the case file ((sidecar, case file) values: {wrong})")
 
 
 def audit(metadata_path, models_dir, device: str = "cpu") -> pd.DataFrame:
@@ -198,7 +184,7 @@ def audit(metadata_path, models_dir, device: str = "cpu") -> pd.DataFrame:
         final_status = None
         for stage, path in case_checkpoints(case["case_id"], models_dir):
             model, info = load_checkpoint(path, device=device, k=case["k"], metadata_paths=[metadata_path])
-            _check_sidecar(info, case, stage, path)
+            check_sidecar(info, case, stage, path)
             if stage == FINAL_STAGE:
                 final_status = info["status"]
             case_rows.append({
