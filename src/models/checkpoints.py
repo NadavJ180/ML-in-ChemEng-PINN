@@ -325,19 +325,20 @@ def check_sidecar(info: dict, case: dict, checkpoint: str, path) -> None:
         raise ValueError(f"{path} does not match its case in the case file ((sidecar, case file) values: {wrong})")
 
 
-def final_model_path(models_dir, case_id: str):
+def final_model_path(case_id: str, models_dir):
     """
     Finds the final model of a case in a models folder of either layout.
 
     Inputs:
+        case_id (str): The case, e.g. "case_30".
         models_dir (str | Path): A folder with one folder of checkpoints per case
                                  (models/confirmation), or with the old case_XX.pth
                                  files (models).
-        case_id (str): The case, e.g. "case_30".
 
     Outputs:
-        (Path, str): <models_dir>/<case_id>/lbfgs_final.pth and "lbfgs_final" when the
-                     case has a folder, else <models_dir>/<case_id>.pth and "legacy".
+        (str, Path): "lbfgs_final" and <models_dir>/<case_id>/lbfgs_final.pth when the
+                     case has a folder, else "legacy" and <models_dir>/<case_id>.pth:
+                     the (name, path) pairs of accuracy_audit.case_checkpoints().
                      Raises FileNotFoundError if that file does not exist, so a case
                      with no model stops a run instead of being skipped (PROTOCOL.md
                      section 1: no case is dropped).
@@ -345,28 +346,28 @@ def final_model_path(models_dir, case_id: str):
     models_dir = Path(models_dir)
     case_dir = models_dir / case_id
     if case_dir.is_dir():
-        path, checkpoint = case_dir / f"{FINAL_STAGE}.pth", FINAL_STAGE
+        checkpoint, path = FINAL_STAGE, case_dir / f"{FINAL_STAGE}.pth"
     else:
-        path, checkpoint = models_dir / f"{case_id}.pth", LEGACY_CHECKPOINT
+        checkpoint, path = LEGACY_CHECKPOINT, models_dir / f"{case_id}.pth"
     if not path.exists():
         raise FileNotFoundError(f"No final model for {case_id}: {path} does not exist")
-    return path, checkpoint
+    return checkpoint, path
 
 
-def load_final_model(models_dir, case: dict, device: str = "cpu"):
+def load_final_model(case: dict, models_dir, device: str = "cpu"):
     """
     Loads the final model of a case (see final_model_path), and refuses it if its
     sidecar describes another case (see check_sidecar).
 
     Inputs:
-        models_dir (str | Path): The models folder, of either layout.
         case (dict): The case's entry in the case file (case_id, k, Re, ...).
+        models_dir (str | Path): The models folder, of either layout.
         device (str): Device to put the model on. Defaults to "cpu".
 
     Outputs:
         model, info: As load_checkpoint() returns them.
     """
-    path, checkpoint = final_model_path(models_dir, case["case_id"])
+    checkpoint, path = final_model_path(case["case_id"], models_dir)
     model, info = load_checkpoint(path, device=device, k=case["k"])
     check_sidecar(info, case, checkpoint, path)
     return model, info

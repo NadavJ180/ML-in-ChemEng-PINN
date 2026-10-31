@@ -239,7 +239,7 @@ def load_model(case_meta: dict, models_dir: Path, device: str):
     Outputs:
         model (nn.Module): The loaded, float64, eval-mode model on `device`.
     """
-    model, _ = load_final_model(models_dir, case_meta, device)
+    model, _ = load_final_model(case_meta, models_dir, device)
     return model
 
 
@@ -268,7 +268,7 @@ def score_all_fields(index_rows: list, case_meta_by_id: dict, models_dir: Path, 
     for case_id in rows_by_case:
         if case_id not in case_meta_by_id:
             raise ValueError(f"{case_id} is in the hallucination index but not in the case file")
-        final_model_path(models_dir, case_id)
+        final_model_path(case_id, models_dir)
 
     results = []
     for case_id, rows in sorted(rows_by_case.items()):

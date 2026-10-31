@@ -203,7 +203,7 @@ def generate_case_hallucinations(case_id, case_meta, models_dir, tensors_dir, de
     T = compute_T(U0, Re, k)
 
     # 1. Load the trained model (float64, on `device`)
-    model, _ = load_final_model(models_dir, case_meta, device)
+    model, _ = load_final_model(case_meta, models_dir, device)
 
     # 2. Load / build the evaluation grid and get the clean baseline
     eval_grid = get_evaluation_grid(case_id, T, tensors_dir)

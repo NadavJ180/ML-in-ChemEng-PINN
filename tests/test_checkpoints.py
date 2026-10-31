@@ -237,35 +237,35 @@ def save_final(model, models_dir, case):
 def test_final_model_in_either_layout(tmp_path, model, coords):
     # One folder per case: its lbfgs_final checkpoint
     pth_path = save_final(model, tmp_path, CASE)
-    assert final_model_path(tmp_path, "case_30") == (pth_path, "lbfgs_final")
-    loaded, info = load_final_model(tmp_path, CASE)
+    assert final_model_path("case_30", tmp_path) == ("lbfgs_final", pth_path)
+    loaded, info = load_final_model(CASE, tmp_path)
     assert torch.equal(outputs(model, coords), outputs(loaded, coords))
     assert (info["checkpoint"], info["status"]) == ("lbfgs_final", "PASSED")
 
     # The old layout: <models_dir>/case_XX.pth
     old_case = {"case_id": "case_07", "k": CASE["k"], "Re": 120.5, "U0": 1.25, "phi_x": 0.5, "phi_y": 1.5}
     torch.save(model.state_dict(), tmp_path / "case_07.pth")
-    assert final_model_path(tmp_path, "case_07") == (tmp_path / "case_07.pth", "legacy")
-    loaded, info = load_final_model(tmp_path, old_case)
+    assert final_model_path("case_07", tmp_path) == ("legacy", tmp_path / "case_07.pth")
+    loaded, info = load_final_model(old_case, tmp_path)
     assert torch.equal(outputs(model, coords), outputs(loaded, coords))
     assert info["checkpoint"] == "legacy"
 
 
 def test_final_model_must_exist(tmp_path, model):
     with pytest.raises(FileNotFoundError, match="case_30"):
-        load_final_model(tmp_path, CASE)
+        load_final_model(CASE, tmp_path)
     # A case folder without lbfgs_final.pth (an unfinished run) is never read as an old case_30.pth
     save_checkpoint(model, tmp_path / "case_30" / "adam_05000", CASE, phase="adam", adam_steps=5000)
     torch.save(model.state_dict(), tmp_path / "case_30.pth")
     with pytest.raises(FileNotFoundError, match="lbfgs_final.pth"):
-        load_final_model(tmp_path, CASE)
+        load_final_model(CASE, tmp_path)
 
 
 def test_final_model_of_another_case_is_refused(tmp_path, model):
     save_final(model, tmp_path, CASE)
     # The case file describes another flow than the one the model was trained on
     with pytest.raises(ValueError, match="does not match its case"):
-        load_final_model(tmp_path, {**CASE, "U0": 1.5})
+        load_final_model({**CASE, "U0": 1.5}, tmp_path)
 
     # case_30's checkpoint copied into case_31's folder
     other = {**CASE, "case_id": "case_31", "seed_points": 3031, "seed_train": 4031, "seed_scoring": 1031}
@@ -274,7 +274,7 @@ def test_final_model_of_another_case_is_refused(tmp_path, model):
         (tmp_path / "case_31" / f"lbfgs_final{suffix}").write_bytes(
             (tmp_path / "case_30" / f"lbfgs_final{suffix}").read_bytes())
     with pytest.raises(ValueError, match="does not match its case"):
-        load_final_model(tmp_path, other)
+        load_final_model(other, tmp_path)
 
 
 # --- Checkpointing must not change training ---------------------------------
