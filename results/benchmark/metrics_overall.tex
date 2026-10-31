@@ -1,0 +1,15 @@
+\begin{table}
+\caption{Detection of the damaged fields, all cases. Five scores, frozen calibration (score above $\tau$ is flagged). Each cell: estimate [95\% range]. AUC, precision, F1, and recall over several strengths: case bootstrap, 2000 resamples, whole cases within each $k$. False alarms (flagged clean fields), and recall at one damage type and strength: exact Clopper--Pearson range. Recall (new): over the cases whose clean field the score does not flag. -- : undefined.}
+\label{tab:benchmark_metrics_overall}
+\begin{tabular}{lllllllll}
+\toprule
+Score & Cases & Failed runs & AUC & Precision & Recall & Recall (new) & F1 & False alarms \\
+\midrule
+Score1\_momentum\_only & 30 & 0 & 0.872 [0.868, 0.880] & 1.000 [1.000, 1.000] & 0.714 [0.706, 0.724] & 0.714 [0.706, 0.724] & 0.833 [0.827, 0.840] & 0/30 [0.000, 0.116] \\
+Score2\_momentum\_divergence & 30 & 0 & 0.900 [0.899, 0.906] & 0.997 [0.993, 1.000] & 0.803 [0.790, 0.822] & 0.789 [0.783, 0.794] & 0.890 [0.883, 0.900] & 2/30 [0.008, 0.221] \\
+Score3\_PHS\_full & 30 & 0 & 0.884 [0.873, 0.899] & 0.996 [0.992, 1.000] & 0.770 [0.746, 0.801] & 0.746 [0.736, 0.755] & 0.868 [0.854, 0.886] & 3/30 [0.021, 0.265] \\
+Score4\_PHS\_no\_bc & 30 & 0 & 0.889 [0.878, 0.905] & 0.996 [0.992, 1.000] & 0.764 [0.739, 0.797] & 0.738 [0.729, 0.748] & 0.865 [0.849, 0.884] & 3/30 [0.021, 0.265] \\
+Score5\_PHS\_no\_E & 30 & 0 & 0.889 [0.887, 0.895] & 0.997 [0.993, 1.000] & 0.773 [0.759, 0.791] & 0.757 [0.745, 0.769] & 0.871 [0.863, 0.881] & 2/30 [0.008, 0.221] \\
+\bottomrule
+\end{tabular}
+\end{table}

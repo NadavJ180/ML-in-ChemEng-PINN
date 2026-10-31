@@ -74,7 +74,14 @@ computes all five scores of phs.SCORE_DEFINITIONS. Step 5 is skipped: only the
 scored table is written, to data/phs_scores/phs_components_frozen.csv (raw and
 normalized components, the 5 scores and the 5 flagged_<score> columns), and
 none of the metrics and plots above are made, since they are defined on the
-old validation/test split. Without --calibration nothing changes.
+old validation/test split. Without --calibration nothing changes. The metrics
+of the final iteration's benchmark come from src/detection/benchmark_metrics.py (#35).
+
+PATHS (#35): --metadata, --models_dir, --hallucinations_dir and --scores_dir
+point the script at another case file, models folder, hallucination index and
+scores folder; their defaults are the paths above. A models folder with one
+subfolder per case (models/confirmation/) is read from {case_id}/lbfgs_final.pth
+(checkpoints.final_model_path()). The scoring settings don't change.
 
 CAVEAT (historical): models committed before commit `be9b8ff` predated a phase-mismatch
 bug identified during the hallucination-verification audit (see verify_hallucinations.py's
@@ -91,6 +98,11 @@ Usage:
     python src/detection/evaluate_phs.py --case_id case_00 --case_id case_25
     python src/detection/evaluate_phs.py --n_interior 4000 --n_time 8 --energy_res 16   # fast smoke test
     python src/detection/evaluate_phs.py --calibration calibration/frozen_calibration.json
+
+    # The 30 new cases of the final iteration (#35), after generate_hallucinations.py wrote their index
+    python src/detection/evaluate_phs.py --calibration calibration/frozen_calibration.json \\
+        --metadata cases/confirmation_cases.json --models_dir models/confirmation \\
+        --hallucinations_dir data/confirmation/hallucinations --scores_dir data/confirmation/phs_scores
 """
 
 import argparse
@@ -164,6 +176,14 @@ def _styled_line(ax, x, y, index: int, label: str, **kwargs):
     return line
 
 
+def _shown(path: Path) -> Path:
+    """For messages only: path relative to the project root when it is inside it, else path as given."""
+    try:
+        return Path(path).resolve().relative_to(project_root.resolve())
+    except ValueError:
+        return Path(path)
+
+
 def parse_args():
     """
     Parses command-line arguments controlling which case(s) to score, the
@@ -177,7 +197,9 @@ def parse_args():
         args (argparse.Namespace): Parsed arguments with fields
             case_id (list[str] | None), device (str), n_interior (int),
             n_bc (int), n_time (int), energy_res (int), chunk_size (int),
-            percentile (float), output_dir (str), calibration (str | None).
+            percentile (float), output_dir (str), calibration (str | None), and the
+            paths metadata, models_dir, hallucinations_dir, scores_dir (str | None;
+            None means today's default path).
     """
     parser = argparse.ArgumentParser(description="Evaluate the Physical Hallucination Score.")
     parser.add_argument("--case_id", action="append", default=None,
@@ -217,8 +239,22 @@ def parse_args():
     parser.add_argument("--calibration", type=str, default=None,
                         help="Frozen calibration JSON (calibration/frozen_calibration.json, #45). With it, the "
                              "normalizers and tau are read from the file instead of fitted on the validation "
-                             f"split, all five scores are computed, and only data/phs_scores/{FROZEN_SCORES_FILE} "
+                             f"split, all five scores are computed, and only {{scores_dir}}/{FROZEN_SCORES_FILE} "
                              "is written. Without it, nothing changes.")
+    # Where cases, models and fields are read from and scores written to (defaults: today's paths, #35)
+    parser.add_argument("--metadata", type=str, default=None,
+                        help="Case file to read (default: data/cases_metadata.json). Every case in its "
+                             "train/validation/test/confirmation lists can be scored.")
+    parser.add_argument("--models_dir", type=str, default=None,
+                        help="Folder with the trained models (default: models/). A case with its own "
+                             "{case_id}/ subfolder there, as in models/confirmation/, is loaded from "
+                             "{case_id}/lbfgs_final.pth; otherwise from {case_id}.pth. A missing model "
+                             "stops the run before any scoring.")
+    parser.add_argument("--hallucinations_dir", type=str, default=None,
+                        help="Folder with generate_hallucinations.py's hallucination_index.json "
+                             "(default: data/hallucinations).")
+    parser.add_argument("--scores_dir", type=str, default=None,
+                        help="Folder to write the scored tables into (default: data/phs_scores).")
     return parser.parse_args()
 
 
@@ -791,18 +827,21 @@ def main():
         None. Writes data/phs_scores/phs_components_raw.csv/.json and
         plots/phs_evaluation/* (see module docstring), and prints a
         summary to stdout. With --calibration, writes only
-        data/phs_scores/phs_components_frozen.csv.
+        data/phs_scores/phs_components_frozen.csv. (data/phs_scores is
+        --scores_dir's default.)
     """
     args = parse_args()
     # Read before the long scoring run, so a wrong path or file fails at once
     calibration = frozen_calibration.load(args.calibration) if args.calibration else None
 
-    metadata_path = project_root / "data" / "cases_metadata.json"
+    metadata_path = Path(args.metadata) if args.metadata else project_root / "data" / "cases_metadata.json"
     if not metadata_path.exists():
         raise FileNotFoundError(f"Cannot find metadata at {metadata_path}. Run src/data/sampler.py first.")
     case_meta_by_id = load_case_metadata(metadata_path)
 
-    index_path = project_root / "data" / "hallucinations" / "hallucination_index.json"
+    hallucinations_dir = (Path(args.hallucinations_dir) if args.hallucinations_dir
+                          else project_root / "data" / "hallucinations")
+    index_path = hallucinations_dir / "hallucination_index.json"
     if not index_path.exists():
         raise FileNotFoundError(
             f"Cannot find {index_path}. Run src/hallucinations/generate_hallucinations.py "
@@ -816,10 +855,10 @@ def main():
         if not index_rows:
             raise ValueError(f"No hallucination_index rows found for case_id(s): {args.case_id}")
 
-    models_dir = project_root / "models"
+    models_dir = Path(args.models_dir) if args.models_dir else project_root / "models"
     output_dir = Path(args.output_dir) if args.output_dir else project_root / "plots" / "phs_evaluation"
     output_dir.mkdir(parents=True, exist_ok=True)
-    data_dir = project_root / "data" / "phs_scores"
+    data_dir = Path(args.scores_dir) if args.scores_dir else project_root / "data" / "phs_scores"
     data_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 60)
@@ -829,7 +868,7 @@ def main():
 
     df = score_all_fields(index_rows, case_meta_by_id, models_dir, args)
     if df.empty:
-        raise RuntimeError("No fields were scored -- check that models/ contains the matching *.pth files.")
+        raise RuntimeError(f"No fields were scored -- check that {models_dir} contains the matching models.")
 
     if calibration is not None:
         df = write_frozen_scores(df, calibration, data_dir)
@@ -851,31 +890,31 @@ def main():
     df.to_csv(raw_csv_path, index=False)
     raw_json_path = data_dir / "phs_components_raw.json"
     df.to_json(raw_json_path, orient="records", indent=2)
-    print(f"\n💾 Wrote {raw_csv_path.relative_to(project_root)}")
-    print(f"💾 Wrote {raw_json_path.relative_to(project_root)}")
+    print(f"\n💾 Wrote {_shown(raw_csv_path)}")
+    print(f"💾 Wrote {_shown(raw_json_path)}")
 
     # --- Persist normalizers/thresholds ---
     calibration = {"normalizers": normalizers, "thresholds": thresholds, "percentile": args.percentile}
     with open(output_dir / "normalizers_and_thresholds.json", "w") as f:
         json.dump(calibration, f, indent=2)
-    print(f"💾 Wrote {(output_dir / 'normalizers_and_thresholds.json').relative_to(project_root)}")
+    print(f"💾 Wrote {_shown(output_dir / 'normalizers_and_thresholds.json')}")
 
     # --- Persist detection metrics ---
     metrics_df = pd.DataFrame(metrics_rows)
     metrics_df.to_csv(output_dir / "detection_metrics_summary.csv", index=False)
     with open(output_dir / "detection_metrics_summary.json", "w") as f:
         json.dump(metrics_rows, f, indent=2)
-    print(f"💾 Wrote {(output_dir / 'detection_metrics_summary.csv').relative_to(project_root)}")
+    print(f"💾 Wrote {_shown(output_dir / 'detection_metrics_summary.csv')}")
 
     # --- Detection metrics broken down by perturbation type ---
     recall_by_type_df = evaluate_detection_by_perturbation_type(df, thresholds)
     recall_by_type_df.to_csv(output_dir / "recall_by_perturbation_type.csv", index=False)
-    print(f"💾 Wrote {(output_dir / 'recall_by_perturbation_type.csv').relative_to(project_root)}")
+    print(f"💾 Wrote {_shown(output_dir / 'recall_by_perturbation_type.csv')}")
 
     # --- Diagnostic: which specific fields did PHS get wrong, and by how much? ---
     misclass_df = diagnose_misclassifications(df, thresholds)
     misclass_df.to_csv(output_dir / "misclassified_fields.csv", index=False)
-    print(f"💾 Wrote {(output_dir / 'misclassified_fields.csv').relative_to(project_root)}")
+    print(f"💾 Wrote {_shown(output_dir / 'misclassified_fields.csv')}")
     if len(misclass_df) > 0:
         print(f"\n🔎 {len(misclass_df)} misclassified test field(s) at tau={thresholds['Score3_PHS_full']:.3f} "
               f"(closest calls first):")
@@ -891,7 +930,7 @@ def main():
     plot_recall_by_type(recall_by_type_df, output_dir)
     print(f"🖼️  Wrote roc_curves.png, score_distributions_comparison.png, "
           f"normalized_components_vs_epsilon.png, scores_vs_epsilon.png, recall_by_type.png to "
-          f"{output_dir.relative_to(project_root)}")
+          f"{_shown(output_dir)}")
 
     print("\n" + "=" * 60)
     print("✅ Detection summary (test split):")

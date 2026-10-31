@@ -1,7 +1,7 @@
 """
 Hallucination Dataset Generator
 
-For every case_id in the case file (data/cases_metadata.json), this script:
+For every case_id in the case file (data/cases_metadata.json, or --metadata), this script:
 
   1. Loads the case's trained model -- models/{case_id}.pth, or the
      lbfgs_final.pth of its case folder (models/confirmation/{case_id}/) --
@@ -22,6 +22,11 @@ Usage:
     python src/hallucinations/generate_hallucinations.py
     python src/hallucinations/generate_hallucinations.py --case_id case_00
     python src/hallucinations/generate_hallucinations.py --device cpu
+
+    # The 30 new cases of the final iteration (#35), from their lbfgs_final models
+    python src/hallucinations/generate_hallucinations.py --metadata cases/confirmation_cases.json \\
+        --models_dir models/confirmation --tensors_dir data/confirmation/tensors \\
+        --output_dir data/confirmation/hallucinations
 """
 
 import argparse
@@ -36,7 +41,7 @@ import torch
 project_root = Path(__file__).parent.parent.parent
 sys.path.append(str(project_root))
 
-from src.models.checkpoints import SPLITS, load_final_model
+from src.models.checkpoints import FINAL_STAGE, SPLITS, load_final_model
 from src.physics.taylor_green import compute_nu, compute_T, compute_decay_timescale
 from src.data.point_samplers import generate_evaluation_grid
 from src.hallucinations.perturbations import (
@@ -57,7 +62,9 @@ def parse_args():
 
     Outputs:
         args (argparse.Namespace): Parsed arguments with fields
-            case_id (str | None), device (str), chunk_size (int).
+            case_id (str | None), device (str), chunk_size (int), and the
+            paths metadata, models_dir, tensors_dir, output_dir (str | None;
+            None means today's default path).
     """
     parser = argparse.ArgumentParser(description="Generate the physical hallucination dataset.")
     parser.add_argument("--case_id", type=str, default=None,
@@ -65,6 +72,21 @@ def parse_args():
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--chunk_size", type=int, default=8000,
                         help="Chunk size for forward passes over the evaluation grid (VRAM safety).")
+    # Where cases and models are read from and the dataset is written to (defaults: today's paths, #35)
+    parser.add_argument("--metadata", type=str, default=None,
+                        help="Case file to read (default: data/cases_metadata.json). Every case in its "
+                             "train/validation/test/confirmation lists is processed.")
+    parser.add_argument("--models_dir", type=str, default=None,
+                        help="Folder with the trained models (default: models/). A case with its own "
+                             "{case_id}/ subfolder there, as in models/confirmation/, is loaded from "
+                             f"{{case_id}}/{FINAL_STAGE}.pth; otherwise from {{case_id}}.pth. A missing "
+                             "model stops the run.")
+    parser.add_argument("--tensors_dir", type=str, default=None,
+                        help="Folder with the {case_id}.pt files from generate_datasets.py, whose eval grid "
+                             "is reused (default: data/tensors). Without one, the same 64x64x20 grid is rebuilt.")
+    parser.add_argument("--output_dir", type=str, default=None,
+                        help="Folder to write the {case_id}_hallucinations.pt files and the index into "
+                             "(default: data/hallucinations).")
     return parser.parse_args()
 
 
@@ -107,6 +129,14 @@ def load_case_metadata(metadata_path: Path):
     if not case_meta_by_id:
         raise ValueError(f"No cases in {metadata_path}: expected a list under one of {SPLITS}.")
     return case_meta_by_id
+
+
+def _shown(path: Path) -> Path:
+    """For messages only: path relative to the project root when it is inside it, else path as given."""
+    try:
+        return Path(path).resolve().relative_to(project_root.resolve())
+    except ValueError:
+        return Path(path)
 
 
 def get_evaluation_grid(case_id: str, T: float, tensors_dir: Path) -> torch.Tensor:
@@ -342,9 +372,10 @@ def _temporal_mismatch_chunked(model, coords, params, epsilon, device, chunk_siz
 
 def main():
     """
-    Entry point for the hallucination sweep. Loads cases_metadata.json,
-    iterates over every case_id in it (each must have its trained model in
-    models/: a missing one stops the run),
+    Entry point for the hallucination sweep. Loads the case file (--metadata,
+    default data/cases_metadata.json), iterates over every case_id in it (each
+    must have its trained model in --models_dir, default models/: a missing one
+    stops the run),
     builds and saves its clean + 30-variant hallucination bundle via
     generate_case_hallucinations(), and writes a combined categorization
     index (CSV + JSON) covering every case's clean and hallucinated entries.
@@ -355,19 +386,19 @@ def main():
     Outputs:
         None. Writes one {case_id}_hallucinations.pt file per processed case
         plus hallucination_index.csv / hallucination_index.json to
-        data/hallucinations/, and prints a summary to stdout.
+        --output_dir (default data/hallucinations/), and prints a summary to stdout.
     """
     args = parse_args()
 
-    metadata_path = project_root / "data" / "cases_metadata.json"
+    metadata_path = Path(args.metadata) if args.metadata else project_root / "data" / "cases_metadata.json"
     if not metadata_path.exists():
         raise FileNotFoundError(f"Cannot find metadata at {metadata_path}")
 
     case_meta_by_id = load_case_metadata(metadata_path)
 
-    models_dir = project_root / "models"
-    tensors_dir = project_root / "data" / "tensors"
-    output_dir = project_root / "data" / "hallucinations"
+    models_dir = Path(args.models_dir) if args.models_dir else project_root / "models"
+    tensors_dir = Path(args.tensors_dir) if args.tensors_dir else project_root / "data" / "tensors"
+    output_dir = Path(args.output_dir) if args.output_dir else project_root / "data" / "hallucinations"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if args.case_id:
@@ -395,7 +426,7 @@ def main():
 
         save_path = output_dir / f"{case_id}_hallucinations.pt"
         torch.save(bundle, save_path)
-        print(f"💾 Saved {save_path.relative_to(project_root)}")
+        print(f"💾 Saved {_shown(save_path)}")
 
         all_index_rows.extend(index_rows)
         n_generated += 1
@@ -412,8 +443,8 @@ def main():
         with open(index_json_path, "w") as f:
             json.dump(all_index_rows, f, indent=2)
 
-        print(f"\n📊 Wrote categorization index: {index_csv_path.relative_to(project_root)}")
-        print(f"📊 Wrote categorization index: {index_json_path.relative_to(project_root)}")
+        print(f"\n📊 Wrote categorization index: {_shown(index_csv_path)}")
+        print(f"📊 Wrote categorization index: {_shown(index_json_path)}")
 
     print("\n" + "=" * 60)
     print(f"✅ Generated hallucinations for {n_generated} case(s).")
