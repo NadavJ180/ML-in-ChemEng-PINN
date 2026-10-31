@@ -1,12 +1,13 @@
 """
 Hallucination Dataset Generator
 
-For every case_id that has a trained, saved PINN (models/{case_id}.pth, or
-{case_id}/lbfgs_final.pth in a folder with one subfolder per case such as
-models/confirmation/ -- see find_model()), this script:
+For every case_id in the case file (data/cases_metadata.json, or --metadata), this script:
 
-  1. Loads the model and its evaluation grid (reusing the exact grid the
-     model was trained/evaluated on when available, for consistency).
+  1. Loads the case's trained model -- models/{case_id}.pth, or the
+     lbfgs_final.pth of its case folder (models/confirmation/{case_id}/) --
+     and its evaluation grid (reusing the exact grid the model was
+     trained/evaluated on when available, for consistency). A case with no
+     model stops the run: no case is skipped.
   2. Runs one clean forward pass to obtain the valid (u, v, p) baseline.
   3. Applies every registered perturbation function (PERTURBATION_NAMES) at
      every canonical epsilon strength (EPSILON_VALUES, see perturbations.py)
@@ -40,7 +41,7 @@ import torch
 project_root = Path(__file__).parent.parent.parent
 sys.path.append(str(project_root))
 
-from src.models.checkpoints import FINAL_STAGE, SPLITS, load_checkpoint
+from src.models.checkpoints import FINAL_STAGE, SPLITS, load_final_model
 from src.physics.taylor_green import compute_nu, compute_T, compute_decay_timescale
 from src.data.point_samplers import generate_evaluation_grid
 from src.hallucinations.perturbations import (
@@ -71,14 +72,15 @@ def parse_args():
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--chunk_size", type=int, default=8000,
                         help="Chunk size for forward passes over the evaluation grid (VRAM safety).")
-    # Where cases and models are read from and the dataset is written to (defaults: today's paths)
+    # Where cases and models are read from and the dataset is written to (defaults: today's paths, #35)
     parser.add_argument("--metadata", type=str, default=None,
                         help="Case file to read (default: data/cases_metadata.json). Every case in its "
                              "train/validation/test/confirmation lists is processed.")
     parser.add_argument("--models_dir", type=str, default=None,
                         help="Folder with the trained models (default: models/). A case with its own "
                              "{case_id}/ subfolder there, as in models/confirmation/, is loaded from "
-                             f"{{case_id}}/{FINAL_STAGE}.pth; otherwise from {{case_id}}.pth.")
+                             f"{{case_id}}/{FINAL_STAGE}.pth; otherwise from {{case_id}}.pth. A missing "
+                             "model stops the run.")
     parser.add_argument("--tensors_dir", type=str, default=None,
                         help="Folder with the {case_id}.pt files from generate_datasets.py, whose eval grid "
                              "is reused (default: data/tensors). Without one, the same 64x64x20 grid is rebuilt.")
@@ -90,15 +92,14 @@ def parse_args():
 
 def load_case_metadata(metadata_path: Path):
     """
-    Loads a case file and flattens its case lists into a single lookup
-    dictionary keyed by case_id: the train/validation/test splits of
-    data/cases_metadata.json, or the "confirmation" list of
-    cases/confirmation_cases.json (the 30 new cases of the final iteration).
+    Loads a case file and flattens its splits into a single lookup dictionary
+    keyed by case_id: train/validation/test for cases_metadata.json, and the
+    single confirmation list for cases/confirmation_cases.json (the 30 new cases).
 
     IMPORTANT: each case is tagged with a "split" field ("train", "validation",
-    or "test"; "confirmation" for the new cases) indicating which of sampler.py's
-    partitions it belongs to (20 train / 5 validation / 5 test, per
-    src/data/sampler.py). This field
+    or "test") indicating which of sampler.py's partitions it belongs to
+    (20 train / 5 validation / 5 test, per src/data/sampler.py), or
+    "confirmation" for a new case. This field
     is not used to change WHICH cases get processed here -- generating
     hallucinations for all 30 is harmless data preparation. It exists so
     downstream PHS threshold calibration/evaluation code can correctly
@@ -110,12 +111,13 @@ def load_case_metadata(metadata_path: Path):
     tag, that information is silently lost after this flattening step.
 
     Inputs:
-        metadata_path (Path): Path to the case file (data/cases_metadata.json or
-                              cases/confirmation_cases.json).
+        metadata_path (Path): Path to the case file (data/cases_metadata.json
+                              or cases/confirmation_cases.json).
 
     Outputs:
         dict: Mapping of case_id (str) -> case metadata dict
               (containing "Re", "U0", "k", "phi_x", "phi_y", "seed", "split", etc.).
+              Raises ValueError if the file lists no cases under any split.
     """
     with open(metadata_path, "r") as f:
         dataset = json.load(f)
@@ -127,30 +129,6 @@ def load_case_metadata(metadata_path: Path):
     if not case_meta_by_id:
         raise ValueError(f"No cases in {metadata_path}: expected a list under one of {SPLITS}.")
     return case_meta_by_id
-
-
-def find_model(models_dir: Path, case_id: str) -> Path:
-    """
-    Returns the file of a case's trained model in models_dir, which may not
-    exist (callers check):
-      - {case_id}/lbfgs_final.pth when models_dir has a {case_id}/ subfolder:
-        a folder with one subfolder per case, as train_model.py --models_dir
-        writes it (models/confirmation/). This is the case's final model,
-        failed runs included.
-      - {case_id}.pth otherwise: the old flat models/ folder.
-    evaluate_phs.py uses the same rule, so both scripts open the same model.
-
-    Inputs:
-        models_dir (Path): The models folder.
-        case_id (str): The case identifier (e.g. "case_30").
-
-    Outputs:
-        Path: The model file.
-    """
-    models_dir = Path(models_dir)
-    if (models_dir / case_id).is_dir():
-        return models_dir / case_id / f"{FINAL_STAGE}.pth"
-    return models_dir / f"{case_id}.pth"
 
 
 def _shown(path: Path) -> Path:
@@ -228,8 +206,12 @@ def generate_case_hallucinations(case_id, case_meta, models_dir, tensors_dir, de
     Inputs:
         case_id (str): The case identifier (e.g. "case_00").
         case_meta (dict): This case's metadata dict, containing "Re", "U0", "k".
-        models_dir (Path): Folder with the trained models (see find_model()).
-        tensors_dir (Path): Folder with the {case_id}.pt tensor files (see get_evaluation_grid()).
+        models_dir (Path): The models folder: models/ (the old {case_id}.pth
+                            files) or models/confirmation/ (one folder per case,
+                            whose lbfgs_final.pth is used). A missing model raises
+                            FileNotFoundError (see checkpoints.load_final_model).
+        tensors_dir (Path): Folder with the cases' {case_id}.pt tensor files
+                             (see get_evaluation_grid).
         device (str): Target hardware device for inference ('cuda' or 'cpu').
         chunk_size (int): Number of points to process per forward-pass chunk.
 
@@ -250,10 +232,8 @@ def generate_case_hallucinations(case_id, case_meta, models_dir, tensors_dir, de
     nu = compute_nu(U0, Re, k)
     T = compute_T(U0, Re, k)
 
-    # 1. Load the trained model. load_checkpoint() opens both a case-folder checkpoint (k from its
-    # sidecar, refused if it disagrees with the case file) and an old models/{case_id}.pth (k as given).
-    model, _ = load_checkpoint(find_model(models_dir, case_id), device=device, k=k)
-    model.to(torch.float64)
+    # 1. Load the trained model (float64, on `device`)
+    model, _ = load_final_model(case_meta, models_dir, device)
 
     # 2. Load / build the evaluation grid and get the clean baseline
     eval_grid = get_evaluation_grid(case_id, T, tensors_dir)
@@ -392,8 +372,10 @@ def _temporal_mismatch_chunked(model, coords, params, epsilon, device, chunk_siz
 
 def main():
     """
-    Entry point for the hallucination sweep. Loads the case file (--metadata),
-    iterates over every case_id that has a trained model in --models_dir,
+    Entry point for the hallucination sweep. Loads the case file (--metadata,
+    default data/cases_metadata.json), iterates over every case_id in it (each
+    must have its trained model in --models_dir, default models/: a missing one
+    stops the run),
     builds and saves its clean + 30-variant hallucination bundle via
     generate_case_hallucinations(), and writes a combined categorization
     index (CSV + JSON) covering every case's clean and hallucinated entries.
@@ -420,12 +402,14 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if args.case_id:
+        if args.case_id not in case_meta_by_id:
+            raise ValueError(f"{args.case_id} is not in {metadata_path}")
         case_ids = [args.case_id]
     else:
         case_ids = sorted(case_meta_by_id.keys())
 
     all_index_rows = []
-    n_generated, n_skipped = 0, 0
+    n_generated = 0
 
     print("=" * 60)
     print("🧪 GENERATING PHYSICAL HALLUCINATION DATASET")
@@ -434,22 +418,10 @@ def main():
     print("=" * 60)
 
     for case_id in case_ids:
-        model_path = find_model(models_dir, case_id)
-        if not model_path.exists():
-            print(f"⏭️  Skipping {case_id}: no trained model found at {model_path}")
-            n_skipped += 1
-            continue
-
-        case_meta = case_meta_by_id.get(case_id)
-        if case_meta is None:
-            print(f"⏭️  Skipping {case_id}: not found in {metadata_path.name}")
-            n_skipped += 1
-            continue
-
         print(f"\n[{case_id}] Generating {len(PERTURBATION_NAMES) * len(EPSILON_VALUES)} "
-              f"hallucinated variants + clean baseline from {_shown(model_path)}...")
+              f"hallucinated variants + clean baseline...")
         bundle, index_rows = generate_case_hallucinations(
-            case_id, case_meta, models_dir, tensors_dir, args.device, args.chunk_size
+            case_id, case_meta_by_id[case_id], models_dir, tensors_dir, args.device, args.chunk_size
         )
 
         save_path = output_dir / f"{case_id}_hallucinations.pt"
@@ -475,7 +447,7 @@ def main():
         print(f"📊 Wrote categorization index: {_shown(index_json_path)}")
 
     print("\n" + "=" * 60)
-    print(f"✅ Generated hallucinations for {n_generated} case(s). Skipped {n_skipped}.")
+    print(f"✅ Generated hallucinations for {n_generated} case(s).")
     print(f"Each generated case contains 1 clean baseline + "
           f"{len(PERTURBATION_NAMES)} x {len(EPSILON_VALUES)} = "
           f"{len(PERTURBATION_NAMES) * len(EPSILON_VALUES)} hallucinated variants.")

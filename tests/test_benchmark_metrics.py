@@ -16,8 +16,8 @@ fields; worked out by hand below), verifies that:
   - every table is written as .csv and .tex, and reads back exactly;
   - scores that don't match the frozen calibration, a broken table, or a bad sidecar
     are refused.
-and that generate_hallucinations.py and evaluate_phs.py read the 30 new cases and their
-lbfgs_final models through their path flags, whose defaults are today's paths.
+and that the path flags of generate_hallucinations.py and evaluate_phs.py default to
+today's paths.
 """
 
 import json
@@ -28,7 +28,6 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 import pytest
-import torch
 from sklearn.metrics import f1_score, precision_score, recall_score, roc_auc_score
 
 from src.detection import benchmark_metrics as bm
@@ -37,7 +36,6 @@ from src.detection.grouped_eval import case_bootstrap, clopper_pearson
 from src.detection.phs import PHS_COMPONENT_NAMES, SCORE_DEFINITIONS
 from src.hallucinations import generate_hallucinations
 
-REPO = Path(__file__).parent.parent
 N_BOOT = 100  # Enough to check the wiring; the real run uses bm.N_BOOT = 2000
 
 S1, S2, S3, S4, S5 = SCORE_DEFINITIONS
@@ -407,30 +405,8 @@ def test_refuses_a_bad_sidecar(tmp_path, sidecar_change):
         run_benchmark(inputs)
 
 
-# --- The path flags of the benchmark run, on the real case file and models ---
-
-def test_case_file_of_the_new_cases_loads():
-    cases = generate_hallucinations.load_case_metadata(REPO / "cases" / "confirmation_cases.json")
-    assert sorted(cases) == [f"case_{n}" for n in range(30, 60)]
-    assert {case["split"] for case in cases.values()} == {"confirmation"}
-
-
-def test_find_model():
-    assert generate_hallucinations.find_model(REPO / "models" / "confirmation", "case_30") == \
-        REPO / "models" / "confirmation" / "case_30" / "lbfgs_final.pth"
-    assert generate_hallucinations.find_model(REPO / "models", "case_00") == REPO / "models" / "case_00.pth"
-
-
-def test_evaluate_phs_loads_the_final_model_of_a_case_folder():
-    path = REPO / "models" / "confirmation" / "case_30" / "lbfgs_final.pth"
-    model = evaluate_phs.load_model("case_30", 1, "cpu", REPO / "models" / "confirmation")
-    saved = torch.load(path, map_location="cpu", weights_only=True)
-    loaded = model.state_dict()
-    assert all(torch.equal(saved[name], loaded[name]) for name in saved)
-    assert not model.training and next(model.parameters()).dtype == torch.float64
-    with pytest.raises(ValueError, match="k=2"):  # The sidecar says k = 1
-        evaluate_phs.load_model("case_30", 2, "cpu", REPO / "models" / "confirmation")
-
+# --- The path flags of the benchmark run (how the scripts read the new cases and models is in
+# tests/test_new_case_inputs.py) ---
 
 @pytest.mark.parametrize("module, flags", [
     (generate_hallucinations, ["metadata", "models_dir", "tensors_dir", "output_dir"]),
