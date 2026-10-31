@@ -1,0 +1,38 @@
+\begin{longtable}{lllllllllll}
+\caption{False alarms on the clean fields: count, rate and exact 95\% range, overall and by $k$.} \label{tab:benchmark_clean_false_positives} \\
+\toprule
+score & tau & subset & n\_cases & n\_failed\_runs & n\_clean & n\_false\_alarms & fpr & fpr\_low & fpr\_high & false\_alarm\_cases \\
+\midrule
+\endfirsthead
+\caption[]{False alarms on the clean fields: count, rate and exact 95\% range, overall and by $k$.} \\
+\toprule
+score & tau & subset & n\_cases & n\_failed\_runs & n\_clean & n\_false\_alarms & fpr & fpr\_low & fpr\_high & false\_alarm\_cases \\
+\midrule
+\endhead
+\midrule
+\multicolumn{11}{r}{Continued on next page} \\
+\midrule
+\endfoot
+\bottomrule
+\endlastfoot
+Score1\_momentum\_only & 1.586 & all & 30 & 0 & 30 & 0 & 0.000 & 0.000 & 0.116 &  \\
+Score1\_momentum\_only & 1.586 & k=1 & 10 & 0 & 10 & 0 & 0.000 & 0.000 & 0.308 &  \\
+Score1\_momentum\_only & 1.586 & k=2 & 10 & 0 & 10 & 0 & 0.000 & 0.000 & 0.308 &  \\
+Score1\_momentum\_only & 1.586 & k=3 & 10 & 0 & 10 & 0 & 0.000 & 0.000 & 0.308 &  \\
+Score2\_momentum\_divergence & 2.888 & all & 30 & 0 & 30 & 2 & 0.067 & 0.008 & 0.221 & case\_34;case\_45 \\
+Score2\_momentum\_divergence & 2.888 & k=1 & 10 & 0 & 10 & 1 & 0.100 & 0.003 & 0.445 & case\_34 \\
+Score2\_momentum\_divergence & 2.888 & k=2 & 10 & 0 & 10 & 1 & 0.100 & 0.003 & 0.445 & case\_45 \\
+Score2\_momentum\_divergence & 2.888 & k=3 & 10 & 0 & 10 & 0 & 0.000 & 0.000 & 0.308 &  \\
+Score3\_PHS\_full & 7.739 & all & 30 & 0 & 30 & 3 & 0.100 & 0.021 & 0.265 & case\_46;case\_48;case\_53 \\
+Score3\_PHS\_full & 7.739 & k=1 & 10 & 0 & 10 & 0 & 0.000 & 0.000 & 0.308 &  \\
+Score3\_PHS\_full & 7.739 & k=2 & 10 & 0 & 10 & 2 & 0.200 & 0.025 & 0.556 & case\_46;case\_48 \\
+Score3\_PHS\_full & 7.739 & k=3 & 10 & 0 & 10 & 1 & 0.100 & 0.003 & 0.445 & case\_53 \\
+Score4\_PHS\_no\_bc & 6.853 & all & 30 & 0 & 30 & 3 & 0.100 & 0.021 & 0.265 & case\_46;case\_48;case\_53 \\
+Score4\_PHS\_no\_bc & 6.853 & k=1 & 10 & 0 & 10 & 0 & 0.000 & 0.000 & 0.308 &  \\
+Score4\_PHS\_no\_bc & 6.853 & k=2 & 10 & 0 & 10 & 2 & 0.200 & 0.025 & 0.556 & case\_46;case\_48 \\
+Score4\_PHS\_no\_bc & 6.853 & k=3 & 10 & 0 & 10 & 1 & 0.100 & 0.003 & 0.445 & case\_53 \\
+Score5\_PHS\_no\_E & 4.275 & all & 30 & 0 & 30 & 2 & 0.067 & 0.008 & 0.221 & case\_34;case\_36 \\
+Score5\_PHS\_no\_E & 4.275 & k=1 & 10 & 0 & 10 & 2 & 0.200 & 0.025 & 0.556 & case\_34;case\_36 \\
+Score5\_PHS\_no\_E & 4.275 & k=2 & 10 & 0 & 10 & 0 & 0.000 & 0.000 & 0.308 &  \\
+Score5\_PHS\_no\_E & 4.275 & k=3 & 10 & 0 & 10 & 0 & 0.000 & 0.000 & 0.308 &  \\
+\end{longtable}
