@@ -6,10 +6,12 @@ Verifies that the committed file:
   - Keeps every parameter inside its sampling range, and every seed on its rule.
   - Shares no seed and no case_id with the existing 30 cases.
   - Keeps the field names that training (#38) and scoring read.
-  - Is exactly what `python src/data/sampler.py --confirmation` regenerates.
+  - Is what `python src/data/sampler.py --confirmation` regenerates: byte for byte,
+    except the last bits of Re, which depend on the platform.
 """
 
 import json
+import math
 import numpy as np
 import pytest
 from pathlib import Path
@@ -89,10 +91,24 @@ def test_field_names(confirmation):
                            "seed_points", "seed_train", "seed_scoring"]
 
 
-def test_regeneration_is_byte_identical(tmp_path):
+def test_regeneration_matches_the_committed_file(tmp_path):
+    """
+    Re is drawn log-uniformly, through np.log and np.exp, whose last bit can differ
+    between platforms: on Linux, case_32's Re comes out as 44.860206966058605 instead
+    of the committed 44.86020696605861. So Re may differ by a few units in the last
+    place, and everything else must match byte for byte. Training and scoring read
+    the committed file, never a regenerated one.
+    """
     output_path = tmp_path / "confirmation_cases.json"
     export_dataset(generate_confirmation_cases(), output_path, newline="\n")
+    regenerated = json.loads(output_path.read_text())
 
     # The sampler writes LF, but git may check the file out with CRLF on Windows (core.autocrlf)
     committed = CASES_PATH.read_bytes().replace(b"\r\n", b"\n")
+    for new, old in zip(regenerated["confirmation"], json.loads(committed)["confirmation"], strict=True):
+        assert abs(new["Re"] - old["Re"]) <= 4 * math.ulp(old["Re"]), f"[{new['case_id']}] Re differs"
+        new["Re"] = old["Re"]
+
+    # With the committed Re values, the regenerated file is the committed one, byte for byte
+    export_dataset(regenerated, output_path, newline="\n")
     assert output_path.read_bytes() == committed
