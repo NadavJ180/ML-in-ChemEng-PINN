@@ -7,6 +7,8 @@ Verifies that:
   - The final checkpoint's sidecar records PASSED or FAILED and the metrics.
   - load_checkpoint() also opens the old sidecar-less models/case_XX.pth files,
     including the 30 committed ones.
+  - load_final_model() finds a case's final model in either layout, and refuses
+    a missing model or a model of another case.
   - Saving checkpoints during Adam, each with its eval-grid accuracy check, does
     not change training, and a checkpoint saved after step N holds the weights
     after exactly N steps.
@@ -26,7 +28,8 @@ import torch
 from pathlib import Path
 
 from src.data.sampler import generate_randomized_cases
-from src.models.checkpoints import STAGES, SIDECAR_FIELDS, load_checkpoint, save_checkpoint
+from src.models.checkpoints import (STAGES, SIDECAR_FIELDS, final_model_path, load_checkpoint, load_final_model,
+                                    save_checkpoint)
 from src.models.pinn import BaselinePINN
 from src.models.train_model import main, make_adam_checkpoint_fn, parse_args, train_adam
 
@@ -220,6 +223,58 @@ def test_loads_committed_old_models(coords):
         loaded_any = True
     if not loaded_any:
         pytest.skip("no models/case_XX.pth in this checkout")
+
+
+# --- The final model of a case ------------------------------------------------
+
+def save_final(model, models_dir, case):
+    """Saves `model` as the lbfgs_final checkpoint of `case`, in models_dir/<case_id>/."""
+    pth_path, _ = save_checkpoint(model, models_dir / case["case_id"] / "lbfgs_final", case, phase="lbfgs",
+                                  adam_steps=5000, lbfgs_evals=10, status="PASSED")
+    return pth_path
+
+
+def test_final_model_in_either_layout(tmp_path, model, coords):
+    # One folder per case: its lbfgs_final checkpoint
+    pth_path = save_final(model, tmp_path, CASE)
+    assert final_model_path("case_30", tmp_path) == ("lbfgs_final", pth_path)
+    loaded, info = load_final_model(CASE, tmp_path)
+    assert torch.equal(outputs(model, coords), outputs(loaded, coords))
+    assert (info["checkpoint"], info["status"]) == ("lbfgs_final", "PASSED")
+
+    # The old layout: <models_dir>/case_XX.pth
+    old_case = {"case_id": "case_07", "k": CASE["k"], "Re": 120.5, "U0": 1.25, "phi_x": 0.5, "phi_y": 1.5}
+    torch.save(model.state_dict(), tmp_path / "case_07.pth")
+    assert final_model_path("case_07", tmp_path) == ("legacy", tmp_path / "case_07.pth")
+    loaded, info = load_final_model(old_case, tmp_path)
+    assert torch.equal(outputs(model, coords), outputs(loaded, coords))
+    assert info["checkpoint"] == "legacy"
+
+
+def test_final_model_must_exist(tmp_path, model):
+    with pytest.raises(FileNotFoundError, match="case_30: neither"):
+        load_final_model(CASE, tmp_path)
+    # A case folder without lbfgs_final.pth (an unfinished run) is never read as an old case_30.pth
+    save_checkpoint(model, tmp_path / "case_30" / "adam_05000", CASE, phase="adam", adam_steps=5000)
+    torch.save(model.state_dict(), tmp_path / "case_30.pth")
+    with pytest.raises(FileNotFoundError, match="lbfgs_final.pth"):
+        load_final_model(CASE, tmp_path)
+
+
+def test_final_model_of_another_case_is_refused(tmp_path, model):
+    save_final(model, tmp_path, CASE)
+    # The case file describes another flow than the one the model was trained on
+    with pytest.raises(ValueError, match="does not match its case"):
+        load_final_model({**CASE, "U0": 1.5}, tmp_path)
+
+    # case_30's checkpoint copied into case_31's folder
+    other = {**CASE, "case_id": "case_31", "seed_points": 3031, "seed_train": 4031, "seed_scoring": 1031}
+    (tmp_path / "case_31").mkdir()
+    for suffix in (".pth", ".json"):
+        (tmp_path / "case_31" / f"lbfgs_final{suffix}").write_bytes(
+            (tmp_path / "case_30" / f"lbfgs_final{suffix}").read_bytes())
+    with pytest.raises(ValueError, match="does not match its case"):
+        load_final_model(other, tmp_path)
 
 
 # --- Checkpointing must not change training ---------------------------------

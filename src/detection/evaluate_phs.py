@@ -5,7 +5,9 @@ For every (case_id, perturbation_type, epsilon) row listed in
 data/hallucinations/hallucination_index.json (produced by
 src/hallucinations/generate_hallucinations.py), this script:
 
-  1. Loads that case's trained model once, then computes the 4 raw PHS
+  1. Loads that case's trained model once (models/{case_id}.pth, or the
+     lbfgs_final.pth of its case folder; a missing model stops the run
+     before any scoring, so no case is skipped), then computes the 4 raw PHS
      components (Smom, Sdiv, Sbc, SE -- see src/detection/phs.py) for every
      one of its rows DIRECTLY from the model + perturbation functions, NOT
      from the saved data/hallucinations/*.pt bundles. Those bundles store
@@ -106,7 +108,7 @@ from sklearn.metrics import roc_auc_score, roc_curve, precision_score, recall_sc
 project_root = Path(__file__).parent.parent.parent
 sys.path.append(str(project_root))
 
-from src.models.pinn import BaselinePINN
+from src.models.checkpoints import final_model_path, load_final_model
 from src.models.scaling import ResidualScaler
 from src.physics.taylor_green import compute_nu, compute_T
 from src.hallucinations.generate_hallucinations import load_case_metadata
@@ -180,9 +182,9 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate the Physical Hallucination Score.")
     parser.add_argument("--case_id", action="append", default=None,
                         help="Restrict to this case_id. Repeatable (--case_id case_00 --case_id case_25). "
-                             "Defaults to every case with a trained model AND an entry in the hallucination "
-                             "index. NOTE: normalizer/threshold calibration needs at least one clean "
-                             "VALIDATION-split field, so an arbitrary subset may fail calibration.")
+                             "Defaults to every case in the hallucination index; each must have its trained "
+                             "model and its case-file entry. NOTE: normalizer/threshold calibration needs at "
+                             "least one clean VALIDATION-split field, so an arbitrary subset may fail calibration.")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--n_interior", type=int, default=20000,
                         help="Interior collocation points sampled per field for Smom/Sdiv.")
@@ -220,29 +222,24 @@ def parse_args():
     return parser.parse_args()
 
 
-def load_model(case_id: str, k: float, device: str):
+def load_model(case_meta: dict, models_dir: Path, device: str):
     """
-    Loads a trained BaselinePINN checkpoint for a single case. Identical to
-    verify_hallucinations.py's load_model, duplicated here rather than
-    imported to keep src/detection/ decoupled from src/hallucinations/'s
-    internal (non-library) helpers -- only phs.py's PURE formula functions
-    and generate_hallucinations.py's load_case_metadata (a genuine shared
-    utility) are imported across subpackages.
+    Loads the trained model of a single case with checkpoints.load_final_model(),
+    from either layout of models_dir: the old {case_id}.pth files (models/), or
+    one folder per case whose lbfgs_final.pth is used (models/confirmation/).
+    A missing model raises FileNotFoundError, and a model whose sidecar describes
+    another case raises ValueError. (verify_hallucinations.py's load_model reads
+    only the old layout.)
 
     Inputs:
-        case_id (str): The case identifier (e.g. "case_00").
-        k (float): The case's wavenumber, required by the BaselinePINN constructor.
+        case_meta (dict): The case's entry, from load_case_metadata().
+        models_dir (Path): The models folder.
         device (str): Target hardware device ('cuda' or 'cpu').
 
     Outputs:
         model (nn.Module): The loaded, float64, eval-mode model on `device`.
     """
-    model_path = project_root / "models" / f"{case_id}.pth"
-    model = BaselinePINN(k=k)
-    model.load_state_dict(torch.load(model_path, map_location="cpu"))
-    model.to(device)
-    model.to(torch.float64)
-    model.eval()
+    model, _ = load_final_model(case_meta, models_dir, device)
     return model
 
 
@@ -255,7 +252,7 @@ def score_all_fields(index_rows: list, case_meta_by_id: dict, models_dir: Path, 
         index_rows (list[dict]): Rows from hallucination_index.json,
             already filtered to the case(s) being processed.
         case_meta_by_id (dict): Output of load_case_metadata().
-        models_dir (Path): Directory containing {case_id}.pth files.
+        models_dir (Path): The models folder (see load_model).
         args (argparse.Namespace): Parsed CLI arguments (resolution knobs, device).
 
     Outputs:
@@ -266,23 +263,21 @@ def score_all_fields(index_rows: list, case_meta_by_id: dict, models_dir: Path, 
     for row in index_rows:
         rows_by_case.setdefault(row["case_id"], []).append(row)
 
+    # Every case needs its case-file entry and its model. Both are checked before any scoring, so a
+    # missing one stops the run at once instead of being skipped (no case is dropped)
+    for case_id in rows_by_case:
+        if case_id not in case_meta_by_id:
+            raise ValueError(f"{case_id} is in the hallucination index but not in the case file")
+        final_model_path(case_id, models_dir)
+
     results = []
     for case_id, rows in sorted(rows_by_case.items()):
-        model_path = models_dir / f"{case_id}.pth"
-        if not model_path.exists():
-            print(f"⏭️  Skipping {case_id}: no trained model found at {model_path}")
-            continue
-
-        case_meta = case_meta_by_id.get(case_id)
-        if case_meta is None:
-            print(f"⏭️  Skipping {case_id}: not found in cases_metadata.json")
-            continue
-
+        case_meta = case_meta_by_id[case_id]
         Re, U0, k = case_meta["Re"], case_meta["U0"], case_meta["k"]
         nu = compute_nu(U0, Re, k)
         T = compute_T(U0, Re, k)
         scaler = ResidualScaler(U0, k)
-        model = load_model(case_id, k, args.device)
+        model = load_model(case_meta, models_dir, args.device)
 
         # Same seed for every field of this case (clean + all perturbed variants) so they are
         # compared at IDENTICAL random (x, y, t) points -- see phs.py's _seeded() docstring for why

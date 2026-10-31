@@ -12,6 +12,8 @@ A checkpoint is two files that share a name:
 
 load_checkpoint() opens both these checkpoints and the old models/case_XX.pth
 files (no sidecar), so later stages can treat old and new models alike.
+load_final_model() finds a case's final model in a models folder of either
+layout, and refuses a missing model or a sidecar of another case.
 """
 
 import json
@@ -42,6 +44,9 @@ def adam_stage(step: int) -> str:
 
 
 STAGES = tuple(adam_stage(step) for step in ADAM_SAVE_STEPS) + (FINAL_STAGE,)
+
+# The checkpoint name load_checkpoint() gives an old models/case_XX.pth, which has no sidecar
+LEGACY_CHECKPOINT = "legacy"
 
 # Every sidecar has exactly these keys, in this order. A key that does not
 # apply to a checkpoint is null, never missing.
@@ -76,6 +81,9 @@ SIDECAR_FIELDS = (
 )
 
 STATUSES = (None, "PASSED", "FAILED")
+
+# Sidecar entries that must equal the case file's, so a checkpoint is never used as another case
+CASE_FIELDS = ("case_id", "k", "Re", "U0", "phi_x", "phi_y", "split", "seed_points", "seed_train", "seed_scoring")
 
 # Case files that list cases by split; used to find k for an old checkpoint.
 DEFAULT_METADATA_PATHS = (
@@ -235,7 +243,7 @@ def _legacy_info(pth_path: Path, k, metadata_paths) -> dict:
     """
     info = dict.fromkeys(SIDECAR_FIELDS)
     info["case_id"] = pth_path.stem
-    info["checkpoint"] = "legacy"
+    info["checkpoint"] = LEGACY_CHECKPOINT
     info["architecture"] = BaselinePINN.__name__
     info["dtype"] = "float64"
 
@@ -292,4 +300,76 @@ def load_checkpoint(path, device: str = "cpu", k=None, metadata_paths=DEFAULT_ME
     model.load_state_dict(torch.load(pth_path, map_location="cpu", weights_only=True))
     model.to(device)
     model.eval()
+    return model, info
+
+
+def check_sidecar(info: dict, case: dict, checkpoint: str, path) -> None:
+    """
+    Refuses a model that is not checkpoint `checkpoint` of `case`: raises
+    ValueError if its sidecar names another checkpoint, or if any of its
+    CASE_FIELDS differs from the case file. An old model has no sidecar, so
+    only its name ("legacy") is checked.
+
+    Inputs:
+        info (dict): The sidecar, as load_checkpoint() returns it.
+        case (dict): The case's entry in the case file.
+        checkpoint (str): The expected name, e.g. "lbfgs_final" or "legacy".
+        path (str | Path): The model file, for the error message.
+    """
+    if info["checkpoint"] != checkpoint:
+        raise ValueError(f"{path}: its sidecar says checkpoint {info['checkpoint']!r}, expected {checkpoint!r}")
+    if checkpoint == LEGACY_CHECKPOINT:
+        return
+    wrong = {key: (info.get(key), case.get(key)) for key in CASE_FIELDS if info.get(key) != case.get(key)}
+    if wrong:
+        raise ValueError(f"{path} does not match its case in the case file ((sidecar, case file) values: {wrong})")
+
+
+def final_model_path(case_id: str, models_dir):
+    """
+    Finds the final model of a case in a models folder of either layout.
+
+    Inputs:
+        case_id (str): The case, e.g. "case_30".
+        models_dir (str | Path): A folder with one folder of checkpoints per case
+                                 (models/confirmation), or with the old case_XX.pth
+                                 files (models).
+
+    Outputs:
+        (str, Path): "lbfgs_final" and <models_dir>/<case_id>/lbfgs_final.pth when the
+                     case has a folder, else "legacy" and <models_dir>/<case_id>.pth:
+                     the (name, path) pairs of accuracy_audit.case_checkpoints().
+                     Raises FileNotFoundError if that file does not exist, so a case
+                     with no model stops a run instead of being skipped (PROTOCOL.md
+                     section 1: no case is dropped).
+    """
+    models_dir = Path(models_dir)
+    case_dir = models_dir / case_id
+    if case_dir.is_dir():
+        checkpoint, path = FINAL_STAGE, case_dir / f"{FINAL_STAGE}.pth"
+    else:
+        checkpoint, path = LEGACY_CHECKPOINT, models_dir / f"{case_id}.pth"
+    if not path.exists():
+        if checkpoint == LEGACY_CHECKPOINT:
+            raise FileNotFoundError(f"No final model for {case_id}: neither {case_dir}/ nor {path} exists")
+        raise FileNotFoundError(f"No final model for {case_id}: {path} does not exist")
+    return checkpoint, path
+
+
+def load_final_model(case: dict, models_dir, device: str = "cpu"):
+    """
+    Loads the final model of a case (see final_model_path), and refuses it if its
+    sidecar describes another case (see check_sidecar).
+
+    Inputs:
+        case (dict): The case's entry in the case file (case_id, k, Re, ...).
+        models_dir (str | Path): The models folder, of either layout.
+        device (str): Device to put the model on. Defaults to "cpu".
+
+    Outputs:
+        model, info: As load_checkpoint() returns them.
+    """
+    checkpoint, path = final_model_path(case["case_id"], models_dir)
+    model, info = load_checkpoint(path, device=device, k=case["k"])
+    check_sidecar(info, case, checkpoint, path)
     return model, info
