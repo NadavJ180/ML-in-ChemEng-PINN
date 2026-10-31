@@ -350,6 +350,8 @@ def final_model_path(case_id: str, models_dir):
     else:
         checkpoint, path = LEGACY_CHECKPOINT, models_dir / f"{case_id}.pth"
     if not path.exists():
+        if checkpoint == LEGACY_CHECKPOINT:
+            raise FileNotFoundError(f"No final model for {case_id}: neither {case_dir}/ nor {path} exists")
         raise FileNotFoundError(f"No final model for {case_id}: {path} does not exist")
     return checkpoint, path
 

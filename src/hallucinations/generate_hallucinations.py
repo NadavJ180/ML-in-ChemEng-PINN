@@ -345,7 +345,7 @@ def main():
     Entry point for the hallucination sweep. Loads cases_metadata.json,
     iterates over every case_id in it (each must have its trained model in
     models/: a missing one stops the run),
-    builds and saves its clean + 25-variant hallucination bundle via
+    builds and saves its clean + 30-variant hallucination bundle via
     generate_case_hallucinations(), and writes a combined categorization
     index (CSV + JSON) covering every case's clean and hallucinated entries.
 

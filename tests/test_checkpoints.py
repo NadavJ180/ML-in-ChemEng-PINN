@@ -252,7 +252,7 @@ def test_final_model_in_either_layout(tmp_path, model, coords):
 
 
 def test_final_model_must_exist(tmp_path, model):
-    with pytest.raises(FileNotFoundError, match="case_30"):
+    with pytest.raises(FileNotFoundError, match="case_30: neither"):
         load_final_model(CASE, tmp_path)
     # A case folder without lbfgs_final.pth (an unfinished run) is never read as an old case_30.pth
     save_checkpoint(model, tmp_path / "case_30" / "adam_05000", CASE, phase="adam", adam_steps=5000)
