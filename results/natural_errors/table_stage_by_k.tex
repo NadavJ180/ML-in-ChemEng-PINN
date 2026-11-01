@@ -1,0 +1,178 @@
+\begin{longtable}{lllllllllll}
+\caption{Natural errors, by stage and $k$: checkpoints, inaccurate (relL2\_uv above 0.10), flagged (score above $\tau$), missed (inaccurate, not flagged) and false alarms (accurate, flagged). Recall: flagged inaccurate checkpoints / inaccurate checkpoints (one minus the miss rate). False-alarm rate: false alarms / accurate checkpoints. Each cell: estimate [95\% range]. One stage (one checkpoint per case): exact Clopper--Pearson range. All stages: case bootstrap, 2000 resamples of whole cases within each $k$; where every (or no) checkpoint counted is flagged, no resample can change the rate and the range has zero width, so the exact ranges of the single stages show the uncertainty. -- : nothing to count.} \label{tab:natural_errors_table_stage_by_k} \\
+\toprule
+Score & Stage & $k$ & Failed runs & Checkpoints & Inaccurate & Flagged & Missed & False alarms & Recall & False-alarm rate \\
+\midrule
+\endfirsthead
+\caption[]{Natural errors, by stage and $k$: checkpoints, inaccurate (relL2\_uv above 0.10), flagged (score above $\tau$), missed (inaccurate, not flagged) and false alarms (accurate, flagged). Recall: flagged inaccurate checkpoints / inaccurate checkpoints (one minus the miss rate). False-alarm rate: false alarms / accurate checkpoints. Each cell: estimate [95\% range]. One stage (one checkpoint per case): exact Clopper--Pearson range. All stages: case bootstrap, 2000 resamples of whole cases within each $k$; where every (or no) checkpoint counted is flagged, no resample can change the rate and the range has zero width, so the exact ranges of the single stages show the uncertainty. -- : nothing to count.} \\
+\toprule
+Score & Stage & $k$ & Failed runs & Checkpoints & Inaccurate & Flagged & Missed & False alarms & Recall & False-alarm rate \\
+\midrule
+\endhead
+\midrule
+\multicolumn{11}{r}{Continued on next page} \\
+\midrule
+\endfoot
+\bottomrule
+\endlastfoot
+Score1\_momentum\_only & adam\_00100 & 1 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score1\_momentum\_only & adam\_00100 & 2 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score1\_momentum\_only & adam\_00100 & 3 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score1\_momentum\_only & adam\_00100 & all & 0 & 30 & 30 & 30 & 0 & 0 & 1.000 [0.884, 1.000] & -- \\
+Score1\_momentum\_only & adam\_00500 & 1 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score1\_momentum\_only & adam\_00500 & 2 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score1\_momentum\_only & adam\_00500 & 3 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score1\_momentum\_only & adam\_00500 & all & 0 & 30 & 30 & 30 & 0 & 0 & 1.000 [0.884, 1.000] & -- \\
+Score1\_momentum\_only & adam\_01000 & 1 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score1\_momentum\_only & adam\_01000 & 2 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score1\_momentum\_only & adam\_01000 & 3 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score1\_momentum\_only & adam\_01000 & all & 0 & 30 & 30 & 30 & 0 & 0 & 1.000 [0.884, 1.000] & -- \\
+Score1\_momentum\_only & adam\_02500 & 1 & 0 & 10 & 3 & 10 & 0 & 7 & 1.000 [0.292, 1.000] & 1.000 [0.590, 1.000] \\
+Score1\_momentum\_only & adam\_02500 & 2 & 0 & 10 & 9 & 10 & 0 & 1 & 1.000 [0.664, 1.000] & 1.000 [0.025, 1.000] \\
+Score1\_momentum\_only & adam\_02500 & 3 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score1\_momentum\_only & adam\_02500 & all & 0 & 30 & 22 & 30 & 0 & 8 & 1.000 [0.846, 1.000] & 1.000 [0.631, 1.000] \\
+Score1\_momentum\_only & adam\_04000 & 1 & 0 & 10 & 0 & 10 & 0 & 10 & -- & 1.000 [0.692, 1.000] \\
+Score1\_momentum\_only & adam\_04000 & 2 & 0 & 10 & 8 & 10 & 0 & 2 & 1.000 [0.631, 1.000] & 1.000 [0.158, 1.000] \\
+Score1\_momentum\_only & adam\_04000 & 3 & 0 & 10 & 8 & 10 & 0 & 2 & 1.000 [0.631, 1.000] & 1.000 [0.158, 1.000] \\
+Score1\_momentum\_only & adam\_04000 & all & 0 & 30 & 16 & 30 & 0 & 14 & 1.000 [0.794, 1.000] & 1.000 [0.768, 1.000] \\
+Score1\_momentum\_only & adam\_05000 & 1 & 0 & 10 & 0 & 10 & 0 & 10 & -- & 1.000 [0.692, 1.000] \\
+Score1\_momentum\_only & adam\_05000 & 2 & 0 & 10 & 6 & 10 & 0 & 4 & 1.000 [0.541, 1.000] & 1.000 [0.398, 1.000] \\
+Score1\_momentum\_only & adam\_05000 & 3 & 0 & 10 & 8 & 10 & 0 & 2 & 1.000 [0.631, 1.000] & 1.000 [0.158, 1.000] \\
+Score1\_momentum\_only & adam\_05000 & all & 0 & 30 & 14 & 30 & 0 & 16 & 1.000 [0.768, 1.000] & 1.000 [0.794, 1.000] \\
+Score1\_momentum\_only & lbfgs\_final & 1 & 0 & 10 & 0 & 0 & 0 & 0 & -- & 0.000 [0.000, 0.308] \\
+Score1\_momentum\_only & lbfgs\_final & 2 & 0 & 10 & 0 & 0 & 0 & 0 & -- & 0.000 [0.000, 0.308] \\
+Score1\_momentum\_only & lbfgs\_final & 3 & 0 & 10 & 0 & 0 & 0 & 0 & -- & 0.000 [0.000, 0.308] \\
+Score1\_momentum\_only & lbfgs\_final & all & 0 & 30 & 0 & 0 & 0 & 0 & -- & 0.000 [0.000, 0.116] \\
+Score1\_momentum\_only & all & 1 & 0 & 70 & 33 & 60 & 0 & 27 & 1.000 [1.000, 1.000] & 0.730 [0.706, 0.744] \\
+Score1\_momentum\_only & all & 2 & 0 & 70 & 53 & 60 & 0 & 7 & 1.000 [1.000, 1.000] & 0.412 [0.091, 0.583] \\
+Score1\_momentum\_only & all & 3 & 0 & 70 & 56 & 60 & 0 & 4 & 1.000 [1.000, 1.000] & 0.286 [0.000, 0.500] \\
+Score1\_momentum\_only & all & all & 0 & 210 & 142 & 180 & 0 & 38 & 1.000 [1.000, 1.000] & 0.559 [0.500, 0.610] \\
+Score2\_momentum\_divergence & adam\_00100 & 1 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score2\_momentum\_divergence & adam\_00100 & 2 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score2\_momentum\_divergence & adam\_00100 & 3 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score2\_momentum\_divergence & adam\_00100 & all & 0 & 30 & 30 & 30 & 0 & 0 & 1.000 [0.884, 1.000] & -- \\
+Score2\_momentum\_divergence & adam\_00500 & 1 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score2\_momentum\_divergence & adam\_00500 & 2 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score2\_momentum\_divergence & adam\_00500 & 3 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score2\_momentum\_divergence & adam\_00500 & all & 0 & 30 & 30 & 30 & 0 & 0 & 1.000 [0.884, 1.000] & -- \\
+Score2\_momentum\_divergence & adam\_01000 & 1 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score2\_momentum\_divergence & adam\_01000 & 2 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score2\_momentum\_divergence & adam\_01000 & 3 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score2\_momentum\_divergence & adam\_01000 & all & 0 & 30 & 30 & 30 & 0 & 0 & 1.000 [0.884, 1.000] & -- \\
+Score2\_momentum\_divergence & adam\_02500 & 1 & 0 & 10 & 3 & 10 & 0 & 7 & 1.000 [0.292, 1.000] & 1.000 [0.590, 1.000] \\
+Score2\_momentum\_divergence & adam\_02500 & 2 & 0 & 10 & 9 & 10 & 0 & 1 & 1.000 [0.664, 1.000] & 1.000 [0.025, 1.000] \\
+Score2\_momentum\_divergence & adam\_02500 & 3 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score2\_momentum\_divergence & adam\_02500 & all & 0 & 30 & 22 & 30 & 0 & 8 & 1.000 [0.846, 1.000] & 1.000 [0.631, 1.000] \\
+Score2\_momentum\_divergence & adam\_04000 & 1 & 0 & 10 & 0 & 10 & 0 & 10 & -- & 1.000 [0.692, 1.000] \\
+Score2\_momentum\_divergence & adam\_04000 & 2 & 0 & 10 & 8 & 10 & 0 & 2 & 1.000 [0.631, 1.000] & 1.000 [0.158, 1.000] \\
+Score2\_momentum\_divergence & adam\_04000 & 3 & 0 & 10 & 8 & 10 & 0 & 2 & 1.000 [0.631, 1.000] & 1.000 [0.158, 1.000] \\
+Score2\_momentum\_divergence & adam\_04000 & all & 0 & 30 & 16 & 30 & 0 & 14 & 1.000 [0.794, 1.000] & 1.000 [0.768, 1.000] \\
+Score2\_momentum\_divergence & adam\_05000 & 1 & 0 & 10 & 0 & 10 & 0 & 10 & -- & 1.000 [0.692, 1.000] \\
+Score2\_momentum\_divergence & adam\_05000 & 2 & 0 & 10 & 6 & 10 & 0 & 4 & 1.000 [0.541, 1.000] & 1.000 [0.398, 1.000] \\
+Score2\_momentum\_divergence & adam\_05000 & 3 & 0 & 10 & 8 & 10 & 0 & 2 & 1.000 [0.631, 1.000] & 1.000 [0.158, 1.000] \\
+Score2\_momentum\_divergence & adam\_05000 & all & 0 & 30 & 14 & 30 & 0 & 16 & 1.000 [0.768, 1.000] & 1.000 [0.794, 1.000] \\
+Score2\_momentum\_divergence & lbfgs\_final & 1 & 0 & 10 & 0 & 1 & 0 & 1 & -- & 0.100 [0.003, 0.445] \\
+Score2\_momentum\_divergence & lbfgs\_final & 2 & 0 & 10 & 0 & 1 & 0 & 1 & -- & 0.100 [0.003, 0.445] \\
+Score2\_momentum\_divergence & lbfgs\_final & 3 & 0 & 10 & 0 & 0 & 0 & 0 & -- & 0.000 [0.000, 0.308] \\
+Score2\_momentum\_divergence & lbfgs\_final & all & 0 & 30 & 0 & 2 & 0 & 2 & -- & 0.067 [0.008, 0.221] \\
+Score2\_momentum\_divergence & all & 1 & 0 & 70 & 33 & 61 & 0 & 28 & 1.000 [1.000, 1.000] & 0.757 [0.714, 0.816] \\
+Score2\_momentum\_divergence & all & 2 & 0 & 70 & 53 & 61 & 0 & 8 & 1.000 [1.000, 1.000] & 0.471 [0.167, 0.654] \\
+Score2\_momentum\_divergence & all & 3 & 0 & 70 & 56 & 60 & 0 & 4 & 1.000 [1.000, 1.000] & 0.286 [0.000, 0.500] \\
+Score2\_momentum\_divergence & all & all & 0 & 210 & 142 & 182 & 0 & 40 & 1.000 [1.000, 1.000] & 0.588 [0.517, 0.653] \\
+Score3\_PHS\_full & adam\_00100 & 1 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score3\_PHS\_full & adam\_00100 & 2 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score3\_PHS\_full & adam\_00100 & 3 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score3\_PHS\_full & adam\_00100 & all & 0 & 30 & 30 & 30 & 0 & 0 & 1.000 [0.884, 1.000] & -- \\
+Score3\_PHS\_full & adam\_00500 & 1 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score3\_PHS\_full & adam\_00500 & 2 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score3\_PHS\_full & adam\_00500 & 3 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score3\_PHS\_full & adam\_00500 & all & 0 & 30 & 30 & 30 & 0 & 0 & 1.000 [0.884, 1.000] & -- \\
+Score3\_PHS\_full & adam\_01000 & 1 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score3\_PHS\_full & adam\_01000 & 2 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score3\_PHS\_full & adam\_01000 & 3 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score3\_PHS\_full & adam\_01000 & all & 0 & 30 & 30 & 30 & 0 & 0 & 1.000 [0.884, 1.000] & -- \\
+Score3\_PHS\_full & adam\_02500 & 1 & 0 & 10 & 3 & 10 & 0 & 7 & 1.000 [0.292, 1.000] & 1.000 [0.590, 1.000] \\
+Score3\_PHS\_full & adam\_02500 & 2 & 0 & 10 & 9 & 10 & 0 & 1 & 1.000 [0.664, 1.000] & 1.000 [0.025, 1.000] \\
+Score3\_PHS\_full & adam\_02500 & 3 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score3\_PHS\_full & adam\_02500 & all & 0 & 30 & 22 & 30 & 0 & 8 & 1.000 [0.846, 1.000] & 1.000 [0.631, 1.000] \\
+Score3\_PHS\_full & adam\_04000 & 1 & 0 & 10 & 0 & 10 & 0 & 10 & -- & 1.000 [0.692, 1.000] \\
+Score3\_PHS\_full & adam\_04000 & 2 & 0 & 10 & 8 & 10 & 0 & 2 & 1.000 [0.631, 1.000] & 1.000 [0.158, 1.000] \\
+Score3\_PHS\_full & adam\_04000 & 3 & 0 & 10 & 8 & 10 & 0 & 2 & 1.000 [0.631, 1.000] & 1.000 [0.158, 1.000] \\
+Score3\_PHS\_full & adam\_04000 & all & 0 & 30 & 16 & 30 & 0 & 14 & 1.000 [0.794, 1.000] & 1.000 [0.768, 1.000] \\
+Score3\_PHS\_full & adam\_05000 & 1 & 0 & 10 & 0 & 10 & 0 & 10 & -- & 1.000 [0.692, 1.000] \\
+Score3\_PHS\_full & adam\_05000 & 2 & 0 & 10 & 6 & 10 & 0 & 4 & 1.000 [0.541, 1.000] & 1.000 [0.398, 1.000] \\
+Score3\_PHS\_full & adam\_05000 & 3 & 0 & 10 & 8 & 10 & 0 & 2 & 1.000 [0.631, 1.000] & 1.000 [0.158, 1.000] \\
+Score3\_PHS\_full & adam\_05000 & all & 0 & 30 & 14 & 30 & 0 & 16 & 1.000 [0.768, 1.000] & 1.000 [0.794, 1.000] \\
+Score3\_PHS\_full & lbfgs\_final & 1 & 0 & 10 & 0 & 0 & 0 & 0 & -- & 0.000 [0.000, 0.308] \\
+Score3\_PHS\_full & lbfgs\_final & 2 & 0 & 10 & 0 & 2 & 0 & 2 & -- & 0.200 [0.025, 0.556] \\
+Score3\_PHS\_full & lbfgs\_final & 3 & 0 & 10 & 0 & 1 & 0 & 1 & -- & 0.100 [0.003, 0.445] \\
+Score3\_PHS\_full & lbfgs\_final & all & 0 & 30 & 0 & 3 & 0 & 3 & -- & 0.100 [0.021, 0.265] \\
+Score3\_PHS\_full & all & 1 & 0 & 70 & 33 & 60 & 0 & 27 & 1.000 [1.000, 1.000] & 0.730 [0.706, 0.744] \\
+Score3\_PHS\_full & all & 2 & 0 & 70 & 53 & 62 & 0 & 9 & 1.000 [1.000, 1.000] & 0.529 [0.286, 0.680] \\
+Score3\_PHS\_full & all & 3 & 0 & 70 & 56 & 61 & 0 & 5 & 1.000 [1.000, 1.000] & 0.357 [0.000, 0.556] \\
+Score3\_PHS\_full & all & all & 0 & 210 & 142 & 183 & 0 & 41 & 1.000 [1.000, 1.000] & 0.603 [0.540, 0.658] \\
+Score4\_PHS\_no\_bc & adam\_00100 & 1 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score4\_PHS\_no\_bc & adam\_00100 & 2 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score4\_PHS\_no\_bc & adam\_00100 & 3 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score4\_PHS\_no\_bc & adam\_00100 & all & 0 & 30 & 30 & 30 & 0 & 0 & 1.000 [0.884, 1.000] & -- \\
+Score4\_PHS\_no\_bc & adam\_00500 & 1 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score4\_PHS\_no\_bc & adam\_00500 & 2 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score4\_PHS\_no\_bc & adam\_00500 & 3 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score4\_PHS\_no\_bc & adam\_00500 & all & 0 & 30 & 30 & 30 & 0 & 0 & 1.000 [0.884, 1.000] & -- \\
+Score4\_PHS\_no\_bc & adam\_01000 & 1 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score4\_PHS\_no\_bc & adam\_01000 & 2 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score4\_PHS\_no\_bc & adam\_01000 & 3 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score4\_PHS\_no\_bc & adam\_01000 & all & 0 & 30 & 30 & 30 & 0 & 0 & 1.000 [0.884, 1.000] & -- \\
+Score4\_PHS\_no\_bc & adam\_02500 & 1 & 0 & 10 & 3 & 10 & 0 & 7 & 1.000 [0.292, 1.000] & 1.000 [0.590, 1.000] \\
+Score4\_PHS\_no\_bc & adam\_02500 & 2 & 0 & 10 & 9 & 10 & 0 & 1 & 1.000 [0.664, 1.000] & 1.000 [0.025, 1.000] \\
+Score4\_PHS\_no\_bc & adam\_02500 & 3 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score4\_PHS\_no\_bc & adam\_02500 & all & 0 & 30 & 22 & 30 & 0 & 8 & 1.000 [0.846, 1.000] & 1.000 [0.631, 1.000] \\
+Score4\_PHS\_no\_bc & adam\_04000 & 1 & 0 & 10 & 0 & 10 & 0 & 10 & -- & 1.000 [0.692, 1.000] \\
+Score4\_PHS\_no\_bc & adam\_04000 & 2 & 0 & 10 & 8 & 10 & 0 & 2 & 1.000 [0.631, 1.000] & 1.000 [0.158, 1.000] \\
+Score4\_PHS\_no\_bc & adam\_04000 & 3 & 0 & 10 & 8 & 10 & 0 & 2 & 1.000 [0.631, 1.000] & 1.000 [0.158, 1.000] \\
+Score4\_PHS\_no\_bc & adam\_04000 & all & 0 & 30 & 16 & 30 & 0 & 14 & 1.000 [0.794, 1.000] & 1.000 [0.768, 1.000] \\
+Score4\_PHS\_no\_bc & adam\_05000 & 1 & 0 & 10 & 0 & 10 & 0 & 10 & -- & 1.000 [0.692, 1.000] \\
+Score4\_PHS\_no\_bc & adam\_05000 & 2 & 0 & 10 & 6 & 10 & 0 & 4 & 1.000 [0.541, 1.000] & 1.000 [0.398, 1.000] \\
+Score4\_PHS\_no\_bc & adam\_05000 & 3 & 0 & 10 & 8 & 10 & 0 & 2 & 1.000 [0.631, 1.000] & 1.000 [0.158, 1.000] \\
+Score4\_PHS\_no\_bc & adam\_05000 & all & 0 & 30 & 14 & 30 & 0 & 16 & 1.000 [0.768, 1.000] & 1.000 [0.794, 1.000] \\
+Score4\_PHS\_no\_bc & lbfgs\_final & 1 & 0 & 10 & 0 & 0 & 0 & 0 & -- & 0.000 [0.000, 0.308] \\
+Score4\_PHS\_no\_bc & lbfgs\_final & 2 & 0 & 10 & 0 & 2 & 0 & 2 & -- & 0.200 [0.025, 0.556] \\
+Score4\_PHS\_no\_bc & lbfgs\_final & 3 & 0 & 10 & 0 & 1 & 0 & 1 & -- & 0.100 [0.003, 0.445] \\
+Score4\_PHS\_no\_bc & lbfgs\_final & all & 0 & 30 & 0 & 3 & 0 & 3 & -- & 0.100 [0.021, 0.265] \\
+Score4\_PHS\_no\_bc & all & 1 & 0 & 70 & 33 & 60 & 0 & 27 & 1.000 [1.000, 1.000] & 0.730 [0.706, 0.744] \\
+Score4\_PHS\_no\_bc & all & 2 & 0 & 70 & 53 & 62 & 0 & 9 & 1.000 [1.000, 1.000] & 0.529 [0.286, 0.680] \\
+Score4\_PHS\_no\_bc & all & 3 & 0 & 70 & 56 & 61 & 0 & 5 & 1.000 [1.000, 1.000] & 0.357 [0.000, 0.556] \\
+Score4\_PHS\_no\_bc & all & all & 0 & 210 & 142 & 183 & 0 & 41 & 1.000 [1.000, 1.000] & 0.603 [0.540, 0.658] \\
+Score5\_PHS\_no\_E & adam\_00100 & 1 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score5\_PHS\_no\_E & adam\_00100 & 2 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score5\_PHS\_no\_E & adam\_00100 & 3 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score5\_PHS\_no\_E & adam\_00100 & all & 0 & 30 & 30 & 30 & 0 & 0 & 1.000 [0.884, 1.000] & -- \\
+Score5\_PHS\_no\_E & adam\_00500 & 1 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score5\_PHS\_no\_E & adam\_00500 & 2 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score5\_PHS\_no\_E & adam\_00500 & 3 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score5\_PHS\_no\_E & adam\_00500 & all & 0 & 30 & 30 & 30 & 0 & 0 & 1.000 [0.884, 1.000] & -- \\
+Score5\_PHS\_no\_E & adam\_01000 & 1 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score5\_PHS\_no\_E & adam\_01000 & 2 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score5\_PHS\_no\_E & adam\_01000 & 3 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score5\_PHS\_no\_E & adam\_01000 & all & 0 & 30 & 30 & 30 & 0 & 0 & 1.000 [0.884, 1.000] & -- \\
+Score5\_PHS\_no\_E & adam\_02500 & 1 & 0 & 10 & 3 & 10 & 0 & 7 & 1.000 [0.292, 1.000] & 1.000 [0.590, 1.000] \\
+Score5\_PHS\_no\_E & adam\_02500 & 2 & 0 & 10 & 9 & 10 & 0 & 1 & 1.000 [0.664, 1.000] & 1.000 [0.025, 1.000] \\
+Score5\_PHS\_no\_E & adam\_02500 & 3 & 0 & 10 & 10 & 10 & 0 & 0 & 1.000 [0.692, 1.000] & -- \\
+Score5\_PHS\_no\_E & adam\_02500 & all & 0 & 30 & 22 & 30 & 0 & 8 & 1.000 [0.846, 1.000] & 1.000 [0.631, 1.000] \\
+Score5\_PHS\_no\_E & adam\_04000 & 1 & 0 & 10 & 0 & 10 & 0 & 10 & -- & 1.000 [0.692, 1.000] \\
+Score5\_PHS\_no\_E & adam\_04000 & 2 & 0 & 10 & 8 & 10 & 0 & 2 & 1.000 [0.631, 1.000] & 1.000 [0.158, 1.000] \\
+Score5\_PHS\_no\_E & adam\_04000 & 3 & 0 & 10 & 8 & 10 & 0 & 2 & 1.000 [0.631, 1.000] & 1.000 [0.158, 1.000] \\
+Score5\_PHS\_no\_E & adam\_04000 & all & 0 & 30 & 16 & 30 & 0 & 14 & 1.000 [0.794, 1.000] & 1.000 [0.768, 1.000] \\
+Score5\_PHS\_no\_E & adam\_05000 & 1 & 0 & 10 & 0 & 10 & 0 & 10 & -- & 1.000 [0.692, 1.000] \\
+Score5\_PHS\_no\_E & adam\_05000 & 2 & 0 & 10 & 6 & 10 & 0 & 4 & 1.000 [0.541, 1.000] & 1.000 [0.398, 1.000] \\
+Score5\_PHS\_no\_E & adam\_05000 & 3 & 0 & 10 & 8 & 10 & 0 & 2 & 1.000 [0.631, 1.000] & 1.000 [0.158, 1.000] \\
+Score5\_PHS\_no\_E & adam\_05000 & all & 0 & 30 & 14 & 30 & 0 & 16 & 1.000 [0.768, 1.000] & 1.000 [0.794, 1.000] \\
+Score5\_PHS\_no\_E & lbfgs\_final & 1 & 0 & 10 & 0 & 2 & 0 & 2 & -- & 0.200 [0.025, 0.556] \\
+Score5\_PHS\_no\_E & lbfgs\_final & 2 & 0 & 10 & 0 & 0 & 0 & 0 & -- & 0.000 [0.000, 0.308] \\
+Score5\_PHS\_no\_E & lbfgs\_final & 3 & 0 & 10 & 0 & 0 & 0 & 0 & -- & 0.000 [0.000, 0.308] \\
+Score5\_PHS\_no\_E & lbfgs\_final & all & 0 & 30 & 0 & 2 & 0 & 2 & -- & 0.067 [0.008, 0.221] \\
+Score5\_PHS\_no\_E & all & 1 & 0 & 70 & 33 & 62 & 0 & 29 & 1.000 [1.000, 1.000] & 0.784 [0.714, 0.865] \\
+Score5\_PHS\_no\_E & all & 2 & 0 & 70 & 53 & 60 & 0 & 7 & 1.000 [1.000, 1.000] & 0.412 [0.091, 0.583] \\
+Score5\_PHS\_no\_E & all & 3 & 0 & 70 & 56 & 60 & 0 & 4 & 1.000 [1.000, 1.000] & 0.286 [0.000, 0.500] \\
+Score5\_PHS\_no\_E & all & all & 0 & 210 & 142 & 182 & 0 & 40 & 1.000 [1.000, 1.000] & 0.588 [0.517, 0.653] \\
+\end{longtable}
