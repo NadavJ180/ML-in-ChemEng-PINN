@@ -14,14 +14,15 @@ scores the clean field of all 210 checkpoints and holds the scores against each
 checkpoint's true error, measured against the exact Taylor-Green solution by
 the accuracy audit (#37):
 
-  1. Score (the only step that needs the models: about 3 s per checkpoint on a
-     CPU). Every checkpoint is found with accuracy_audit.case_checkpoints() and
-     checked against the case file (checkpoints.check_sidecar()) before any
-     scoring, so a missing or wrong checkpoint stops the run instead of being
-     skipped. Each is loaded with checkpoints.load_checkpoint(), and its clean
-     field gets the 4 raw components from phs.compute_phs_components(), the
-     function evaluate_phs.py calls for every field, called the way
-     evaluate_phs.py calls it: with evaluate_phs.py's own default settings
+  1. Score (with the field plots, the only step that needs the models: about
+     3 s per checkpoint on a CPU). Every checkpoint is found with
+     accuracy_audit.case_checkpoints() and checked against the case file
+     (checkpoints.check_sidecar()) before any scoring, so a missing or wrong
+     checkpoint stops the run instead of being skipped. Each is loaded with
+     checkpoints.load_checkpoint(), and its clean field gets the 4 raw
+     components from phs.compute_phs_components(), the function
+     evaluate_phs.py calls for every field, called the way evaluate_phs.py
+     calls it: with evaluate_phs.py's own default settings
      (read from its parser, PROTOCOL.md section 4) and the case's seed_scoring
      (1000 + n, the seed evaluate_phs.py derives from the case number).
      frozen_calibration.apply() (#45) then adds the normalized components, the
@@ -639,7 +640,7 @@ def _significant(value, digits: int) -> str:
 
 
 # Columns the .tex files give with significant digits instead of list_latex's 3 decimals,
-# since the errors span 0.0015 to 0.85 and the scores 1 to about 1e4
+# since the errors span 0.0015 to 0.85 and the scores 0.4 to about 4e5
 _TEX_DIGITS = {"relL2_uv": 3, "tau": 4, "score_value": 4, "score_over_tau": 4,
                **{column: 4 for column in (*BAR_NAMES, *SCORE_NAMES)}}
 
@@ -691,14 +692,22 @@ def stage_by_k_latex(table: pd.DataFrame, caption: str, label: str) -> str:
                                        label=label)
 
 
+# Added to the caption of a list that came out empty, so an empty table reads as a result
+EMPTY_NOTES = {
+    "missed_failures": " There is none: every score flags every inaccurate checkpoint.",
+    "false_alarms": " There is none: no score flags an accurate checkpoint.",
+    "inaccurate_final_models": " There is none: every final model is accurate.",
+}
+
+
 def to_latex(name: str, table: pd.DataFrame) -> str:
     """The LaTeX of one output table."""
     label = f"tab:natural_errors_{name}"
     caption = CAPTIONS[name]
     if name == "table_stage_by_k":
         return stage_by_k_latex(table, caption, label)
-    if name == "inaccurate_final_models" and table.empty:
-        caption += " There is none: every final model is accurate."
+    if table.empty and name in EMPTY_NOTES:
+        caption += EMPTY_NOTES[name]
     return list_latex(table, caption, label)
 
 
@@ -740,6 +749,8 @@ FIGURE_RC = {
     "xtick.color": INK_SECONDARY, "ytick.color": INK_SECONDARY,
     "figure.facecolor": "white", "axes.facecolor": "white",
     "pdf.fonttype": 42, "ps.fonttype": 42,  # Embed TrueType fonts, as journals ask
+    # matplotlib's own font, so a machine's matplotlibrc can't change how the figures look
+    "font.family": "DejaVu Sans",
 }
 
 
@@ -976,8 +987,9 @@ def plot_fields(checkpoint: pd.Series, reasons: list, data: dict, thresholds: di
             difference = model_values - exact_values
             bound = float(max(np.abs(model_values).max(), np.abs(exact_values).max())) or 1.0
             difference_bound = float(np.abs(difference).max()) or 1.0
+            # A short difference title, so the colorbar's offset label (e.g. 1e-2) doesn't touch it
             panels = ((model_values, f"{name}, model", bound), (exact_values, f"{name}, exact", bound),
-                      (difference, f"{name}, model − exact", difference_bound))
+                      (difference, f"{name} − {name}_exact", difference_bound))
             for j, (values, title, limit) in enumerate(panels):
                 ax = fig.add_subplot(grid[i, j])
                 image = ax.imshow(values.T, origin="lower", extent=extent, cmap="RdBu_r", vmin=-limit, vmax=limit,

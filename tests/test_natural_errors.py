@@ -15,8 +15,11 @@ out by hand below), verifies that:
   - the consistency check with #35 passes within 1e-9 (relative), reports the largest
     difference, and fails on a larger difference, a different flag, a missing case or
     another k;
-  - every table is written as .csv and .tex and reads back exactly, and a
-    checkpoint_scores.csv that doesn't follow from its raw components is refused;
+  - every table is written as .csv and .tex and reads back exactly, an empty list
+    says so in its caption, and a checkpoint_scores.csv that doesn't follow from its
+    raw components is refused;
+  - run() rebuilds every table from checkpoint_scores.csv, and refuses a case file
+    with a case that wasn't scored and a benchmark the final checkpoints don't match;
   - the field plots are chosen by the documented rule.
 And, on the real checkpoints and the committed results:
   - the scoring settings are PROTOCOL.md section 4's, read from evaluate_phs.py, and
@@ -32,6 +35,7 @@ And, on the real checkpoints and the committed results:
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -362,7 +366,10 @@ def test_empty_lists_keep_their_columns():
     tables = ne.make_tables(table, THRESHOLDS, n_boot=N_BOOT)
     assert tables["missed_failures"].empty and list(tables["missed_failures"].columns) == list(ne.LIST_COLUMNS)
     assert tables["inaccurate_final_models"].empty
-    assert "There is none" in ne.to_latex("inaccurate_final_models", tables["inaccurate_final_models"])
+    for name in ("missed_failures", "inaccurate_final_models"):
+        assert "There is none" in ne.to_latex(name, tables[name]), name
+    # A list that is not empty gets no such note
+    assert "There is none" not in ne.to_latex("false_alarms", tables["false_alarms"])
     assert np.isnan(row_of(tables["table_stage_by_k"], score=S1, stage="all", k="all")["recall"])
 
 
@@ -480,6 +487,69 @@ def test_refuses_scores_of_another_calibration(tmp_path, tiny):
     other["thresholds"][S1] = 0.5
     with pytest.raises(ValueError, match="flagged"):
         ne.read_checkpoint_scores(tmp_path / f"{ne.SCORES_TABLE}.csv", other, make_errors())
+
+
+def make_run_inputs(folder: Path) -> SimpleNamespace:
+    """
+    A made-up run on disk, as run(from_scores=True) reads it: 2 cases (k = 1 and 2) with all
+    7 stages, the case file, the calibration, the true errors, checkpoint_scores.csv in the
+    output folder, and #35's table with each lbfgs_final field as its clean row.
+    """
+    errors_by_stage = (0.50, 0.40, 0.30, 0.20, 0.12, 0.08, 0.003)
+    moms_by_stage = (9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 0.5)
+    adam_steps = (100, 500, 1000, 2500, 4000, 5000, 5000)
+    cases = {"case_30": 1, "case_40": 2}
+    raw, errors = [], []
+    for case_id, k in cases.items():
+        for stage, mom, error, step in zip(STAGES, moms_by_stage, errors_by_stage, adam_steps):
+            raw.append({"case_id": case_id, "k": k, "stage": stage, "adam_step": step, "passed_acceptance": True,
+                        "mom": mom * k, "div": 0.0, "bc": 0.0, "E": 0.0})
+            errors.append({"case_id": case_id, "k": k, "split": "confirmation", "stage": stage, "adam_step": step,
+                           "relL2_uv": error, "relL2_p": error, "relL2_uv_T": error, "passed_acceptance": True,
+                           "inaccurate": error > 0.10})
+    inputs = SimpleNamespace(metadata=folder / "cases.json", models_dir=folder / "models",
+                             calibration=folder / "calibration.json", errors=folder / "errors.csv",
+                             benchmark=folder / "benchmark.csv", output_dir=folder / "out")
+    frozen_calibration.save(make_calibration(), inputs.calibration)
+    inputs.metadata.write_text(json.dumps({"confirmation": [{"case_id": c, "k": k} for c, k in cases.items()]}))
+    pd.DataFrame(errors).to_csv(inputs.errors, index=False)
+    table = ne.build_checkpoint_table(pd.DataFrame(raw), make_calibration(), pd.DataFrame(errors))
+    ne.write_tables({ne.SCORES_TABLE: table}, inputs.output_dir)
+    make_benchmark(table).to_csv(inputs.benchmark, index=False)
+    return inputs
+
+
+def run_inputs(inputs: SimpleNamespace):
+    return ne.run(inputs.metadata, inputs.models_dir, inputs.calibration, inputs.errors, inputs.benchmark,
+                  inputs.output_dir, from_scores=True, figures=False, n_boot=10)
+
+
+def test_run_from_scores_writes_every_table(tmp_path):
+    inputs = make_run_inputs(tmp_path)
+    tables, consistency, written = run_inputs(inputs)
+    assert (consistency["n_fields"], consistency["max_rel_diff"]) == (2, 0.0)
+    assert len(tables[ne.SCORES_TABLE]) == 14
+    assert {path.name for path in written} == {f"{name}.{suffix}" for name in tables for suffix in ("csv", "tex")}
+    assert all(path.exists() for path in written)
+
+
+def test_run_checks_that_every_case_is_scored(tmp_path):
+    inputs = make_run_inputs(tmp_path)
+    # A case in the case file with no checkpoints in the scores
+    cases = json.loads(inputs.metadata.read_text())
+    cases["confirmation"].append({"case_id": "case_50", "k": 3})
+    inputs.metadata.write_text(json.dumps(cases))
+    with pytest.raises(ValueError, match="missing"):
+        run_inputs(inputs)
+
+
+def test_run_checks_the_consistency_with_the_benchmark(tmp_path):
+    inputs = make_run_inputs(tmp_path)
+    benchmark = pd.read_csv(inputs.benchmark, float_precision="round_trip")
+    benchmark.loc[benchmark["label"] == "clean", "mom"] *= 1 + 1e-6
+    benchmark.to_csv(inputs.benchmark, index=False)
+    with pytest.raises(ValueError, match="#35"):
+        run_inputs(inputs)
 
 
 def test_scatter_plot_written(tmp_path):
