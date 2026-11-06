@@ -10,10 +10,17 @@ types at 2 strengths; worked out by hand below), verifies that:
     missing or listed twice, a pass/fail that differs between loss_summary.csv, the true
     errors and the benchmark, or that doesn't follow from the acceptance metrics;
   - the caption helpers find the strengths of full recall, move labels only up, and
-    refuse a zero-width range whose cases don't share one count.
+    refuse a zero-width range whose cases don't share one count;
+  - the size of a damage follows the damage formulas (added damages, the time shift,
+    the pressure damage that leaves the velocity alone);
+  - a row of the natural errors counts the checkpoints by hand, with the AUC of
+    inaccurate against accurate, and refuses a #39 row that doesn't follow from the flags;
+  - the PDF of a figure has no title and the PNG has one.
 And, on the committed results:
-  - the inputs agree (the benchmark follows from the frozen calibration, #35's metrics
-    match the flags and the scores), and a changed flag, count or AUC is refused;
+  - the inputs agree (the benchmark and the checkpoints follow from the frozen
+    calibration, #35's metrics match the flags and the scores), and a changed flag,
+    count, AUC, tau or range is refused;
+  - both experiments are in the same terms, the synthetic rows being #35's numbers;
   - the captions give the numbers #36 asks them to explain, and are plain LaTeX;
   - run() writes every figure and table, a second run gives the same bytes, and the
     committed results/figures tables and captions are what the script writes.
@@ -24,17 +31,21 @@ import re
 import shutil
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pytest
+import torch
 
 from src.detection import benchmark_metrics as bm
 from src.detection import final_figures as ff
 from src.detection import frozen_calibration
+from src.detection import natural_errors as ne
 from src.detection.grouped_eval import clopper_pearson
 from src.detection.phs import PHS_COMPONENT_NAMES, SCORE_DEFINITIONS
 from src.hallucinations.perturbations import PERTURBATION_NAMES
-from src.models.accuracy_audit import read_cases
+from src.models.accuracy_audit import accuracy_grid, read_cases
+from src.physics.taylor_green import compute_decay_timescale, compute_nu, compute_T, generate_tgv
 
 REPO = Path(__file__).parent.parent
 OUTPUT_DIR = REPO / "results" / "figures"
@@ -109,6 +120,30 @@ def make_case_inputs(passed=None):
     fields = make_fields()
     fields["passed_acceptance"] = fields["case_id"].map(lambda c: passed.get(c, True))
     return cases, errors, loss, fields
+
+
+# A made-up set of checkpoints: (case, k, stage, inaccurate, Score1), with Score1's tau 1
+NATURAL_ROWS = [
+    ("case_30", 1, "adam_05000", True, 5.0), ("case_30", 1, "lbfgs_final", False, 0.5),
+    ("case_31", 1, "adam_05000", False, 3.0),    # Accurate but flagged: a false alarm
+    ("case_31", 1, "lbfgs_final", False, 0.8),
+    ("case_40", 2, "adam_05000", True, 0.9),     # Inaccurate but not flagged: missed
+    ("case_40", 2, "lbfgs_final", False, 1.5),   # A false alarm
+    ("case_41", 2, "adam_05000", True, 7.0), ("case_41", 2, "lbfgs_final", False, 0.2),
+]
+SIZED_CASE = {"case_id": "case_30", "k": 2, "U0": 1.3, "Re": 80.0, "phi_x": 0.4, "phi_y": 1.1}
+
+
+def make_natural() -> pd.DataFrame:
+    table = pd.DataFrame(NATURAL_ROWS, columns=["case_id", "k", "stage", "inaccurate", S1])
+    table[f"flagged_{S1}"] = table[S1] > THRESHOLDS[S1]
+    table["passed_acceptance"] = True
+    return table
+
+
+def stage_row(table: pd.DataFrame, n_boot: int = 20) -> pd.Series:
+    """#39's row over all stages for Score1, as natural_errors.py writes it."""
+    return pd.Series(ne.stage_by_k_row(table, S1, THRESHOLDS[S1], n_boot=n_boot, seed=0))
 
 
 @pytest.fixture(scope="module")
@@ -257,9 +292,94 @@ def test_within_case_concordance():
 
 def test_names_cover_every_score_and_damage_type():
     assert set(ff.SCORE_LABELS) == set(ff.SCORE_COLOURS) == set(ff.SCORE_MARKERS) == set(SCORE_DEFINITIONS)
-    assert set(ff.DAMAGE_LABELS) == set(PERTURBATION_NAMES)
+    assert set(ff.DAMAGE_LABELS) == set(ff.DAMAGE_MARKERS) == set(PERTURBATION_NAMES)
     assert len(set(ff.SCORE_COLOURS.values())) == len(SCORE_DEFINITIONS)
     assert len(set(ff.SCORE_MARKERS.values())) == len(SCORE_DEFINITIONS)
+    assert len(set(ff.DAMAGE_MARKERS.values())) == len(PERTURBATION_NAMES)
+    assert ff.NATURAL_MARKER not in ff.DAMAGE_MARKERS.values()
+    assert set(ff.PNG_TITLES) == set(ff.FIGURES) and set(ff.NARROW_FIGURES) <= set(ff.FIGURES)
+
+
+# --- The size of a damage ---
+
+def test_damage_sizes_follow_the_damage_formulas():
+    case = SIZED_CASE
+    sizes = ff.damage_sizes([case], [0.002, 0.01]).set_index(["perturbation", "epsilon"])["velocity_change"]
+    U0, k = case["U0"], case["k"]
+    nu, T = compute_nu(U0, case["Re"], k), compute_T(U0, case["Re"], k)
+    t, x, y = accuracy_grid(T)
+    u, v, _ = generate_tgv(x, y, t, U0, k, case["phi_x"], case["phi_y"], nu)
+    norm = torch.sqrt(torch.sum(u ** 2 + v ** 2)).item()
+    # The velocity-divergence damage adds eps U0 sin(3x + 0.7) sin(2y) to u (perturbations.py)
+    added = 0.01 * U0 * torch.sin(3 * x + 0.7) * torch.sin(2 * y)
+    assert sizes[("velocity_divergence", 0.01)] == pytest.approx(torch.sqrt(torch.sum(added ** 2)).item() / norm,
+                                                                 rel=1e-12)
+    # An added damage grows linearly with eps; the pressure damage leaves the velocity alone
+    assert sizes[("momentum", 0.01)] == pytest.approx(5 * sizes[("momentum", 0.002)], rel=1e-12)
+    assert sizes[("pressure", 0.002)] == sizes[("pressure", 0.01)] == 0.0
+    # The time shift reports the exact flow at t + eps * tau_decay, clamped to [0, T]
+    shifted = torch.clamp(t + 0.002 * compute_decay_timescale(nu, k), 0, T)
+    u_shifted, v_shifted, _ = generate_tgv(x, y, shifted, U0, k, case["phi_x"], case["phi_y"], nu)
+    change = torch.sqrt(torch.sum((u_shifted - u) ** 2 + (v_shifted - v) ** 2)).item() / norm
+    assert sizes[("temporal_mismatch", 0.002)] == pytest.approx(change, rel=1e-12)
+
+
+def test_damage_size_table_summarizes_the_cases():
+    sizes = pd.DataFrame({"case_id": ["case_30", "case_31", "case_32"] * 2, "k": 1,
+                          "perturbation": ["momentum"] * 3 + ["pressure"] * 3, "epsilon": 0.01,
+                          "velocity_change": [0.004, 0.001, 0.002, 0.0, 0.0, 0.0]})
+    table = ff.damage_size_table(sizes)
+    assert list(table.columns) == list(ff.DAMAGE_SIZE_COLUMNS)
+    first = table.iloc[0]
+    assert (first["perturbation"], first["n_cases"]) == ("momentum", 3)
+    # The median (0.002), not the mean (0.00233)
+    assert (first["velocity_change_min"], first["velocity_change_median"], first["velocity_change_max"]) == \
+        (0.001, 0.002, 0.004)
+    assert table.iloc[1]["velocity_change_max"] == 0.0
+    sizes.loc[3, "velocity_change"] = 1e-3   # One pressure-damaged field whose velocity changed
+    with pytest.raises(ValueError, match="some fields but not"):
+        ff.damage_size_table(sizes)
+
+
+# --- The natural errors, in the terms of the benchmark ---
+
+def test_natural_row_counts_by_hand():
+    table = make_natural()
+    row = ff._natural_row(table, stage_row(table), S1, THRESHOLDS[S1], "all", n_boot=20, seed=0)
+    # Inaccurate: 3, one missed (case_40's Adam checkpoint at 0.9); accurate: 5, two flagged
+    assert (row["n_positive"], row["n_negative"], row["n_missed"], row["n_false_alarms"]) == (3, 5, 1, 2)
+    assert row["recall"] == pytest.approx(2 / 3) and row["fpr"] == pytest.approx(2 / 5)
+    # Of the 15 (inaccurate, accurate) pairs, 13 have the inaccurate checkpoint scored higher
+    assert row["auc"] == pytest.approx(13 / 15)
+    assert row["auc_low"] <= row["auc"] <= row["auc_high"] and row["auc_n_boot"] == 20
+    assert row["fpr_range_method"] == "case_bootstrap"
+
+
+@pytest.mark.parametrize("column, value", [("n_false_alarms", 3), ("n_missed", 0), ("recall", 0.5), ("tau", 2.0)])
+def test_natural_row_refuses_a_39_row_that_does_not_follow(column, value):
+    table = make_natural()
+    theirs = stage_row(table)
+    theirs[column] = value
+    with pytest.raises(ValueError, match="table_stage_by_k"):
+        ff._natural_row(table, theirs, S1, THRESHOLDS[S1], "all", n_boot=10, seed=0)
+
+
+def test_save_figure_titles_only_the_png(tmp_path):
+    for with_legend in (False, True):
+        fig, ax = plt.subplots(layout="constrained")
+        line, = ax.plot([0, 1], [0, 1], label="a line")
+        legend = fig.legend(handles=[line], loc="outside upper center") if with_legend else None
+        titles, save = [], fig.savefig
+
+        def recording(path, **kwargs):
+            title = legend.get_title().get_text() if with_legend else "".join(t.get_text() for t in fig.texts)
+            titles.append((Path(path).suffix, title))
+            return save(path, **kwargs)
+
+        fig.savefig = recording
+        ff.save_figure(fig, tmp_path, "fig_roc", top_legend=legend)
+        plt.close(fig)
+        assert titles == [(".pdf", ""), (".png", ff.PNG_TITLES["fig_roc"])], with_legend
 
 
 # --- The committed results ---
@@ -268,8 +388,71 @@ def test_committed_inputs_agree(committed):
     fields = committed["fields"]
     assert len(fields) == 930 and fields["case_id"].nunique() == 30
     assert len(committed["old"]) == 30
+    assert len(committed["natural"]) == 30 * 7
     assert committed["tables"]["table_cases"]["case_id"].tolist() == [c["case_id"] for c in read_cases(ff.DEFAULT_METADATA)]
     assert len(committed["tables"]["table_recall_by_type_eps_k"]) == 5 * 3 * 5 * 6
+    assert len(committed["sizes"]) == 30 * 5 * 6 and len(committed["tables"]["table_damage_size"]) == 5 * 6
+
+
+def test_both_experiments_in_the_same_terms(committed):
+    summary = committed["tables"]["table_synthetic_vs_natural"]
+    assert list(summary.columns) == list(ff.SUMMARY_COLUMNS)
+    assert len(summary) == 2 * 5 * 4   # Experiment x score x (all k, k = 1, 2, 3)
+    pooled = summary[summary["k"] == ff.ALL].set_index(["experiment", "score"])
+    assert (pooled.loc[ff.SYNTHETIC, ["n_positive", "n_negative"]] == [900, 30]).all().all()
+    assert (pooled.loc[ff.NATURAL, ["n_positive", "n_negative", "n_missed"]] == [142, 68, 0]).all().all()
+    by_k = summary[summary["k"] != ff.ALL].groupby(["experiment", "score"])[
+        ["n_positive", "n_negative", "n_missed", "n_false_alarms"]].sum()
+    for column in by_k.columns:
+        assert (by_k[column] == pooled.loc[by_k.index, column]).all(), column
+
+
+def test_synthetic_rows_are_35s(committed):
+    summary = committed["tables"]["table_synthetic_vs_natural"]
+    rows = summary[(summary["experiment"] == ff.SYNTHETIC) & (summary["k"] == ff.ALL)].set_index("score")
+    overall = committed["metrics"]["overall"].set_index("score").loc[rows.index]
+    for column in ("auc", "auc_low", "auc_high", "recall", "recall_low", "recall_high", "fpr", "fpr_low", "fpr_high",
+                   "n_false_alarms", "tau"):
+        assert (rows[column] == overall[column]).all(), column
+    assert (rows["n_positive"] == overall["n_damaged"]).all()
+
+
+def test_synthetic_row_refuses_another_tau_or_range(committed):
+    row = committed["metrics"]["overall"].iloc[0].copy()
+    score, tau = row["score"], row["tau"]
+    ff._synthetic_row(row, score, "all", tau)   # As committed: accepted
+    with pytest.raises(ValueError, match="tau"):
+        ff._synthetic_row(row, score, "all", tau * 1.01)
+    row["fpr_high"] += 0.01
+    with pytest.raises(ValueError, match="exact range"):
+        ff._synthetic_row(row, score, "all", tau)
+
+
+def test_read_natural_refuses_a_changed_flag(tmp_path, committed):
+    folder = tmp_path / "natural_errors"
+    folder.mkdir()
+    path = folder / ff.NATURAL_SCORES_CSV
+    table = pd.read_csv(ff.DEFAULT_NATURAL_DIR / ff.NATURAL_SCORES_CSV, float_precision="round_trip")
+    table.loc[3, f"flagged_{S2}"] = not table.loc[3, f"flagged_{S2}"]
+    table.to_csv(path, index=False, lineterminator="\n")
+    _, errors, _ = ff.read_case_inputs(ff.DEFAULT_METADATA, ff.DEFAULT_ERRORS_CSV, ff.DEFAULT_LOSS_SUMMARY)
+    with pytest.raises(ValueError, match="raw components"):
+        ff.read_natural(folder, committed["calib"], errors, committed["cases"], committed["fields"])
+
+
+@pytest.mark.parametrize("change", ["clean_field_differs", "case_not_in_case_file"])
+def test_read_natural_refuses_checkpoints_that_are_not_the_benchmarks(committed, change):
+    """The final models must be the benchmark's clean fields, and the checkpoints those of the case file's cases."""
+    _, errors, _ = ff.read_case_inputs(ff.DEFAULT_METADATA, ff.DEFAULT_ERRORS_CSV, ff.DEFAULT_LOSS_SUMMARY)
+    fields, cases = committed["fields"].copy(), list(committed["cases"])
+    if change == "clean_field_differs":
+        fields.loc[fields.index[fields["label"] == "clean"][0], "mom"] *= 1.001
+        match = "clean fields"
+    else:
+        cases = cases[1:]
+        match = "every case of the case file"
+    with pytest.raises(ValueError, match=match):
+        ff.read_natural(ff.DEFAULT_NATURAL_DIR, committed["calib"], errors, cases, fields)
 
 
 def test_recall_by_k_sums_to_the_benchmark(committed):
@@ -349,6 +532,19 @@ def test_captions_explain_what_36_asks(committed):
     assert "$U_0^4$" in text and "$-0.80$" in text
 
 
+def test_captions_of_the_two_experiments(committed):
+    captions = committed["captions"]
+    natural = captions["fig_natural_score_vs_error"]
+    assert "Every score flags all 142 inaccurate checkpoints" in natural
+    assert "the 38 Adam checkpoints with errors from 2.96 to 10\\%" in natural
+    assert "between 0.73\\% (the least accurate final model, case\\_58) and 2.96\\%" in natural
+    shared = captions["fig_score_vs_velocity_error"]
+    assert "Score2, velocity divergence damage at $\\varepsilon = 0.002$ (0.14--0.2\\%)" in shared
+    assert "the five scores flag 0, 2, 3, 3 and 2 of these 30 models" in shared
+    assert "The pressure damage changes only the pressure" in shared
+    assert "the 142 inaccurate ones" in captions["table_synthetic_vs_natural"]
+
+
 def test_captions_are_plain_latex(committed):
     """
     No '#', and no '_' or '%' outside math unless escaped (they break LaTeX); no Greek
@@ -378,16 +574,17 @@ def test_run_writes_everything_and_reruns_identically(tmp_path):
 
 def test_committed_tables_and_captions_are_the_scripts(committed):
     """The committed .csv read back as the tables built now; the committed .tex are what the script writes."""
+    tables, captions = committed["tables"], committed["captions"]
     for stem in ff.TABLES:
         saved = pd.read_csv(OUTPUT_DIR / f"{stem}.csv", float_precision="round_trip")
+        built = tables[stem]
+        # A count with missing values (Int64) reads back as floats with NaN
+        built = built.astype({column: "float64" for column, dtype in built.dtypes.items() if str(dtype) == "Int64"})
         # Clopper-Pearson ends can differ in the last digit between operating systems (scipy)
-        pd.testing.assert_frame_equal(saved, committed["tables"][stem], check_dtype=False, rtol=1e-12, obj=stem)
-    tables = committed["tables"]
+        pd.testing.assert_frame_equal(saved, built, check_dtype=False, rtol=1e-12, obj=stem)
     expected = {
-        "table_cases.tex": ff.case_table_latex(tables["table_cases"], committed["captions"]["table_cases"]),
-        "table_recall_by_type_eps_k.tex": ff.recall_by_k_latex(tables["table_recall_by_type_eps_k"],
-                                                               committed["captions"]["table_recall_by_type_eps_k"]),
-        **{f"{stem}.tex": ff.figure_tex(stem, committed["captions"][stem], wide=stem != "fig_roc")
+        **{f"{stem}.tex": ff.table_latex(stem, tables[stem], captions[stem]) for stem in ff.TABLES},
+        **{f"{stem}.tex": ff.figure_tex(stem, captions[stem], wide=stem not in ff.NARROW_FIGURES)
            for stem in ff.FIGURES},
     }
     for name, text in expected.items():
@@ -403,6 +600,7 @@ def test_committed_figures_exist():
 def test_path_flags_default_to_the_repo_paths():
     args = ff.parse_args([])
     assert Path(args.benchmark_dir) == REPO.resolve() / "results" / "benchmark"
+    assert Path(args.natural_dir) == REPO.resolve() / "results" / "natural_errors"
     assert Path(args.errors) == REPO.resolve() / "results" / "accuracy" / "reference_errors_confirmation.csv"
     assert Path(args.metadata) == REPO.resolve() / "cases" / "confirmation_cases.json"
     assert Path(args.loss_summary) == REPO.resolve() / "models" / "confirmation" / "loss_summary.csv"

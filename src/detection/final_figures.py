@@ -2,8 +2,9 @@
 The final figures and the case table of the final iteration (#36).
 
 Barak asks for "figures in PDF/PNG, tables in CSV/LaTeX". This script turns the
-saved results of the perturbation benchmark (#35) on the 30 new cases into the
-paper's figures, and writes the table of the 30 cases. It reads only saved
+saved results of the perturbation benchmark (#35) and of the natural errors (#39)
+on the 30 new cases into the paper's figures, puts the two experiments side by
+side in the same terms, and writes the table of the 30 cases. It reads only saved
 tables, never a model, and fits nothing:
 
     results/benchmark/confirmation_scores_raw.csv   every field: its scores and flags (#35)
@@ -11,6 +12,8 @@ tables, never a model, and fits nothing:
     results/benchmark/metrics_by_k.csv              the same by k, for the captions (#35)
     results/benchmark/metrics_by_type.csv           the same by damage type, for the captions (#35)
     results/benchmark/metrics_by_type_eps.csv       recall by damage type x strength, exact ranges (#35)
+    results/natural_errors/checkpoint_scores.csv    every checkpoint: its scores, flags and true error (#39)
+    results/natural_errors/table_stage_by_k.csv     #39's counts, recall and false-alarm rate, with ranges
     results/accuracy/reference_errors_confirmation.csv   the true velocity error of each model (#37)
     cases/confirmation_cases.json                   the cases and their seeds (#44)
     models/confirmation/loss_summary.csv            the training acceptance test of each run (#40)
@@ -19,16 +22,26 @@ tables, never a model, and fits nothing:
 
 Before drawing anything it checks that these tables agree: rescoring the raw
 components with the frozen calibration must give back every normalized
-component, score and flag of the benchmark bit for bit; the benchmark must hold
-every case of the case file, each with its 31 fields; #35's metrics tables must
-match the flags (counts) and the scores (AUC); and the pass/fail of each run must
-be the same in loss_summary.csv, the benchmark and the accuracy audit, and must
-follow from its acceptance metrics. A mismatch stops the run, since a figure
-built from tables that disagree would be wrong without anyone noticing.
+component, score and flag of the benchmark and of the checkpoints bit for bit;
+the benchmark must hold every case of the case file, each with its 31 fields,
+and the checkpoints the 7 of every case; the final models must be the
+benchmark's clean fields; #35's metrics tables must match the flags (counts) and
+the scores (AUC), and #39's counts and rates must follow from its flags; and
+the pass/fail of each run must be the same in loss_summary.csv, the benchmark and
+the accuracy audit, and must follow from its acceptance metrics. A mismatch stops
+the run, since a figure built from tables that disagree would be wrong without
+anyone noticing.
+
+To put both experiments on one axis, it sizes each synthetic damage as a velocity
+error: the benchmark's own damage code (perturbations.apply_perturbation) applied
+to the exact solution on the accuracy audit's test grid. That needs the case file
+and the damage formulas, no model.
 
 Outputs, in results/figures/. Each figure as .pdf and .png (300 dpi), sized for
 a two-column page (7.16 in wide, one column 3.5 in), plus a .tex file holding
-its figure environment and caption; each table as .csv (full precision) and .tex:
+its figure environment and caption. The PDF, for the paper, has no title, since
+its caption is the title; the PNG has a one-line title (PNG_TITLES), so that it
+can be read on its own. Each table as .csv (full precision) and .tex:
     fig_recall_vs_eps                  recall vs damage strength: one panel per damage type,
                                        one line per score, exact 95% ranges as bands
     fig_recall_vs_eps_new_detections   the same, over the cases whose clean field the score
@@ -39,11 +52,21 @@ its figure environment and caption; each table as .csv (full precision) and .tex
     fig_clean_scores_vs_tau            the clean scores of the 30 new cases against tau, by k
                                        and for each score, every false alarm named, with the
                                        30 old clean fields tau was fitted on for reference
+    fig_natural_score_vs_error         the natural errors (#39's figure, in this style): the
+                                       score / tau of each checkpoint against its true velocity
+                                       error, by training stage and k, with the 10% rule
+    fig_score_vs_velocity_error        both experiments on one axis: score / tau against the
+                                       size of the velocity error, of each damaged field (the
+                                       change its damage makes) and of each checkpoint
     table_recall_by_type_eps_k         the numbers behind fig_recall_vs_eps_by_k, computed from
                                        the flags of confirmation_scores_raw.csv (#35's tables
                                        have no type x strength x k breakdown)
     table_cases                        one row per new case: k, U0, Re, phases, the three seeds,
                                        acceptance pass/fail and the final velocity errors
+    table_synthetic_vs_natural         both experiments in the same terms, overall and by k: AUC,
+                                       recall and false alarms at tau, with their ranges
+    table_damage_size                  the size of each synthetic damage as a velocity error, by
+                                       damage type and strength (over the 30 cases)
 The captions are written from the numbers, so they can't drift from the figures.
 A paper includes a figure with \\input{fig_roc.tex}, with results/figures/ in its
 \\graphicspath. Two runs on the same machine give the same files, byte for byte.
@@ -60,6 +83,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import torch
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from matplotlib.ticker import FixedLocator, FuncFormatter, NullFormatter, NullLocator
@@ -72,14 +96,17 @@ sys.path.append(str(PROJECT_ROOT))
 from src.detection import benchmark_metrics as bm
 from src.detection import frozen_calibration
 from src.detection import natural_errors as ne
+from src.detection.grouped_eval import case_bootstrap, clopper_pearson
 from src.detection.phs import PHS_COMPONENT_NAMES, SCORE_DEFINITIONS
 from src.hallucinations.generate_hallucinations import load_case_metadata
-from src.hallucinations.perturbations import PERTURBATION_NAMES
-from src.models.accuracy_audit import read_cases
+from src.hallucinations.perturbations import PERTURBATION_NAMES, apply_perturbation
+from src.models.accuracy_audit import INACCURATE_ABOVE, accuracy_grid, read_cases, relative_l2
 from src.models.checkpoints import FINAL_STAGE
+from src.physics.taylor_green import compute_decay_timescale, compute_nu, compute_T, generate_tgv
 from src.utils.console import enable_utf8_output
 
 DEFAULT_BENCHMARK_DIR = PROJECT_ROOT / "results" / "benchmark"
+DEFAULT_NATURAL_DIR = PROJECT_ROOT / "results" / "natural_errors"
 DEFAULT_ERRORS_CSV = PROJECT_ROOT / "results" / "accuracy" / "reference_errors_confirmation.csv"
 DEFAULT_METADATA = PROJECT_ROOT / "cases" / "confirmation_cases.json"
 DEFAULT_LOSS_SUMMARY = PROJECT_ROOT / "models" / "confirmation" / "loss_summary.csv"
@@ -88,11 +115,16 @@ DEFAULT_SOURCE_CSV = frozen_calibration.DEFAULT_SOURCE_CSV
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "results" / "figures"
 
 FIELDS_CSV = "confirmation_scores_raw.csv"
+NATURAL_SCORES_CSV = f"{ne.SCORES_TABLE}.csv"
+NATURAL_STAGE_CSV = "table_stage_by_k.csv"
 SCORE_NAMES = bm.SCORE_NAMES
 BAR_NAMES = bm.BAR_NAMES
 FLAG_NAMES = tuple(f"flagged_{name}" for name in SCORE_NAMES)
 CLEAN = bm.CLEAN
 PHS = "Score3_PHS_full"
+ALL = ne.ALL                       # The k of the rows that pool every k
+N_BOOT, BOOT_SEED = bm.N_BOOT, bm.BOOT_SEED
+SYNTHETIC, NATURAL = "synthetic", "natural"   # The two experiments, in table_synthetic_vs_natural
 
 # The training acceptance test of a final model (PROTOCOL.md section 2, train_model.evaluate_model)
 ACCEPT_REL_L2_BELOW = 0.10
@@ -117,6 +149,14 @@ SCORE_MARKERS = dict(zip(SCORE_NAMES, ("o", "s", "^", "D", "v")))
 DAMAGE_LABELS = {name: name.replace("_", " ") for name in PERTURBATION_NAMES}
 K_COLOUR = SCORE_COLOURS[SCORE_NAMES[0]]   # The new clean fields (one series: the first slot)
 OLD_COLOUR = ne.INK_MUTED                  # The old calibration fields, a grey reference
+# Where both experiments share an axis: the checkpoints keep #39's stage ramp (ne.STAGE_COLOURS, light =
+# early, dark = final) and its k markers, and the synthetic damage gets the reference palette's second slot.
+# Against every step of the ramp the validator's CVD (worst dE 22.8) and normal-vision (29.6) checks pass;
+# the damage types also differ by marker.
+SYNTHETIC_COLOUR = "#eb6834"
+DAMAGE_MARKERS = {"velocity_divergence": "s", "momentum": "D", "pressure": "P", "temporal_mismatch": "^",
+                  "boundary": "v"}
+NATURAL_MARKER = "o"
 
 TEXT_WIDTH = 7.16    # in: a two-column page, as publication_figures.py uses
 COLUMN_WIDTH = 3.5   # in: one column
@@ -138,8 +178,29 @@ SHARED_BAND_COLOUR = ne.INK_MUTED
 SHARED_BAND_ALPHA = 0.16     # A range several scores share, drawn once
 
 FIGURES = ("fig_recall_vs_eps", "fig_recall_vs_eps_new_detections", "fig_recall_vs_eps_by_k", "fig_roc",
-           "fig_clean_scores_vs_tau")
-TABLES = ("table_recall_by_type_eps_k", "table_cases")
+           "fig_clean_scores_vs_tau", "fig_natural_score_vs_error", "fig_score_vs_velocity_error")
+NARROW_FIGURES = ("fig_roc",)   # One column wide; the others span the page
+TABLES = ("table_recall_by_type_eps_k", "table_cases", "table_synthetic_vs_natural", "table_damage_size")
+# The title of each PNG, so it says what it shows when read on its own (a README, slides). The PDF, for
+# the paper, has none: there the caption is the title.
+PNG_TITLES = {
+    "fig_recall_vs_eps": "Synthetic damage: recall at the frozen τ against damage strength",
+    "fig_recall_vs_eps_new_detections": "Synthetic damage: recall of new detections (cases whose clean field "
+                                        "is not flagged)",
+    "fig_recall_vs_eps_by_k": "Synthetic damage: recall at the frozen τ against damage strength, by k",
+    "fig_roc": "Synthetic damage: ROC curves, damaged vs clean fields",
+    "fig_clean_scores_vs_tau": "The clean fields of the new final models against the frozen τ",
+    "fig_natural_score_vs_error": "Natural errors: the score of each checkpoint against its true velocity error",
+    "fig_score_vs_velocity_error": "Synthetic damage and natural errors: score against the size of the "
+                                   "velocity error",
+}
+PNG_TITLE_BAND = 0.26   # in: the band above a PNG that holds its title
+PNG_TITLE_SIZE = 8.5    # pt
+SUMMARY_COLUMNS = ("experiment", "score", "k", "tau", "n_cases", "n_positive", "n_negative", "n_positive_flagged",
+                   "n_missed", "n_false_alarms", "auc", "auc_low", "auc_high", "auc_n_boot", "recall", "recall_low",
+                   "recall_high", "recall_n_boot", "fpr", "fpr_low", "fpr_high", "fpr_n_boot", "fpr_range_method")
+DAMAGE_SIZE_COLUMNS = ("perturbation", "epsilon", "n_cases", "velocity_change_min", "velocity_change_median",
+                       "velocity_change_max")
 
 RECALL_BY_K_COLUMNS = ("score", "k", "perturbation", "epsilon", "n_cases", "n_damaged", "n_damaged_flagged",
                        "recall", "recall_low", "recall_high", "n_preflagged_cases", "n_damaged_new",
@@ -267,6 +328,37 @@ def read_case_inputs(metadata, errors_csv, loss_summary_csv) -> tuple:
     return cases, errors, loss
 
 
+def read_natural(natural_dir, calib: dict, errors: pd.DataFrame, cases: list, fields: pd.DataFrame) -> pd.DataFrame:
+    """
+    #39's table of the checkpoints (checkpoint_scores.csv), refused unless it follows
+    from its own raw components, the frozen calibration and the true errors bit for bit
+    (natural_errors.read_checkpoint_scores), holds the 7 checkpoints of every case of the
+    case file in order (check_coverage), and its final models are the benchmark's clean
+    fields (consistency_check). So both experiments are scored with the same calibration,
+    and the final models are the same fields in both.
+
+    Inputs:
+        natural_dir (str | Path): Folder with checkpoint_scores.csv (results/natural_errors).
+        calib (dict): The frozen calibration.
+        errors (pd.DataFrame): The true errors (#37), from natural_errors.read_true_errors().
+        cases (list[dict]): The cases, from accuracy_audit.read_cases().
+        fields (pd.DataFrame): The benchmark, from read_fields().
+
+    Outputs:
+        pd.DataFrame: One row per checkpoint, with natural_errors.CHECKPOINT_COLUMNS.
+    """
+    table = ne.read_checkpoint_scores(Path(natural_dir) / NATURAL_SCORES_CSV, calib, errors)
+    ne.check_coverage(table, cases)
+    ne.consistency_check(table, fields)
+    return table
+
+
+def read_natural_stage_table(natural_dir) -> pd.DataFrame:
+    """Reads #39's table_stage_by_k.csv exactly, its stage and k as text ("all" for the pooled rows)."""
+    return pd.read_csv(Path(natural_dir) / NATURAL_STAGE_CSV, float_precision="round_trip",
+                       dtype={"stage": str, "k": str})
+
+
 # --- The tables ---
 
 def recall_by_type_eps_k(fields: pd.DataFrame) -> pd.DataFrame:
@@ -368,6 +460,190 @@ def case_table(cases: list, errors: pd.DataFrame, loss: pd.DataFrame, fields: pd
     return pd.DataFrame(rows)[list(CASE_COLUMNS)]
 
 
+def _synthetic_row(row, score: str, k, tau: float) -> dict:
+    """
+    One row of table_synthetic_vs_natural from a row of #35's metrics (damaged fields are
+    the positives), its numbers unchanged. Refuses a row scored with another tau, or whose
+    false-alarm range is not the exact range of its count (one clean field per case).
+    """
+    if row["tau"] != tau:
+        raise ValueError(f"#35's metrics give {score} tau {row['tau']}, the frozen calibration {tau}")
+    low, high = clopper_pearson(int(row["n_false_alarms"]), int(row["n_clean"]))
+    if not np.allclose([low, high], [row["fpr_low"], row["fpr_high"]], rtol=1e-12, atol=0):
+        raise ValueError(f"#35's false-alarm range of {score} (k {k}) is not the exact range of its count")
+    n_positive, n_flagged = int(row["n_damaged"]), int(row["n_damaged_flagged"])
+    return {"experiment": SYNTHETIC, "score": score, "k": str(k), "tau": tau, "n_cases": int(row["n_cases"]),
+            "n_positive": n_positive, "n_negative": int(row["n_clean"]), "n_positive_flagged": n_flagged,
+            "n_missed": n_positive - n_flagged, "n_false_alarms": int(row["n_false_alarms"]),
+            **{column: row[column] for column in ("auc", "auc_low", "auc_high", "auc_n_boot", "recall", "recall_low",
+                                                  "recall_high", "recall_n_boot", "fpr", "fpr_low", "fpr_high")},
+            "fpr_n_boot": pd.NA, "fpr_range_method": "clopper_pearson"}
+
+
+def _natural_row(group: pd.DataFrame, theirs, score: str, tau: float, k, n_boot: int, seed: int) -> dict:
+    """
+    One row of table_synthetic_vs_natural from a group of checkpoints (inaccurate ones are
+    the positives). The counts, recall and false-alarm rate with their ranges are #39's
+    (theirs: its table_stage_by_k row over all stages for this score and k), refused
+    unless its tau, counts and rates follow from the flags of the checkpoints; the AUC,
+    inaccurate against accurate, is new, with #39's case bootstrap (several checkpoints per case).
+    """
+    inaccurate, flagged = group["inaccurate"].to_numpy(dtype=bool), _flags(group, score)
+    n_inaccurate, n_accurate = int(inaccurate.sum()), int((~inaccurate).sum())
+    counts = {"n_cases": int(group["case_id"].nunique()), "n_checkpoints": len(group), "n_inaccurate": n_inaccurate,
+              "n_missed": int((inaccurate & ~flagged).sum()), "n_false_alarms": int((~inaccurate & flagged).sum())}
+    differ = {column: (int(theirs[column]), value) for column, value in counts.items() if int(theirs[column]) != value}
+    rates = {"tau": tau,
+             "recall": (n_inaccurate - counts["n_missed"]) / n_inaccurate if n_inaccurate else np.nan,
+             "fpr": counts["n_false_alarms"] / n_accurate if n_accurate else np.nan}
+    differ.update({column: (theirs[column], value) for column, value in rates.items()
+                   if not np.isclose(float(theirs[column]), value, rtol=1e-12, atol=0, equal_nan=True)})
+    if differ:
+        raise ValueError(f"#39's table_stage_by_k ({score}, all stages, k {k}) doesn't follow from the checkpoints: "
+                         f"{differ} (#39, here); rerun src/detection/natural_errors.py")
+    view = pd.DataFrame({"case_id": group["case_id"].to_numpy(), "k": group["k"].to_numpy(), "damaged": inaccurate,
+                         "value": group[score].to_numpy(dtype=float)})
+    auc, auc_low, auc_high, auc_n_boot = case_bootstrap(view, bm.auc, n_boot=n_boot, seed=seed)
+    return {"experiment": NATURAL, "score": score, "k": str(k), "tau": tau, "n_cases": counts["n_cases"],
+            "n_positive": n_inaccurate, "n_negative": n_accurate, "n_positive_flagged": n_inaccurate - counts["n_missed"],
+            "n_missed": counts["n_missed"], "n_false_alarms": counts["n_false_alarms"], "auc": auc, "auc_low": auc_low,
+            "auc_high": auc_high, "auc_n_boot": auc_n_boot,
+            **{column: theirs[column] for column in ("recall", "recall_low", "recall_high", "recall_n_boot", "fpr",
+                                                     "fpr_low", "fpr_high", "fpr_n_boot")},
+            "fpr_range_method": theirs["range_method"]}
+
+
+def summary_table(metrics: dict, natural: pd.DataFrame, stage_table: pd.DataFrame, thresholds: dict,
+                  n_boot: int = N_BOOT, seed: int = BOOT_SEED) -> pd.DataFrame:
+    """
+    Both experiments in the same terms, for each score, over every k and for each k. The
+    positives are the damaged fields (synthetic) or the inaccurate checkpoints (natural,
+    relL2_uv above 0.10), the negatives the clean fields or the accurate checkpoints.
+    AUC (positives against negatives) and recall have case-bootstrap ranges; the
+    false-alarm rate has the exact range of its count for the clean fields (one per case)
+    and a case-bootstrap range for the checkpoints (several per case). The synthetic rows
+    are #35's numbers (metrics_overall, metrics_by_k) and the natural ones #39's
+    (table_stage_by_k, over all stages), each checked against its flags; only the AUC of
+    the checkpoints is computed here.
+
+    Inputs:
+        metrics (dict): #35's metrics tables, from read_metrics() ("overall" and "by_k").
+        natural (pd.DataFrame): The checkpoints, from read_natural().
+        stage_table (pd.DataFrame): #39's table_stage_by_k, from read_natural_stage_table().
+        thresholds (dict): {score: tau} of the frozen calibration.
+        n_boot, seed: Of the case bootstrap of the AUC (PROTOCOL.md section 7).
+
+    Outputs:
+        pd.DataFrame: One row per experiment x score x k, with SUMMARY_COLUMNS; k is text,
+                      "all" for the rows over every k.
+    """
+    ks = sorted(int(k) for k in natural["k"].unique())
+    pooled = stage_table[stage_table["stage"] == ALL]
+    rows = []
+    for score in SCORE_NAMES:
+        for k in (ALL, *ks):
+            table = metrics["overall"] if k == ALL else metrics["by_k"][metrics["by_k"]["k"] == k]
+            selected = table[table["score"] == score]
+            if len(selected) != 1:
+                raise ValueError(f"#35's metrics have {len(selected)} rows for {score}, k {k}")
+            rows.append(_synthetic_row(selected.iloc[0], score, k, thresholds[score]))
+    for score in SCORE_NAMES:
+        for k in (ALL, *ks):
+            theirs = pooled[(pooled["score"] == score) & (pooled["k"] == str(k))]
+            if len(theirs) != 1:
+                raise ValueError(f"#39's table_stage_by_k has {len(theirs)} rows for {score}, all stages, k {k}")
+            group = natural if k == ALL else natural[natural["k"] == k]
+            rows.append(_natural_row(group, theirs.iloc[0], score, thresholds[score], k, n_boot, seed))
+    out = pd.DataFrame(rows)[list(SUMMARY_COLUMNS)]
+    return out.astype({"auc_n_boot": "Int64", "recall_n_boot": "Int64", "fpr_n_boot": "Int64"})
+
+
+class _ExactFlow:
+    """
+    The exact Taylor-Green solution of a case, called like a model: an (N, 3) tensor of
+    (x, y, t) in, an (N, 3) tensor of (u, v, p) out. It stands in for the model when a
+    damage is sized, since the time-shift damage asks its model for the field at a
+    shifted time.
+    """
+
+    def __init__(self, case: dict, nu: float):
+        self.case, self.nu = case, nu
+
+    def __call__(self, coords: torch.Tensor) -> torch.Tensor:
+        case = self.case
+        u, v, p = generate_tgv(coords[:, 0:1], coords[:, 1:2], coords[:, 2:3], case["U0"], case["k"],
+                               case["phi_x"], case["phi_y"], self.nu)
+        return torch.cat([u, v, p], dim=1)
+
+
+def damage_sizes(cases: list, epsilons) -> pd.DataFrame:
+    """
+    The size of each synthetic damage as a velocity error, one row per case x damage type x
+    strength: the relative L2 change it makes to the velocity, against the exact velocity,
+    sqrt(sum (u~ - u)^2 + (v~ - v)^2) / sqrt(sum u^2 + v^2), over the accuracy audit's
+    64 x 64 x 11 test grid (accuracy_audit.accuracy_grid; PROTOCOL.md section 6), the grid
+    of the natural errors' relL2_uv. The damage is the benchmark's own code
+    (perturbations.apply_perturbation, with U0, k, T and the decay time as
+    phs.compute_phs_components passes them), applied to the exact solution in place of
+    the model: an added damage changes any field by the same amount, and the time
+    shift's size is its change to the exact flow.
+
+    Inputs:
+        cases (list[dict]): The cases (case_id, k, U0, Re, phi_x, phi_y), from read_cases().
+        epsilons (list[float]): The damage strengths.
+
+    Outputs:
+        pd.DataFrame: case_id, k, perturbation, epsilon and velocity_change (a fraction).
+    """
+    rows = []
+    for case in cases:
+        U0, Re, k = case["U0"], case["Re"], case["k"]
+        nu, T = compute_nu(U0, Re, k), compute_T(U0, Re, k)
+        params = {"U0": U0, "k": k, "T": T, "tau_decay": compute_decay_timescale(nu, k)}
+        t, x, y = (axis.reshape(-1, 1) for axis in accuracy_grid(T))
+        flow = _ExactFlow(case, nu)
+        exact = flow(torch.cat([x, y, t], dim=1))
+        clean = {"u": exact[:, 0:1], "v": exact[:, 1:2], "p": exact[:, 2:3]}
+        coords = {"x": x, "y": y, "t": t}
+        for perturbation in PERTURBATION_NAMES:
+            for epsilon in epsilons:
+                damaged = apply_perturbation(perturbation, clean, coords, params, float(epsilon),
+                                             model=flow if perturbation == "temporal_mismatch" else None,
+                                             no_grad=True)
+                change = relative_l2((damaged["u"], damaged["v"]), (clean["u"], clean["v"]))
+                rows.append({"case_id": case["case_id"], "k": k, "perturbation": perturbation,
+                             "epsilon": float(epsilon), "velocity_change": change})
+    return pd.DataFrame(rows)
+
+
+def damage_size_table(sizes: pd.DataFrame) -> pd.DataFrame:
+    """
+    The size of each damage type and strength over the cases: the smallest, median and
+    largest velocity change. Refuses a type that changes the velocity of some fields and
+    not of others, since the figures leave out only the types that never change it.
+
+    Inputs:
+        sizes (pd.DataFrame): Output of damage_sizes().
+
+    Outputs:
+        pd.DataFrame: One row per damage type x strength, with DAMAGE_SIZE_COLUMNS.
+    """
+    rows = []
+    for perturbation in sorted(sizes["perturbation"].unique(), key=bm._perturbation_order):
+        of_type = sizes[sizes["perturbation"] == perturbation]
+        changed = (of_type["velocity_change"] > 0).to_numpy()
+        if changed.any() and not changed.all():
+            raise ValueError(f"The {perturbation} damage changes the velocity of some fields but not of others")
+        for epsilon in sorted(of_type["epsilon"].unique()):
+            group = of_type[of_type["epsilon"] == epsilon]
+            values = group["velocity_change"]
+            rows.append({"perturbation": perturbation, "epsilon": float(epsilon),
+                         "n_cases": int(group["case_id"].nunique()), "velocity_change_min": float(values.min()),
+                         "velocity_change_median": float(values.median()),
+                         "velocity_change_max": float(values.max())})
+    return pd.DataFrame(rows)[list(DAMAGE_SIZE_COLUMNS)]
+
+
 # --- LaTeX of the tables ---
 
 def _percent(value) -> str:
@@ -416,6 +692,95 @@ def recall_by_k_latex(table: pd.DataFrame, caption: str) -> str:
         rows.append(cells)
     return pd.DataFrame(rows).to_latex(index=False, escape=False, longtable=True, caption=caption,
                                        label="tab:recall_by_type_eps_k")
+
+
+TEX_SCORE_LABELS = {score: label.replace("−", "$-$") for score, label in SCORE_LABELS.items()}
+
+
+def summary_latex(table: pd.DataFrame, caption: str) -> str:
+    """
+    table_synthetic_vs_natural as a full-width LaTeX table (booktabs): its rows over every
+    k, one per score, the two experiments side by side.
+    """
+    pooled = table[table["k"] == ALL]
+    lines = [
+        "% Written by src/detection/final_figures.py; needs \\usepackage{booktabs}.",
+        "\\begin{table*}[tb]",
+        "\\centering",
+        # Six columns with ranges: at \small, or with the default column gaps, wider than a 7.16 in page
+        "\\footnotesize",
+        "\\setlength{\\tabcolsep}{4pt}",
+        f"\\caption{{{caption}}}",
+        "\\label{tab:synthetic_vs_natural}",
+        "\\begin{tabular}{lcccccc}",
+        "\\toprule",
+        " & \\multicolumn{3}{c}{Synthetic damage} & \\multicolumn{3}{c}{Natural errors} \\\\",
+        "\\cmidrule(lr){2-4} \\cmidrule(lr){5-7}",
+        "Score & AUC & Recall & False alarms & AUC & Recall & False alarms \\\\",
+        "\\midrule",
+    ]
+    for score in SCORE_NAMES:
+        cells = [TEX_SCORE_LABELS[score]]
+        for experiment in (SYNTHETIC, NATURAL):
+            selected = pooled[(pooled["experiment"] == experiment) & (pooled["score"] == score)]
+            if len(selected) != 1:
+                raise ValueError(f"table_synthetic_vs_natural has {len(selected)} rows for {experiment} {score}")
+            row = selected.iloc[0]
+            cells += [bm._with_range(row, "auc"), bm._with_range(row, "recall"),
+                      f"{int(row['n_false_alarms'])}/{int(row['n_negative'])}"]
+        lines.append(" & ".join(cells) + " \\\\")
+    lines += ["\\bottomrule", "\\end{tabular}", "\\end{table*}", ""]
+    return "\n".join(lines)
+
+
+def _size(value: float) -> str:
+    """A velocity change in %, with 2 significant digits: 0.0019, 0.15, 5.4; '0' for none."""
+    return "0" if value == 0 else f"{100 * value:.2g}"
+
+
+def damage_size_latex(table: pd.DataFrame, caption: str) -> str:
+    """
+    table_damage_size as a full-width LaTeX table (booktabs): one row per strength, one
+    column per damage type, each cell the median velocity change and its range over the cases.
+    """
+    perturbations = list(dict.fromkeys(table["perturbation"]))
+    epsilons = sorted(table["epsilon"].unique())
+    # Two-word names on two lines: \shortstack{velocity\\divergence}
+    headers = ["\\shortstack{" + bm._tex_escape(DAMAGE_LABELS[p]).replace(" ", "\\\\") + "}" for p in perturbations]
+    lines = [
+        "% Written by src/detection/final_figures.py; needs \\usepackage{booktabs}.",
+        "\\begin{table*}[tb]",
+        "\\centering",
+        "\\small",
+        f"\\caption{{{caption}}}",
+        "\\label{tab:damage_size}",
+        "\\begin{tabular}{r" + "c" * len(perturbations) + "}",
+        "\\toprule",
+        f" & \\multicolumn{{{len(perturbations)}}}{{c}}{{Velocity change (\\%): median (smallest--largest)}} \\\\",
+        f"\\cmidrule(lr){{2-{len(perturbations) + 1}}}",
+        "$\\varepsilon$ & " + " & ".join(headers) + " \\\\",
+        "\\midrule",
+    ]
+    indexed = table.set_index(["perturbation", "epsilon"])
+    for epsilon in epsilons:
+        cells = [f"{epsilon:g}"]
+        for perturbation in perturbations:
+            row = indexed.loc[(perturbation, epsilon)]
+            if row["velocity_change_max"] == 0:
+                cells.append("0")
+            else:
+                cells.append(f"{_size(row['velocity_change_median'])} ({_size(row['velocity_change_min'])}--"
+                             f"{_size(row['velocity_change_max'])})")
+        lines.append(" & ".join(cells) + " \\\\")
+    lines += ["\\bottomrule", "\\end{tabular}", "\\end{table*}", ""]
+    return "\n".join(lines)
+
+
+def table_latex(stem: str, table: pd.DataFrame, caption: str) -> str:
+    """The .tex of one of TABLES."""
+    writers = {"table_recall_by_type_eps_k": recall_by_k_latex, "table_cases": case_table_latex,
+               "table_synthetic_vs_natural": summary_latex, "table_damage_size": damage_size_latex}
+    return writers[stem](table, caption)
 
 
 # --- Facts for the captions ---
@@ -778,12 +1143,161 @@ def caption_recall_by_k_table(table: pd.DataFrame) -> str:
             "counts over the cases whose clean field the score doesn't flag.")
 
 
+def _flags(table: pd.DataFrame, score: str) -> np.ndarray:
+    return table[f"flagged_{score}"].to_numpy(dtype=bool)
+
+
+def caption_natural(natural: pd.DataFrame) -> str:
+    final = (natural["stage"] == FINAL_STAGE).to_numpy()
+    inaccurate = natural["inaccurate"].to_numpy(dtype=bool)
+    adam_steps = sorted(int(step) for step in natural.loc[~final, "adam_step"].unique())
+    n_inaccurate = int(inaccurate.sum())
+    text = (f"The score of each of the {len(natural)} checkpoints of the {natural['case_id'].nunique()} new runs "
+            f"(after {_and([str(step) for step in adam_steps])} Adam steps, and the final model after L-BFGS) against "
+            "its velocity error relative to the exact solution, on the $64\\times64\\times11$ test grid. Each score is "
+            "divided by its frozen $\\tau$, so the horizontal line at 1 is $\\tau$ (flagged above it); dashed line: a "
+            f"model is inaccurate above {100 * INACCURATE_ABOVE:g}\\% error. Colour: the training stage, light to dark; "
+            "marker: $k$. Shaded: where false alarms (accurate, flagged) and missed failures (inaccurate, not flagged) "
+            "would lie.")
+    missed = {score: int((inaccurate & ~_flags(natural, score)).sum()) for score in SCORE_NAMES}
+    if not any(missed.values()):
+        text += f" Every score flags all {n_inaccurate} inaccurate checkpoints."
+    else:
+        text += (" Missed failures, of " + str(n_inaccurate) + ": "
+                 + _and([f"{_short(score)} {missed[score]}" for score in SCORE_NAMES]) + ".")
+    accurate_adam = ~inaccurate & ~final
+    flagged_by_all = np.logical_and.reduce([_flags(natural, score) for score in SCORE_NAMES])
+    if accurate_adam.any() and flagged_by_all[accurate_adam].all():
+        lowest = 100 * natural.loc[accurate_adam, "relL2_uv"].min()
+        on_final = _and([f"{_short(s)} {int((final & ~inaccurate & _flags(natural, s)).sum())}" for s in SCORE_NAMES])
+        text += (f" The false alarms are the {int(accurate_adam.sum())} Adam checkpoints with errors from "
+                 f"{lowest:.2f} to {100 * INACCURATE_ABOVE:g}\\%, which every score flags, and the false alarms on the "
+                 f"{int((final & ~inaccurate).sum())} accurate final models ({on_final}).")
+    worst_final = natural[final].sort_values("relL2_uv").iloc[-1]
+    best_adam = natural[~final].sort_values("relL2_uv").iloc[0]
+    if worst_final["relL2_uv"] < best_adam["relL2_uv"]:
+        text += (f" No checkpoint has an error between {_percent(worst_final['relL2_uv'])}\\% (the least accurate "
+                 f"final model, {bm._tex_escape(worst_final['case_id'])}) and {_percent(best_adam['relL2_uv'])}\\% "
+                 "(the most accurate Adam checkpoint).")
+    return text
+
+
+def _damaged_with_sizes(fields: pd.DataFrame, sizes: pd.DataFrame) -> pd.DataFrame:
+    """The damaged fields of the benchmark, each with the velocity change its damage makes (damage_sizes())."""
+    damaged = fields[fields["label"] != "clean"]
+    merged = damaged.merge(sizes[["case_id", "perturbation", "epsilon", "velocity_change"]],
+                           on=["case_id", "perturbation", "epsilon"], how="left", validate="one_to_one")
+    if merged["velocity_change"].isna().any():
+        raise ValueError("Some damaged fields have no damage size")
+    return merged
+
+
+def _unchanged_types(sizes: pd.DataFrame) -> list:
+    """The damage types that never change the velocity (pressure)."""
+    return sorted((p for p, group in sizes.groupby("perturbation") if (group["velocity_change"] == 0).all()),
+                  key=bm._perturbation_order)
+
+
+def smallest_full_damage(damaged: pd.DataFrame, score: str):
+    """
+    (median, smallest, largest velocity change, type, strength) of the damage, among those
+    that change the velocity, that the score flags in every case with the smallest median
+    velocity change; None if there is none.
+    """
+    found = []
+    for (perturbation, epsilon), group in damaged[damaged["velocity_change"] > 0].groupby(["perturbation", "epsilon"]):
+        if _flags(group, score).all():
+            values = group["velocity_change"]
+            found.append((values.median(), values.min(), values.max(), perturbation, epsilon))
+    return min(found) if found else None
+
+
+def caption_shared(fields: pd.DataFrame, sizes: pd.DataFrame, natural: pd.DataFrame) -> str:
+    damaged = _damaged_with_sizes(fields, sizes)
+    final = natural[(natural["stage"] == FINAL_STAGE).to_numpy()]
+    n_cases = fields["case_id"].nunique()
+    unchanged = _unchanged_types(sizes)
+    text = ("Both experiments on one axis: each score over its frozen $\\tau$ (flagged above 1) against the size of the "
+            "velocity error, relative to the exact velocity on the $64\\times64\\times11$ test grid. Synthetic damage "
+            f"(orange; marker: damage type): each damaged field of the {n_cases} new cases, at the velocity change its "
+            "damage makes (Table~\\ref{tab:damage_size}). Natural errors (blue, light to dark: the training stage): "
+            "each checkpoint, at its own velocity error against the exact solution.")
+    if unchanged:
+        text += f" The {_and([DAMAGE_LABELS[p] for p in unchanged])} damage changes only the pressure and is not shown."
+    smallest = {score: smallest_full_damage(damaged, score) for score in SCORE_NAMES}
+    listed = [f"{_short(score)}, {DAMAGE_LABELS[found[3]]} damage at $\\varepsilon = {found[4]:g}$ "
+              f"({_size(found[1])}--{_size(found[2])}\\%)" for score, found in smallest.items() if found]
+    if listed:
+        text += (f" The smallest damage each score flags in all {n_cases} cases, and the velocity change it makes: "
+                 f"{'; '.join(listed)}.")
+    n_final_alarms = [int(_flags(final, score).sum()) for score in SCORE_NAMES]
+    text += (f" The final models' own errors are {_percent(final['relL2_uv'].min())}--"
+             f"{_percent(final['relL2_uv'].max())}\\%, and the five scores flag {_and([str(n) for n in n_final_alarms])} "
+             f"of these {len(final)} models")
+    louder = all(found is not None and found[0] < final["relL2_uv"].max() for found in smallest.values())
+    if louder and max(n_final_alarms) < len(final) / 2:
+        text += (": per unit of velocity error, the synthetic damages raise the scores more than the errors of the "
+                 "trained models do.")
+    else:
+        text += "."
+    return text
+
+
+def caption_summary(summary: pd.DataFrame, natural: pd.DataFrame) -> str:
+    pooled = summary[summary["k"] == ALL]
+    synthetic = pooled[pooled["experiment"] == SYNTHETIC].iloc[0]
+    checkpoints = pooled[pooled["experiment"] == NATURAL].iloc[0]
+    final = (natural["stage"] == FINAL_STAGE).to_numpy()
+    accurate = ~natural["inaccurate"].to_numpy(dtype=bool)
+    return (f"Both experiments at the frozen $\\tau$, in the same terms. Synthetic damage: the "
+            f"{int(synthetic['n_positive'] + synthetic['n_negative'])} fields of the {int(synthetic['n_cases'])} new "
+            f"cases; positive: the {int(synthetic['n_positive'])} damaged fields, negative: the "
+            f"{int(synthetic['n_negative'])} clean ones. Natural errors: the "
+            f"{int(checkpoints['n_positive'] + checkpoints['n_negative'])} checkpoints of the "
+            f"{int(checkpoints['n_cases'])} runs; positive: the {int(checkpoints['n_positive'])} inaccurate ones "
+            f"(velocity error above {100 * INACCURATE_ABOVE:g}\\%), negative: the {int(checkpoints['n_negative'])} "
+            f"accurate ones, {int((accurate & final).sum())} final models and {int((accurate & ~final).sum())} Adam "
+            "checkpoints. AUC: positives against negatives; recall: the share of positives flagged; both with a "
+            f"case-bootstrap 95\\% range ({N_BOOT} resamples of whole cases within each $k$). False alarms: negatives "
+            "flagged. The .csv adds the ranges of the false-alarm rates (exact for the clean fields, one per case; case "
+            "bootstrap for the checkpoints) and the same numbers for each $k$.")
+
+
+def caption_damage_size(table: pd.DataFrame, n_cases: int) -> str:
+    unchanged = [p for p, group in table.groupby("perturbation", sort=False) if (group["velocity_change_max"] == 0).all()]
+    text = ("The size of each synthetic damage as a velocity error: the relative $L_2$ change it makes to the velocity, "
+            "against the exact velocity on the $64\\times64\\times11$ test grid of the accuracy audit, in \\%: the "
+            f"median over the {n_cases} new cases, and the smallest and largest. Computed with the benchmark's damage "
+            "code on the exact solution in place of the model: an added damage changes any field by the same amount, "
+            "and the time shift's size is its change to the exact flow.")
+    if unchanged:
+        text += f" The {_and([DAMAGE_LABELS[p] for p in unchanged])} damage changes only the pressure."
+    return text
+
+
 # --- Figures ---
 
-def save_figure(fig, output_dir: Path, stem: str) -> list:
-    """Saves a figure as <stem>.pdf and <stem>.png; the PDF without a creation date, so a rerun gives the same file."""
+def save_figure(fig, output_dir: Path, stem: str, top_legend=None) -> list:
+    """
+    Saves a figure as <stem>.pdf, for the paper, without a title (its caption is the
+    title) and without a creation date, so a rerun gives the same file; then as
+    <stem>.png with its one-line title (PNG_TITLES), to be read on its own.
+
+    A figure legend placed above the panels (top_legend) sits at the very top of the
+    figure, where a title would land on it, so there the title becomes the legend's own
+    title and the layout makes room for both. Otherwise the title goes in a band added
+    above the figure, and the layout below it stays the PDF's.
+    """
     pdf_path, png_path = output_dir / f"{stem}.pdf", output_dir / f"{stem}.png"
     fig.savefig(pdf_path, metadata={"CreationDate": None})
+    if top_legend is not None:
+        top_legend.set_title(PNG_TITLES[stem], prop={"size": PNG_TITLE_SIZE})
+    else:
+        width, height = fig.get_size_inches()
+        fig.set_size_inches(width, height + PNG_TITLE_BAND)
+        fig.get_layout_engine().set(rect=(0, 0, 1, height / (height + PNG_TITLE_BAND)))
+        fig.text(0.5, 1 - 0.5 * PNG_TITLE_BAND / (height + PNG_TITLE_BAND), PNG_TITLES[stem], ha="center",
+                 va="center", fontsize=PNG_TITLE_SIZE, color=ne.INK)
     fig.savefig(png_path, dpi=PNG_DPI)
     return [pdf_path, png_path]
 
@@ -877,9 +1391,9 @@ def plot_recall(table: pd.DataFrame, rate: str, output_dir, stem: str) -> list:
             ax.set_title(DAMAGE_LABELS[perturbation])
         axes[0].set_ylabel("recall" if rate == "recall" else "recall, new detections")
         fig.supxlabel("damage strength \u03b5")
-        fig.legend(handles=_score_handles(bands=True), loc="outside upper center", ncol=len(SCORE_NAMES) + 1,
-                   frameon=False, handlelength=1.8, handletextpad=0.5, columnspacing=1.0)
-        paths = save_figure(fig, Path(output_dir), stem)
+        legend = fig.legend(handles=_score_handles(bands=True), loc="outside upper center", ncol=len(SCORE_NAMES) + 1,
+                            frameon=False, handlelength=1.8, handletextpad=0.5, columnspacing=1.0)
+        paths = save_figure(fig, Path(output_dir), stem, top_legend=legend)
         plt.close(fig)
     return paths
 
@@ -904,9 +1418,9 @@ def plot_recall_by_k(table: pd.DataFrame, output_dir) -> list:
                     ax.set_title(DAMAGE_LABELS[perturbation])
             axes[i, 0].set_ylabel(f"k = {k}\nrecall")
         fig.supxlabel("damage strength \u03b5")
-        fig.legend(handles=_score_handles(bands=True), loc="outside upper center", ncol=len(SCORE_NAMES) + 1,
-                   frameon=False, handlelength=1.8, handletextpad=0.5, columnspacing=1.0)
-        paths = save_figure(fig, Path(output_dir), "fig_recall_vs_eps_by_k")
+        legend = fig.legend(handles=_score_handles(bands=True), loc="outside upper center", ncol=len(SCORE_NAMES) + 1,
+                            frameon=False, handlelength=1.8, handletextpad=0.5, columnspacing=1.0)
+        paths = save_figure(fig, Path(output_dir), "fig_recall_vs_eps_by_k", top_legend=legend)
         plt.close(fig)
     return paths
 
@@ -1081,6 +1595,158 @@ def plot_clean_scores(fields: pd.DataFrame, old: pd.DataFrame, thresholds: dict,
     return paths
 
 
+_SUPERSCRIPTS = str.maketrans("-0123456789", "⁻⁰¹²³⁴⁵⁶⁷⁸⁹")
+
+
+def _power_label(value, _=None) -> str:
+    """A log-axis tick: 0.1, 1, 10, 100, 1000 as they are, other powers of ten as 10⁴."""
+    exponent = int(round(np.log10(value)))
+    return f"{value:g}" if -1 <= exponent <= 3 else "10" + str(exponent).translate(_SUPERSCRIPTS)
+
+
+def _ratio_panels(n_panels: int, x_range: tuple, y_range: tuple):
+    """
+    The 2 x 3 grid of a figure with one panel per score and the legend in the last slot:
+    shared log axes, x an error in % and y a score / tau, each with its line at tau.
+    """
+    fig, axes = plt.subplots(2, 3, figsize=(TEXT_WIDTH, 4.5), sharex=True, sharey=True, layout="constrained")
+    decades = range(int(np.floor(np.log10(x_range[0]))), int(np.ceil(np.log10(x_range[1]))) + 1)
+    for ax in axes.flat[:n_panels]:
+        _style(ax)
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_xlim(*x_range)
+        ax.set_ylim(*y_range)
+        ax.xaxis.set_major_locator(FixedLocator([10.0 ** e for e in decades]))
+        ax.xaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:g}"))
+        ax.xaxis.set_minor_formatter(NullFormatter())
+        ax.yaxis.set_major_formatter(FuncFormatter(_power_label))
+        ax.axhline(1.0, color=ne.INK_SECONDARY, linewidth=0.8, zorder=1)
+        ax.text(1.01, 1.0, "τ", transform=ax.get_yaxis_transform(), ha="left", va="center",
+                color=ne.INK_SECONDARY, fontsize=7.5)
+    for ax in axes[:, 0]:
+        ax.set_ylabel("score / τ")
+    legend_ax = axes.flat[n_panels]
+    legend_ax.axis("off")
+    # The panel above the legend has no panel below it to carry the shared x labels
+    axes.flat[n_panels - 3].tick_params(axis="x", labelbottom=True)
+    return fig, axes, legend_ax
+
+
+def _short_stage_label(stage: str) -> str:
+    """'Adam 100', ..., 'L-BFGS (final)'."""
+    return "L-BFGS (final)" if stage == FINAL_STAGE else f"Adam {int(stage.split('_')[1])}"
+
+
+def _stage_handles(label=ne.stage_label) -> list:
+    return [Line2D([], [], linestyle="", marker=NATURAL_MARKER, markersize=4.2, markerfacecolor=ne.STAGE_COLOURS[s],
+                   markeredgecolor="white", markeredgewidth=0.4, label=label(s)) for s in ne.STAGES]
+
+
+def plot_natural(natural: pd.DataFrame, thresholds: dict, output_dir) -> list:
+    """
+    fig_natural_score_vs_error: #39's figure in the style of the others. For each score,
+    the score / tau of each checkpoint against its velocity error (relL2_uv, in %), colour
+    by training stage, marker by k; the line at 1 is tau (flagged above it), the dashed
+    line the 10% rule. Shaded: where false alarms (left of the rule, above tau) and missed
+    failures (right of it, below tau) would lie.
+    """
+    errors = 100 * natural["relL2_uv"].to_numpy(dtype=float)
+    ratios = {score: natural[score].to_numpy(dtype=float) / thresholds[score] for score in SCORE_NAMES}
+    x_range = (errors.min() / 1.6, errors.max() * 1.6)
+    y_range = (min(r.min() for r in ratios.values()) / 1.8, max(r.max() for r in ratios.values()) * 1.8)
+    rule = 100 * INACCURATE_ABOVE
+    inaccurate = natural["inaccurate"].to_numpy(dtype=bool)
+    with plt.rc_context(PRINT_RC):
+        fig, axes, legend_ax = _ratio_panels(len(SCORE_NAMES), x_range, y_range)
+        for ax, score in zip(axes.flat, SCORE_NAMES):
+            ax.fill_between([x_range[0], rule], 1.0, y_range[1], color=ne.WASH, linewidth=0, zorder=0)
+            ax.fill_between([rule, x_range[1]], y_range[0], 1.0, color=ne.WASH, linewidth=0, zorder=0)
+            ax.axvline(rule, color=ne.INK_SECONDARY, linewidth=0.8, linestyle=(0, (4, 2)), zorder=1)
+            for stage in ne.STAGES:
+                for k, marker in ne.K_MARKERS.items():
+                    chosen = ((natural["stage"] == stage) & (natural["k"] == k)).to_numpy()
+                    ax.scatter(errors[chosen], ratios[score][chosen], s=9, marker=marker,
+                               color=ne.STAGE_COLOURS[stage], edgecolors="white", linewidths=0.3, zorder=3)
+            flagged = _flags(natural, score)
+            ax.set_title(f"{SCORE_LABELS[score]}\nmissed {int((inaccurate & ~flagged).sum())} of "
+                         f"{int(inaccurate.sum())}, false alarms {int((~inaccurate & flagged).sum())} of "
+                         f"{int((~inaccurate).sum())}")
+        fig.supxlabel("velocity error against the exact solution (%)")
+        stages = legend_ax.legend(handles=_stage_handles(), title="Training stage", loc="upper left", frameon=False,
+                                  alignment="left", handletextpad=0.4, borderaxespad=0.0)
+        legend_ax.add_artist(stages)
+        others = [Line2D([], [], linestyle="", marker=marker, markersize=4, markerfacecolor=ne.INK_MUTED,
+                         markeredgecolor="white", markeredgewidth=0.4, label=f"k = {k}")
+                  for k, marker in ne.K_MARKERS.items()]
+        others += [Line2D([], [], color=ne.INK_SECONDARY, linewidth=0.8, label="τ"),
+                   Line2D([], [], color=ne.INK_SECONDARY, linewidth=0.8, linestyle=(0, (4, 2)),
+                          label=f"{rule:g}% error")]
+        legend_ax.legend(handles=others, loc="upper left", bbox_to_anchor=(0.62, 1.0), frameon=False,
+                         alignment="left", handletextpad=0.4, borderaxespad=0.0)
+        legend_ax.text(0.0, 0.0, f"Flagged above τ; inaccurate above {rule:g}% error.\nShaded: false alarms "
+                                 "(accurate, flagged) and\nmissed failures (inaccurate, not flagged).",
+                       transform=legend_ax.transAxes, ha="left", va="bottom", color=ne.INK_SECONDARY, fontsize=7)
+        paths = save_figure(fig, Path(output_dir), "fig_natural_score_vs_error")
+        plt.close(fig)
+    return paths
+
+
+def plot_shared(fields: pd.DataFrame, sizes: pd.DataFrame, natural: pd.DataFrame, thresholds: dict,
+                output_dir) -> list:
+    """
+    fig_score_vs_velocity_error: both experiments on one axis. For each score, the score /
+    tau against the size of the velocity error: of each damaged field (orange, marker by
+    damage type), the velocity change its damage makes (damage_sizes()); of each
+    checkpoint (blue, by training stage), its own velocity error against the exact
+    solution. A damage type that never changes the velocity (pressure) has no place on
+    the axis and is left out.
+    """
+    damaged = _damaged_with_sizes(fields, sizes)
+    shown = damaged[damaged["velocity_change"] > 0]
+    perturbations = sorted(shown["perturbation"].unique(), key=bm._perturbation_order)
+    x_damage = 100 * shown["velocity_change"].to_numpy(dtype=float)
+    x_natural = 100 * natural["relL2_uv"].to_numpy(dtype=float)
+    y_damage = {score: shown[score].to_numpy(dtype=float) / thresholds[score] for score in SCORE_NAMES}
+    y_natural = {score: natural[score].to_numpy(dtype=float) / thresholds[score] for score in SCORE_NAMES}
+    x_range = (min(x_damage.min(), x_natural.min()) / 1.6, max(x_damage.max(), x_natural.max()) * 1.6)
+    y_all = np.concatenate([*y_damage.values(), *y_natural.values()])
+    y_range = (y_all.min() / 1.8, y_all.max() * 1.8)
+    with plt.rc_context(PRINT_RC):
+        fig, axes, legend_ax = _ratio_panels(len(SCORE_NAMES), x_range, y_range)
+        for ax, score in zip(axes.flat, SCORE_NAMES):
+            for perturbation in perturbations:
+                chosen = (shown["perturbation"] == perturbation).to_numpy()
+                ax.scatter(x_damage[chosen], y_damage[score][chosen], s=7, marker=DAMAGE_MARKERS[perturbation],
+                           color=SYNTHETIC_COLOUR, edgecolors="white", linewidths=0.25, alpha=0.85, zorder=2)
+            for stage in ne.STAGES:
+                chosen = (natural["stage"] == stage).to_numpy()
+                ax.scatter(x_natural[chosen], y_natural[score][chosen], s=9, marker=NATURAL_MARKER,
+                           color=ne.STAGE_COLOURS[stage], edgecolors="white", linewidths=0.3, zorder=3)
+            ax.set_title(SCORE_LABELS[score])
+        fig.supxlabel("size of the velocity error (% of the exact velocity)")
+        # Two legends stacked, each in two columns, so the long damage names have the width of the slot
+        damage_handles = [Line2D([], [], linestyle="", marker=DAMAGE_MARKERS[p], markersize=4.2,
+                                 markerfacecolor=SYNTHETIC_COLOUR, markeredgecolor="white", markeredgewidth=0.4,
+                                 label=DAMAGE_LABELS[p]) for p in perturbations]
+        synthetic = legend_ax.legend(handles=damage_handles, title="Synthetic damage", ncol=2, loc="upper left",
+                                     frameon=False, alignment="left", handletextpad=0.3, columnspacing=1.0,
+                                     borderaxespad=0.0)
+        legend_ax.add_artist(synthetic)
+        legend_ax.legend(handles=_stage_handles(_short_stage_label), title="Natural errors (training stage)", ncol=2,
+                         loc="upper left", bbox_to_anchor=(0.0, 0.66), frameon=False, alignment="left",
+                         handletextpad=0.3, columnspacing=1.0, borderaxespad=0.0)
+        unchanged = _unchanged_types(sizes)
+        note = "x: the velocity change a damage makes, or a\nmodel's own error. Flagged above τ."
+        if unchanged:
+            note += f"\nNot shown: {_and([DAMAGE_LABELS[p] for p in unchanged])} damage (velocity unchanged)."
+        legend_ax.text(0.0, 0.0, note, transform=legend_ax.transAxes, ha="left", va="bottom",
+                       color=ne.INK_SECONDARY, fontsize=7)
+        paths = save_figure(fig, Path(output_dir), "fig_score_vs_velocity_error")
+        plt.close(fig)
+    return paths
+
+
 # --- Running it ---
 
 def write_table(table: pd.DataFrame, latex: str, output_dir: Path, stem: str) -> list:
@@ -1100,13 +1766,14 @@ def write_text(path: Path, text: str) -> Path:
 
 def build(benchmark_dir=DEFAULT_BENCHMARK_DIR, errors_csv=DEFAULT_ERRORS_CSV, metadata=DEFAULT_METADATA,
           loss_summary_csv=DEFAULT_LOSS_SUMMARY, calibration_json=DEFAULT_CALIBRATION_JSON,
-          source_csv=DEFAULT_SOURCE_CSV) -> dict:
+          source_csv=DEFAULT_SOURCE_CSV, natural_dir=DEFAULT_NATURAL_DIR) -> dict:
     """
     Reads and checks every input, and builds the tables and captions (no file is written).
 
     Outputs:
         dict: fields, old (the old clean fields), metrics ({breakdown: DataFrame}), calib,
-              cases, tables ({stem: DataFrame}) and captions ({stem: LaTeX text}).
+              cases, natural (the checkpoints), sizes (damage_sizes()), tables ({stem:
+              DataFrame}) and captions ({stem: LaTeX text}).
     """
     calib = frozen_calibration.load(calibration_json)
     thresholds = calib["thresholds"]
@@ -1115,9 +1782,13 @@ def build(benchmark_dir=DEFAULT_BENCHMARK_DIR, errors_csv=DEFAULT_ERRORS_CSV, me
     check_metrics(fields, metrics)
     old = read_old_clean_fields(source_csv, calib)
     cases, errors, loss = read_case_inputs(metadata, errors_csv, loss_summary_csv)
+    natural = read_natural(natural_dir, calib, errors, cases, fields)
 
     by_k = recall_by_type_eps_k(fields)
     cases_table = case_table(cases, errors, loss, fields)
+    summary = summary_table(metrics, natural, read_natural_stage_table(natural_dir), thresholds)
+    sizes = damage_sizes(cases, sorted(fields.loc[fields["label"] != "clean", "epsilon"].unique()))
+    size_table = damage_size_table(sizes)
     type_eps = metrics["by_type_eps"]
     captions = {
         "fig_recall_vs_eps": caption_recall_vs_eps(type_eps, fields, thresholds),
@@ -1125,23 +1796,29 @@ def build(benchmark_dir=DEFAULT_BENCHMARK_DIR, errors_csv=DEFAULT_ERRORS_CSV, me
         "fig_recall_vs_eps_by_k": caption_recall_by_k(by_k, metrics, fields),
         "fig_roc": caption_roc(metrics["overall"], metrics, fields),
         "fig_clean_scores_vs_tau": caption_clean_scores(fields, old, thresholds, cases),
+        "fig_natural_score_vs_error": caption_natural(natural),
+        "fig_score_vs_velocity_error": caption_shared(fields, sizes, natural),
         "table_recall_by_type_eps_k": caption_recall_by_k_table(by_k),
         "table_cases": caption_cases(cases_table),
+        "table_synthetic_vs_natural": caption_summary(summary, natural),
+        "table_damage_size": caption_damage_size(size_table, len(cases)),
     }
-    return {"fields": fields, "old": old, "metrics": metrics, "calib": calib, "cases": cases,
-            "tables": {"table_recall_by_type_eps_k": by_k, "table_cases": cases_table}, "captions": captions}
+    tables = {"table_recall_by_type_eps_k": by_k, "table_cases": cases_table,
+              "table_synthetic_vs_natural": summary, "table_damage_size": size_table}
+    return {"fields": fields, "old": old, "metrics": metrics, "calib": calib, "cases": cases, "natural": natural,
+            "sizes": sizes, "tables": tables, "captions": captions}
 
 
 def run(benchmark_dir=DEFAULT_BENCHMARK_DIR, errors_csv=DEFAULT_ERRORS_CSV, metadata=DEFAULT_METADATA,
         loss_summary_csv=DEFAULT_LOSS_SUMMARY, calibration_json=DEFAULT_CALIBRATION_JSON,
-        source_csv=DEFAULT_SOURCE_CSV, output_dir=DEFAULT_OUTPUT_DIR) -> tuple:
+        source_csv=DEFAULT_SOURCE_CSV, output_dir=DEFAULT_OUTPUT_DIR, natural_dir=DEFAULT_NATURAL_DIR) -> tuple:
     """
     Builds everything (build()) and writes it to output_dir. See the module docstring.
 
     Outputs:
         (built, written): the output of build(), and the list of files written.
     """
-    built = build(benchmark_dir, errors_csv, metadata, loss_summary_csv, calibration_json, source_csv)
+    built = build(benchmark_dir, errors_csv, metadata, loss_summary_csv, calibration_json, source_csv, natural_dir)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     fields, metrics, captions = built["fields"], built["metrics"], built["captions"]
@@ -1154,25 +1831,29 @@ def run(benchmark_dir=DEFAULT_BENCHMARK_DIR, errors_csv=DEFAULT_ERRORS_CSV, meta
     written += plot_recall_by_k(tables["table_recall_by_type_eps_k"], output_dir)
     written += plot_roc(fields, metrics["overall"], output_dir)
     written += plot_clean_scores(fields, built["old"], thresholds, output_dir)
+    written += plot_natural(built["natural"], thresholds, output_dir)
+    written += plot_shared(fields, built["sizes"], built["natural"], thresholds, output_dir)
     for stem in FIGURES:
-        written.append(write_text(output_dir / f"{stem}.tex", figure_tex(stem, captions[stem], wide=stem != "fig_roc")))
-    written += write_table(tables["table_recall_by_type_eps_k"],
-                           recall_by_k_latex(tables["table_recall_by_type_eps_k"], captions["table_recall_by_type_eps_k"]),
-                           output_dir, "table_recall_by_type_eps_k")
-    written += write_table(tables["table_cases"], case_table_latex(tables["table_cases"], captions["table_cases"]),
-                           output_dir, "table_cases")
+        written.append(write_text(output_dir / f"{stem}.tex",
+                                  figure_tex(stem, captions[stem], wide=stem not in NARROW_FIGURES)))
+    for stem in TABLES:
+        written += write_table(tables[stem], table_latex(stem, tables[stem], captions[stem]), output_dir, stem)
     return built, written
 
 
 def print_summary(built: dict, written: list) -> None:
     """Prints what was written and the headline numbers."""
     fields = built["fields"]
-    overall = built["metrics"]["overall"]
     cases = built["tables"]["table_cases"]
-    print(f"Read {len(fields)} fields of {fields['case_id'].nunique()} cases; every input table agrees")
-    for _, row in overall.iterrows():
-        print(f"  {row['score']:28s} AUC {_range_text(row, 'auc')}  recall {bm._number(row['recall'])}  "
-              f"false alarms {int(row['n_false_alarms'])}/{int(row['n_clean'])}")
+    summary = built["tables"]["table_synthetic_vs_natural"]
+    natural = built["natural"]
+    print(f"Read {len(fields)} fields and {len(natural)} checkpoints of {fields['case_id'].nunique()} cases; every "
+          "input table agrees")
+    for experiment in (SYNTHETIC, NATURAL):
+        print(f"  {experiment}:")
+        for _, row in summary[(summary["experiment"] == experiment) & (summary["k"] == ALL)].iterrows():
+            print(f"    {row['score']:28s} AUC {_range_text(row, 'auc')}  recall {bm._number(row['recall'])}  "
+                  f"false alarms {int(row['n_false_alarms'])}/{int(row['n_negative'])}")
     print(f"  {int(cases['passed_acceptance'].sum())}/{len(cases)} runs passed; final velocity error "
           f"{_percent(cases['relL2_uv'].min())}-{_percent(cases['relL2_uv'].max())}% (test grid)")
     print(f"Wrote {len(written)} files")
@@ -1183,13 +1864,16 @@ def parse_args(argv=None):
     Parses the command line.
 
     Outputs:
-        argparse.Namespace: benchmark_dir, errors, metadata, loss_summary, calibration,
-                            source, output_dir (str).
+        argparse.Namespace: benchmark_dir, natural_dir, errors, metadata, loss_summary,
+                            calibration, source, output_dir (str).
     """
     parser = argparse.ArgumentParser(description="Write the final figures and the case table (#36) from the saved "
-                                                 "results of the benchmark, the accuracy audit and the training.")
+                                                 "results of the benchmark, the natural errors, the accuracy audit "
+                                                 "and the training.")
     parser.add_argument("--benchmark_dir", type=str, default=str(DEFAULT_BENCHMARK_DIR),
                         help="Folder with #35's tables (default: results/benchmark).")
+    parser.add_argument("--natural_dir", type=str, default=str(DEFAULT_NATURAL_DIR),
+                        help="Folder with #39's tables (default: results/natural_errors).")
     parser.add_argument("--errors", type=str, default=str(DEFAULT_ERRORS_CSV),
                         help="The true errors of #37 (default: results/accuracy/reference_errors_confirmation.csv).")
     parser.add_argument("--metadata", type=str, default=str(DEFAULT_METADATA),
@@ -1210,7 +1894,7 @@ def main(argv=None):
     """Writes every figure and table and prints a summary."""
     args = parse_args(argv)
     built, written = run(args.benchmark_dir, args.errors, args.metadata, args.loss_summary, args.calibration,
-                         args.source, args.output_dir)
+                         args.source, args.output_dir, natural_dir=args.natural_dir)
     print_summary(built, written)
 
 
