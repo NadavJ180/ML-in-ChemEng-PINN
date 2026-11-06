@@ -1,0 +1,21 @@
+% Written by src/detection/final_figures.py; needs \usepackage{booktabs}.
+\begin{table*}[tb]
+\centering
+\small
+\caption{The size of each synthetic damage as a velocity error: the relative $L_2$ change it makes to the velocity, against the exact velocity on the $64\times64\times11$ test grid of the accuracy audit, in \%: the median over the 30 new cases, and the smallest and largest. Computed with the benchmark's damage code on the exact solution in place of the model: an added damage changes any field by the same amount, and the time shift's size is its change to the exact flow. The pressure damage changes only the pressure.}
+\label{tab:damage_size}
+\begin{tabular}{rccccc}
+\toprule
+ & \multicolumn{5}{c}{Velocity change (\%): median (smallest--largest)} \\
+\cmidrule(lr){2-6}
+$\varepsilon$ & \shortstack{velocity\\divergence} & \shortstack{momentum} & \shortstack{pressure} & \shortstack{temporal\\mismatch} & \shortstack{boundary} \\
+\midrule
+0.0001 & 0.0074 (0.0072--0.01) & 0.0079 (0.0077--0.011) & 0 & 0.0096 (0.0095--0.0098) & 0.0021 (0.002--0.0028) \\
+0.002 & 0.15 (0.14--0.2) & 0.16 (0.15--0.21) & 0 & 0.19 (0.19--0.2) & 0.042 (0.04--0.056) \\
+0.01 & 0.74 (0.72--1) & 0.79 (0.77--1.1) & 0 & 0.94 (0.83--0.98) & 0.21 (0.2--0.28) \\
+0.02 & 1.5 (1.4--2) & 1.6 (1.5--2.1) & 0 & 1.8 (1.3--1.9) & 0.42 (0.4--0.56) \\
+0.03 & 2.2 (2.1--3) & 2.4 (2.3--3.2) & 0 & 2.6 (1.3--2.9) & 0.63 (0.61--0.85) \\
+0.05 & 3.7 (3.6--5) & 4 (3.8--5.4) & 0 & 3.9 (1.3--4.8) & 1 (1--1.4) \\
+\bottomrule
+\end{tabular}
+\end{table*}
