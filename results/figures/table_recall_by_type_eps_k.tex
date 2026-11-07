@@ -1,0 +1,95 @@
+% Written by src/detection/final_figures.py; needs \usepackage{booktabs} and \usepackage{longtable}.
+% A longtable works only in one-column mode: in a two-column paper, put \onecolumn before it (e.g. in an appendix).
+\begin{longtable}{lllllllll}
+\caption{Damaged fields flagged by each score, by $k$, damage type and strength, out of the 10 cases with that $k$ (frozen calibration, flagged above $\tau$). The .csv adds the exact 95\% confidence intervals and the counts over the cases whose clean field the score doesn't flag.} \label{tab:recall_by_type_eps_k} \\
+\toprule
+Score & $k$ & Damage & $\varepsilon=0.0001$ & $\varepsilon=0.002$ & $\varepsilon=0.01$ & $\varepsilon=0.02$ & $\varepsilon=0.03$ & $\varepsilon=0.05$ \\
+\midrule
+\endfirsthead
+\caption[]{Damaged fields flagged by each score, by $k$, damage type and strength, out of the 10 cases with that $k$ (frozen calibration, flagged above $\tau$). The .csv adds the exact 95\% confidence intervals and the counts over the cases whose clean field the score doesn't flag.} \\
+\toprule
+Score & $k$ & Damage & $\varepsilon=0.0001$ & $\varepsilon=0.002$ & $\varepsilon=0.01$ & $\varepsilon=0.02$ & $\varepsilon=0.03$ & $\varepsilon=0.05$ \\
+\midrule
+\endhead
+\midrule
+\multicolumn{9}{r}{Continued on next page} \\
+\midrule
+\endfoot
+\bottomrule
+\endlastfoot
+Score1 & 1 & velocity divergence & 0/10 & 7/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score1 & 1 & momentum & 0/10 & 10/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score1 & 1 & pressure & 0/10 & 10/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score1 & 1 & temporal mismatch & 1/10 & 10/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score1 & 1 & boundary & 0/10 & 1/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score1 & 2 & velocity divergence & 0/10 & 1/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score1 & 2 & momentum & 0/10 & 2/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score1 & 2 & pressure & 0/10 & 10/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score1 & 2 & temporal mismatch & 0/10 & 9/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score1 & 2 & boundary & 0/10 & 0/10 & 5/10 & 10/10 & 10/10 & 10/10 \\
+Score1 & 3 & velocity divergence & 0/10 & 0/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score1 & 3 & momentum & 0/10 & 0/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score1 & 3 & pressure & 0/10 & 0/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score1 & 3 & temporal mismatch & 0/10 & 2/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score1 & 3 & boundary & 0/10 & 0/10 & 0/10 & 5/10 & 10/10 & 10/10 \\
+Score2 & 1 & velocity divergence & 1/10 & 10/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score2 & 1 & momentum & 1/10 & 10/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score2 & 1 & pressure & 1/10 & 10/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score2 & 1 & temporal mismatch & 1/10 & 10/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score2 & 1 & boundary & 1/10 & 10/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score2 & 2 & velocity divergence & 1/10 & 10/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score2 & 2 & momentum & 1/10 & 10/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score2 & 2 & pressure & 1/10 & 10/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score2 & 2 & temporal mismatch & 1/10 & 5/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score2 & 2 & boundary & 1/10 & 8/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score2 & 3 & velocity divergence & 0/10 & 10/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score2 & 3 & momentum & 0/10 & 10/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score2 & 3 & pressure & 0/10 & 0/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score2 & 3 & temporal mismatch & 0/10 & 0/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score2 & 3 & boundary & 0/10 & 0/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score3 & 1 & velocity divergence & 0/10 & 10/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score3 & 1 & momentum & 0/10 & 10/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score3 & 1 & pressure & 0/10 & 10/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score3 & 1 & temporal mismatch & 0/10 & 2/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score3 & 1 & boundary & 0/10 & 8/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score3 & 2 & velocity divergence & 2/10 & 7/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score3 & 2 & momentum & 2/10 & 10/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score3 & 2 & pressure & 2/10 & 2/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score3 & 2 & temporal mismatch & 2/10 & 6/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score3 & 2 & boundary & 2/10 & 2/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score3 & 3 & velocity divergence & 1/10 & 1/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score3 & 3 & momentum & 1/10 & 6/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score3 & 3 & pressure & 1/10 & 1/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score3 & 3 & temporal mismatch & 1/10 & 2/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score3 & 3 & boundary & 1/10 & 1/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score4 & 1 & velocity divergence & 0/10 & 10/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score4 & 1 & momentum & 0/10 & 10/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score4 & 1 & pressure & 0/10 & 10/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score4 & 1 & temporal mismatch & 0/10 & 1/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score4 & 1 & boundary & 0/10 & 2/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score4 & 2 & velocity divergence & 2/10 & 8/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score4 & 2 & momentum & 2/10 & 10/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score4 & 2 & pressure & 2/10 & 2/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score4 & 2 & temporal mismatch & 2/10 & 6/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score4 & 2 & boundary & 2/10 & 2/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score4 & 3 & velocity divergence & 1/10 & 1/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score4 & 3 & momentum & 1/10 & 6/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score4 & 3 & pressure & 1/10 & 1/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score4 & 3 & temporal mismatch & 1/10 & 3/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score4 & 3 & boundary & 1/10 & 1/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score5 & 1 & velocity divergence & 2/10 & 10/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score5 & 1 & momentum & 3/10 & 10/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score5 & 1 & pressure & 2/10 & 10/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score5 & 1 & temporal mismatch & 2/10 & 9/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score5 & 1 & boundary & 2/10 & 10/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score5 & 2 & velocity divergence & 0/10 & 10/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score5 & 2 & momentum & 1/10 & 10/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score5 & 2 & pressure & 0/10 & 3/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score5 & 2 & temporal mismatch & 0/10 & 1/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score5 & 2 & boundary & 0/10 & 1/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score5 & 3 & velocity divergence & 0/10 & 0/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score5 & 3 & momentum & 0/10 & 10/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score5 & 3 & pressure & 0/10 & 0/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score5 & 3 & temporal mismatch & 0/10 & 0/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+Score5 & 3 & boundary & 0/10 & 0/10 & 10/10 & 10/10 & 10/10 & 10/10 \\
+\end{longtable}

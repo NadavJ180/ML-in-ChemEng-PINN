@@ -1,0 +1,20 @@
+% Written by src/detection/final_figures.py; needs \usepackage{booktabs}.
+\begin{table*}[tb]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\caption{The AUC of each score term on its own, with its case-bootstrap 95\% confidence interval (2000 resamples of whole cases within each $k$). Synthetic damage: the 900 damaged fields of the 30 new cases against their 30 clean fields, over every type and for each type (180 against 30). Natural errors: the 142 inaccurate checkpoints against the 68 accurate ones. Below 0.5, the term is lower on the damaged (or inaccurate) fields than on the others. $^\dagger$: the damage leaves the term exactly as it was on every field (pressure damage: div and E), so its AUC is 0.5 by construction. Over all types, mom alone reaches 0.872 [0.868, 0.880]; bc alone ranks damaged fields below clean ones (0.420 [0.376, 0.465]). On the checkpoints, bc alone ranks the inaccurate ones below the accurate ones (0.120 [0.087, 0.155]): its near-to-far residual ratio grows during training, from a median of 0.60 (Adam, 100 steps) to 1.31 for the final models, since a half-trained model's residual lies mostly away from the edges. On the checkpoints, E alone reaches 0.983 [0.963, 0.996]; it is the only term that compares the model with the exact solution, against which the true error is also measured. Score terms: mom, the momentum residual; div, the continuity residual; bc, the boundary-localization term; E, the energy-decay term; PHS, the sum of all four, each divided by its mean over the calibration fields.}
+\label{tab:term_auc}
+\begin{tabular}{lccccccc}
+\toprule
+ & \multicolumn{6}{c}{Synthetic damage} & Natural errors \\
+\cmidrule(lr){2-7} \cmidrule(lr){8-8}
+Score term & \shortstack{all\\types} & \shortstack{velocity\\divergence} & \shortstack{momentum} & \shortstack{pressure} & \shortstack{temporal\\mismatch} & \shortstack{boundary} & \shortstack{inaccurate vs\\accurate} \\
+\midrule
+mom: momentum residual & \shortstack{0.872\\{}[0.868, 0.880]} & \shortstack{0.863\\{}[0.859, 0.873]} & \shortstack{0.874\\{}[0.870, 0.881]} & \shortstack{0.907\\{}[0.902, 0.917]} & \shortstack{0.912\\{}[0.905, 0.924]} & \shortstack{0.803\\{}[0.794, 0.817]} & \shortstack{0.960\\{}[0.944, 0.976]} \\[2pt]
+div: continuity residual & \shortstack{0.764\\{}[0.759, 0.772]} & \shortstack{0.922\\{}[0.921, 0.928]} & \shortstack{0.928\\{}[0.927, 0.935]} & \shortstack{0.500$^\dagger$\\{}[0.500, 0.500]} & \shortstack{0.570\\{}[0.546, 0.598]} & \shortstack{0.898\\{}[0.891, 0.907]} & \shortstack{0.943\\{}[0.920, 0.965]} \\[2pt]
+bc: boundary localization & \shortstack{0.420\\{}[0.376, 0.465]} & \shortstack{0.173\\{}[0.148, 0.199]} & \shortstack{0.466\\{}[0.396, 0.530]} & \shortstack{0.320\\{}[0.226, 0.416]} & \shortstack{0.295\\{}[0.218, 0.373]} & \shortstack{0.845\\{}[0.839, 0.855]} & \shortstack{0.120\\{}[0.087, 0.155]} \\[2pt]
+E: energy decay & \shortstack{0.587\\{}[0.576, 0.601]} & \shortstack{0.523\\{}[0.499, 0.551]} & \shortstack{0.541\\{}[0.527, 0.571]} & \shortstack{0.500$^\dagger$\\{}[0.500, 0.500]} & \shortstack{0.854\\{}[0.826, 0.876]} & \shortstack{0.515\\{}[0.493, 0.541]} & \shortstack{0.983\\{}[0.963, 0.996]} \\[2pt]
+\bottomrule
+\end{tabular}
+\end{table*}

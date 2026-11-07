@@ -1,0 +1,21 @@
+% Written by src/detection/final_figures.py; needs \usepackage{booktabs}.
+\begin{table*}[tb]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\caption{Both experiments at the frozen $\tau$, in the same terms. Synthetic damage: the 930 fields of the 30 new cases; positive: the 900 damaged fields, negative: the 30 clean ones. Natural errors: the 210 checkpoints of the 30 runs; positive: the 142 inaccurate ones (velocity error above 10\%), negative: the 68 accurate ones, 30 final models and 38 Adam checkpoints. AUC: positives against negatives; recall: the share of positives flagged; both with a case-bootstrap 95\% confidence interval (2000 resamples of whole cases within each $k$). False alarms: negatives flagged. The .csv adds the confidence intervals of the false-alarm rates (exact for the clean fields, one per case; case bootstrap for the checkpoints) and the same numbers for each $k$. Caveats for reading the two side by side. The pooled synthetic recall depends on which strengths were tested: over the 4 strengths from $\varepsilon = 0.01$ on it is 0.967--1.000, over the 2 below it 0.210--0.410, depending on the score. The natural numbers depend on which checkpoints were saved and on the 10\% rule: the 38 accurate Adam checkpoints (2.96--10\% error) are flagged by every score and make most of the false alarms. Score3 and Score4 hold the energy term, the only term that compares the model with the exact solution, against which the true error is also measured, so their higher AUC on the checkpoints is partly built in. Score terms: mom, the momentum residual; div, the continuity residual; bc, the boundary-localization term; E, the energy-decay term; PHS, the sum of all four, each divided by its mean over the calibration fields.}
+\label{tab:synthetic_vs_natural}
+\begin{tabular}{lcccccc}
+\toprule
+ & \multicolumn{3}{c}{Synthetic damage} & \multicolumn{3}{c}{Natural errors} \\
+\cmidrule(lr){2-4} \cmidrule(lr){5-7}
+Score & AUC & Recall & False alarms & AUC & Recall & False alarms \\
+\midrule
+Score1: mom & 0.872 [0.868, 0.880] & 0.714 [0.706, 0.724] & 0/30 & 0.960 [0.944, 0.976] & 1.000 [1.000, 1.000] & 38/68 \\
+Score2: mom + div & 0.900 [0.899, 0.906] & 0.803 [0.790, 0.822] & 2/30 & 0.959 [0.943, 0.975] & 1.000 [1.000, 1.000] & 40/68 \\
+Score3: PHS & 0.884 [0.873, 0.899] & 0.770 [0.746, 0.801] & 3/30 & 0.993 [0.983, 0.999] & 1.000 [1.000, 1.000] & 41/68 \\
+Score4: PHS $-$ bc & 0.889 [0.878, 0.905] & 0.764 [0.739, 0.797] & 3/30 & 0.993 [0.983, 0.999] & 1.000 [1.000, 1.000] & 41/68 \\
+Score5: PHS $-$ E & 0.889 [0.887, 0.895] & 0.773 [0.759, 0.791] & 2/30 & 0.959 [0.943, 0.975] & 1.000 [1.000, 1.000] & 40/68 \\
+\bottomrule
+\end{tabular}
+\end{table*}
