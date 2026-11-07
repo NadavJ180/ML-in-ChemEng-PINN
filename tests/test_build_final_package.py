@@ -229,6 +229,18 @@ def test_the_real_checkpoints_and_frozen_files_pass_their_checks():
     assert b.check_protocol_hashes(ROOT) == []
 
 
+def test_the_real_calibration_refits_to_the_frozen_file_and_a_changed_one_does_not(tmp_path):
+    """real: the committed code refits calibration/frozen_calibration.json from its source scores."""
+    b.export_tree("HEAD", tmp_path, ["src", "calibration"])
+    assert b.check_calibration_refit(tmp_path) == []
+    frozen = tmp_path / b.FROZEN_CALIBRATION
+    calib = json.loads(frozen.read_text(encoding="utf-8"))
+    calib["thresholds"]["Score3_PHS_full"] *= 1 + 1e-6
+    frozen.write_text(json.dumps(calib), encoding="utf-8")
+    (problem,) = b.check_calibration_refit(tmp_path)
+    assert "is not what its source refits to" in problem
+
+
 def test_export_tree_writes_files_as_git_stores_them(tmp_path):
     """real: text files come out with LF on every OS, and -text files with their exact bytes."""
     b.export_tree("HEAD", tmp_path, ["run_pipeline.py", "calibration/source_phs_components_raw.csv"])
@@ -356,6 +368,7 @@ def fake_build_steps(monkeypatch, n_new=2):
     monkeypatch.setattr(b, "rebuild_old_cases", lambda d: write(d / b.OLD_CASES, '{"train": []}\n'))
     monkeypatch.setattr(b, "write_pip_freeze", lambda d: write(d / b.FREEZE_NAME, "numpy==2.5.1\n"))
     monkeypatch.setattr(b, "check_protocol_hashes", lambda d: [])
+    monkeypatch.setattr(b, "check_calibration_refit", lambda d: [])
 
 
 def test_a_trial_build_zips_a_checked_package(tmp_path, monkeypatch):

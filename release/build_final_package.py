@@ -24,9 +24,10 @@ script adds:
                               folder names replaced by <repo>, python and ~
 
 Before zipping it checks that every item of #46's list is there, that the 210
-checkpoints match models/confirmation/MANIFEST.sha256, and that the files whose
-SHA-256 PROTOCOL.md records still have it. If a check fails, or a rebuilt output
-differs, it writes the report and stops without zipping. The ZIP is written with
+checkpoints match models/confirmation/MANIFEST.sha256, that the files whose
+SHA-256 PROTOCOL.md records still have it, and that the package's own code refits
+the frozen calibration from its source scores. If a check fails, or a rebuilt
+output differs, it writes the report and stops without zipping. The ZIP is written with
 Python's zipfile (forward-slash paths, which open on macOS, Linux and Windows).
 The damaged fields (data/confirmation/hallucinations, about 1.8 GB) are left
 out, since the command rebuilds them.
@@ -87,6 +88,7 @@ OLD_CASES = "data/cases_metadata.json"
 NEW_CASES = "cases/confirmation_cases.json"
 MANIFEST = "models/confirmation/MANIFEST.sha256"
 PROTOCOL = "PROTOCOL.md"
+FROZEN_CALIBRATION = "calibration/frozen_calibration.json"
 # The files whose SHA-256 PROTOCOL.md records (sections 2 and 8)
 PROTOCOL_HASHED = ("models/confirmation/MANIFEST.sha256",
                    "calibration/source_phs_components_raw.csv",
@@ -318,6 +320,38 @@ def check_protocol_hashes(package_dir: Path) -> list:
         if sha256(package_dir / path) != digest:
             problems.append(f"{path} does not have the SHA-256 that {PROTOCOL} records ({digest[:12]}...)")
     return problems
+
+
+def check_calibration_refit(package_dir: Path) -> list:
+    """
+    Refits the calibration from calibration/source_phs_components_raw.csv with the
+    package's own src/detection/frozen_calibration.py, into a temporary file, and
+    checks that it equals calibration/frozen_calibration.json: every field but the
+    commit it was written at (git_commit, git_dirty), numbers within RTOL.
+
+    Outputs:
+        list[str]: the problems (empty if none).
+    """
+    import tempfile
+
+    frozen = package_dir / FROZEN_CALIBRATION
+    with tempfile.TemporaryDirectory() as tmp:
+        refit = Path(tmp) / "refit.json"
+        result = subprocess.run([sys.executable, "-m", "src.detection.frozen_calibration", "--out", str(refit)],
+                                cwd=str(package_dir), env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"),
+                                capture_output=True, text=True)
+        if result.returncode != 0 or not refit.is_file():
+            return [f"refitting {FROZEN_CALIBRATION} failed:\n{result.stdout}\n{result.stderr}"]
+        refitted = json.loads(refit.read_text(encoding="utf-8"))
+    stored = json.loads(frozen.read_text(encoding="utf-8"))
+    for calib in (stored, refitted):
+        for key in ("git_commit", "git_dirty"):
+            calib.pop(key, None)
+    d = _json_difference(stored, refitted)
+    if isinstance(d, str) or d > RTOL:
+        return [f"{FROZEN_CALIBRATION} is not what its source refits to: "
+                + (d if isinstance(d, str) else f"a number differs by {d:.1e} (relative)")]
+    return []
 
 
 # --- comparing a rebuilt output with its copy in the package ---
@@ -662,7 +696,8 @@ def build(args) -> Path:
     content_problems = check_contents(package_dir)
     n_listed, manifest_problems = check_manifest(package_dir)
     protocol_problems = check_protocol_hashes(package_dir)
-    problems = content_problems + manifest_problems + protocol_problems + checkout_problems
+    refit_problems = check_calibration_refit(package_dir)
+    problems = content_problems + manifest_problems + protocol_problems + refit_problems + checkout_problems
     package_checks = [
         "every item of the list in #46 is present, and every table has its .csv and .tex and every figure "
         "its .pdf and .png" if not content_problems else "items are missing (see Problems)",
@@ -670,6 +705,8 @@ def build(args) -> Path:
                            if not manifest_problems else "mismatch (see Problems)"),
         f"the {len(PROTOCOL_HASHED)} files whose SHA-256 {PROTOCOL} records ("
         + ", ".join(PROTOCOL_HASHED) + "): " + ("all match" if not protocol_problems else "mismatch (see Problems)"),
+        f"{FROZEN_CALIBRATION}, refitted from its source scores by src/detection/frozen_calibration.py: "
+        + ("the same normalizers and tau" if not refit_problems else "different (see Problems)"),
     ]
 
     if not args.trial:
