@@ -42,7 +42,7 @@ DIFFERENTLY", for a look by eye: matplotlib on another OS can place text a
 pixel or two apart.
 
 Usage:
-    # 1. Rebuild every result in a clean checkout of the tag (about 2 h on a CPU)
+    # 1. Rebuild every result in a clean checkout of the tag (about 80 min on a CPU)
     git worktree add ../pinn-final-check final-v1
     cd ../pinn-final-check
     python run_pipeline.py --preset final --device cpu > ../repro_log.txt 2>&1

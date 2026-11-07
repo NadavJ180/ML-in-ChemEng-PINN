@@ -25,7 +25,7 @@ final: every result of the final iteration (#46), rebuilt from the saved
     errors of all 240 models (#37), the natural errors of the 210 checkpoints
     (#39) and the final figures and tables (#36). They overwrite the files in
     results/ with the rebuilt ones, so in a git checkout `git status` shows
-    any file that came out different. About 2 h on a CPU.
+    any file that came out different. About 80 min on a CPU.
 
 Usage:
     python run_pipeline.py                         # run every stage of the original pipeline, in order
@@ -164,7 +164,7 @@ def parse_args(argv=None):
     parser.add_argument("--preset", type=str, default="original", choices=sorted(PRESETS),
                         help="Which pipeline to run: 'original' (the default), the 30 old cases from sampling "
                              "and training to the first paper's figures; or 'final', every result of the final "
-                             "iteration rebuilt from the saved models, with no training (about 2 h on a CPU). "
+                             "iteration rebuilt from the saved models, with no training (about 80 min on a CPU). "
                              "--stages, --from, --skip and --list then refer to that preset's stages.")
     parser.add_argument("--device", type=str, default=None,
                         help="Forwarded to every stage that accepts --device. "

@@ -15,7 +15,7 @@ pip install -r requirements.txt    # we checked with Python 3.12; the exact vers
 python run_pipeline.py --preset final --device cpu
 ```
 
-- It takes about 2 hours on a CPU. On an NVIDIA GPU, use `--device cuda`. The CPU run is the one we checked; a GPU run should agree to rounding, not bit for bit.
+- It takes about 80 minutes on a CPU (79 on our 8-thread laptop, 58 of them for the scores). On an NVIDIA GPU, use `--device cuda`. The CPU run is the one we checked; a GPU run should agree to rounding, not bit for bit, which could matter only for a score within rounding of its τ (`PROTOCOL.md` section 4).
 - **No model is trained.** The command rebuilds, from the saved models: the new cases' points, the damaged fields, their scores and the benchmark's tables (`results/benchmark/`), the true errors of all 240 models (`results/accuracy/`), the natural-error tables and figures (`results/natural_errors/`), and the final figures and tables (`results/figures/`). `python run_pipeline.py --preset final --list` prints each step and its exact command.
 - It writes over the copies in `results/`. To compare yours with ours, unzip a second copy first.
 - On another OS or with other library builds, the CSV files can differ in the last digits (about 1e-13). Every count, flag and LaTeX table should come out the same.
@@ -137,7 +137,7 @@ Each step is one script; `python run_pipeline.py --preset final --list` shows th
 
 ```bash
 python run_pipeline.py --preset final --list                        # the 9 steps and their commands
-python run_pipeline.py --preset final --stages sample,errors_old,errors_new   # the true errors only (a few minutes)
+python run_pipeline.py --preset final --stages sample,errors_old,errors_new   # the true errors only (under a minute)
 python src/detection/natural_errors.py --from_scores                 # the natural-error tables and figures, from the saved scores
 python run_pipeline.py --preset final --stages final_figures         # the final figures, from the saved tables (about 2 min)
 ```

@@ -14,7 +14,7 @@ A "physical hallucination" is defined as a generated flow field that appears vis
 All randomized case generations and network initializations are controlled via a global seed utility (`src.utils.seed.set_global_seed()`) to ensure deterministic behavior. The 30 cases of the final iteration each carry their own seeds for their points, their training and their scoring (`cases/confirmation_cases.json`, see [`PROTOCOL.md`](PROTOCOL.md)).
 
 ### Final iteration (Oct–Nov 2026)
-The last round of experiments, asked for by Barak in October 2026: 30 new test cases (`case_30` … `case_59`, 10 per k), each trained once and saved at 7 stages (`models/confirmation/`), a calibration frozen on the 30 old cases (`calibration/`), five scores, a synthetic-damage benchmark and a natural-error study. [`PROTOCOL.md`](PROTOCOL.md) fixes every setting; it was frozen (tag `protocol-v1`) before any new case was scored. Every result is in `results/`, and one command rebuilds all of them from the committed models, with no training (about 2 h on a CPU):
+The last round of experiments, asked for by Barak in October 2026: 30 new test cases (`case_30` … `case_59`, 10 per k), each trained once and saved at 7 stages (`models/confirmation/`), a calibration frozen on the 30 old cases (`calibration/`), five scores, a synthetic-damage benchmark and a natural-error study. [`PROTOCOL.md`](PROTOCOL.md) fixes every setting; it was frozen (tag `protocol-v1`) before any new case was scored. Every result is in `results/`, and one command rebuilds all of them from the committed models, with no training (about 80 min on a CPU):
 ```bash
 python run_pipeline.py --preset final --device cpu
 ```
@@ -142,7 +142,7 @@ pytest tests/
 ```
 
 ### Rebuilding the Final Iteration's Results (#46)
-One command rebuilds every result of the final iteration from the committed models, with no training (about 2 h on a CPU; `--device cuda` on a GPU):
+One command rebuilds every result of the final iteration from the committed models, with no training (about 80 min on a CPU; `--device cuda` on a GPU):
 ```bash
 python run_pipeline.py --preset final --device cpu
 python run_pipeline.py --preset final --list     # its 9 stages and the exact command of each

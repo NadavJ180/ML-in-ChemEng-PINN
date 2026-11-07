@@ -79,10 +79,10 @@ the last digits (about 1e-13); counts, flags and `.tex` files don't. `--stages`,
 | 2 | `tensors` | `src/data/generate_datasets.py --metadata cases/confirmation_cases.json --output_dir data/confirmation/tensors` | the case file | `data/confirmation/tensors/{case_id}.pt`, whose evaluation grid stage 3 reuses | seconds |
 | 3 | `damage` | `src/hallucinations/generate_hallucinations.py` with the confirmation paths | stage 2, `models/confirmation/*/lbfgs_final.pth` | `data/confirmation/hallucinations/hallucination_index.json` (the 930 fields), plus ~1.8 GB of damaged fields nothing reads afterwards | about 1 min |
 | 4 | `scores` | `src/detection/evaluate_phs.py --calibration calibration/frozen_calibration.json` with the confirmation paths | stage 3's index, the final models | `data/confirmation/phs_scores/phs_components_frozen.csv` | **the slow step**, about 1 h |
-| 5 | `metrics` | `src/detection/benchmark_metrics.py` | stage 4, the sidecars | `results/benchmark/` (#35) | minutes |
+| 5 | `metrics` | `src/detection/benchmark_metrics.py` | stage 4, the sidecars | `results/benchmark/` (#35) | about 9 min (the bootstrap ranges) |
 | 6 | `errors_old` | `src/models/accuracy_audit.py --metadata data/cases_metadata.json --models_dir models --out results/accuracy/reference_errors_existing.csv` | stage 1, `models/case_*.pth` | the true errors of the 30 old models (#37) | under a minute |
-| 7 | `errors_new` | `src/models/accuracy_audit.py --metadata cases/confirmation_cases.json --models_dir models/confirmation --out results/accuracy/reference_errors_confirmation.csv` | the 210 checkpoints | their true errors (#37) | about a minute |
-| 8 | `natural_errors` | `src/detection/natural_errors.py` | stages 5 and 7, the 210 checkpoints | `results/natural_errors/` (#39) | about 15 min |
+| 7 | `errors_new` | `src/models/accuracy_audit.py --metadata cases/confirmation_cases.json --models_dir models/confirmation --out results/accuracy/reference_errors_confirmation.csv` | the 210 checkpoints | their true errors (#37) | under a minute |
+| 8 | `natural_errors` | `src/detection/natural_errors.py` | stages 5 and 7, the 210 checkpoints | `results/natural_errors/` (#39) | about 10 min |
 | 9 | `final_figures` | `src/detection/final_figures.py` | stages 5, 7 and 8 | `results/figures/` (#36) | about 2 min |
 
 The exact command of each stage: `python run_pipeline.py --preset final --list`. Shortcuts
