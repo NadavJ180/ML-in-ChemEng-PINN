@@ -112,6 +112,7 @@ def make_case_inputs(passed=None):
              for i, (case_id, k) in enumerate(K.items())]
     errors = pd.DataFrame([{"case_id": case["case_id"], "k": case["k"], "stage": stage,
                             "relL2_uv": 0.002 * (j + 1) if stage == "lbfgs_final" else 0.3,
+                            "relL2_uv_T": 0.004 * (j + 1), "relL2_p": 0.005 * (j + 1),
                             "passed_acceptance": passed.get(case["case_id"], True)}
                            for j, case in enumerate(cases) for stage in ("adam_05000", "lbfgs_final")])
     loss = pd.DataFrame([{"case_id": case["case_id"], "rel_l2": 0.002 * (j + 1) if passed.get(case["case_id"], True)
@@ -195,7 +196,19 @@ def test_case_table_in_case_file_order():
     assert table["passed_acceptance"].all()
     # relL2_uv is the final model's (lbfgs_final), not an Adam checkpoint's
     assert table["relL2_uv"].tolist() == pytest.approx([0.002 * (j + 1) for j in range(len(K))])
+    assert table["relL2_p"].tolist() == pytest.approx([0.005 * (j + 1) for j in range(len(K))])
     assert table["seed_points"].tolist() == [3000 + int(c[5:]) for c in K]
+    # The flow quantities follow from U0, Re and k: nu = U0 / (Re k), tau_d = 1 / (2 nu k^2), T = min(2, tau_d)
+    # Every row, since k = 1 can't tell k from k^2
+    assert table["nu"].to_numpy() == pytest.approx((table["U0"] / (table["Re"] * table["k"])).to_numpy())
+    assert table["tau_decay"].to_numpy() == pytest.approx((1 / (2 * table["nu"] * table["k"] ** 2)).to_numpy())
+    assert (table["T"] == np.minimum(2.0, table["tau_decay"])).all()
+
+
+def test_case_table_refuses_errors_without_pressure():
+    cases, errors, loss, fields = make_case_inputs()
+    with pytest.raises(ValueError, match="relL2_p"):
+        ff.case_table(cases, errors.drop(columns="relL2_p"), loss, fields)
 
 
 def test_case_table_keeps_a_failed_run():
@@ -262,6 +275,23 @@ def test_label_positions_move_only_up():
     assert heights[1] == pytest.approx(4.6)             # The lower point's label, raised to the floor
     assert heights[0] == pytest.approx(4.6 * 1.16)      # The higher one, kept above it
     assert ff._label_positions([38.9, 23.4], min_ratio=1.16) == [38.9, 23.4]   # Far apart: unmoved
+
+
+def test_two_significant_digits():
+    assert [ff._two_digits(v) for v in (0.0074, 0.15, 1.043, 4.0, 15.1, 11.04)] == \
+        ["0.0074", "0.15", "1.0", "4.0", "15", "11"]
+    assert ff._size(0) == "0" and ff._size(0.01043) == "1.0"
+
+
+def test_score_rises_by_hand():
+    fields = make_fields()
+    sizes = fields.loc[fields["label"] != "clean", ["case_id", "perturbation", "epsilon"]].assign(
+        velocity_change=lambda d: np.where(d["perturbation"] == "pressure", 0.0, 1e-3))
+    rises = ff.score_rises(fields, sizes, THRESHOLDS).set_index(["case_id", "epsilon"])
+    assert set(rises["perturbation"]) == {"momentum"}   # The pressure damage leaves the velocity alone
+    # case_30: clean 0.5, momentum at 0.01 gives 5.0, over Score1's tau of 1
+    assert rises.loc[("case_30", 0.01), f"rise_{S1}"] == pytest.approx(4.5)
+    assert rises.loc[("case_40", 0.01), f"rise_{S2}"] == pytest.approx((2.5 - 0.2) / THRESHOLDS[S2])
 
 
 def test_relative_energy_error():
@@ -341,6 +371,31 @@ def test_damage_size_table_summarizes_the_cases():
         ff.damage_size_table(sizes)
 
 
+def test_damage_field_maps_follow_the_derivatives():
+    """The residual maps of two damages, against their derivatives worked out by hand."""
+    case, epsilon, n = SIZED_CASE, 0.01, 32
+    info = ff.damage_field_maps(case, epsilon, n=n)
+    U0, k = case["U0"], case["k"]
+    X, Y = np.meshgrid(info["axis"], info["axis"], indexing="ij")
+    # Velocity divergence adds eps U0 sin(3x + 0.7) sin(2y) to u: its continuity residual is d/dx of it
+    expected = np.abs(3 * epsilon * U0 * np.cos(3 * X + 0.7) * np.sin(2 * Y)) / (U0 * k)
+    np.testing.assert_allclose(info["maps"]["velocity_divergence"]["continuity"], expected, rtol=1e-9, atol=1e-12)
+    # The pressure damage adds eps U0^2 cos(5x) cos(4y) to p: it changes only the pressure, and its momentum
+    # residual is the gradient of that
+    pressure = info["maps"]["pressure"]
+    assert pressure["change_of"] == "pressure"
+    gradient = epsilon * U0 ** 2 * np.sqrt((5 * np.sin(5 * X) * np.cos(4 * Y)) ** 2 + (4 * np.cos(5 * X) * np.sin(4 * Y)) ** 2)
+    np.testing.assert_allclose(pressure["momentum"], gradient / (U0 ** 2 * k), rtol=1e-9, atol=1e-12)
+    assert pressure["continuity"].max() < 1e-12
+    assert set(ff._vanishing(info["maps"], "continuity")) == {"pressure", "temporal_mismatch"}
+
+
+def test_field_case_is_the_median_u0_of_k_1():
+    cases = [{"case_id": f"case_{i}", "k": k, "U0": u} for i, (k, u) in
+             enumerate([(1, 0.9), (1, 1.5), (2, 1.0), (1, 1.2), (1, 0.6)])]
+    assert ff.field_case(cases)["case_id"] == "case_0"   # k = 1 by U0: 0.6, 0.9, 1.2, 1.5; lower middle 0.9
+
+
 # --- The natural errors, in the terms of the benchmark ---
 
 def test_natural_row_counts_by_hand():
@@ -392,6 +447,20 @@ def test_committed_inputs_agree(committed):
     assert committed["tables"]["table_cases"]["case_id"].tolist() == [c["case_id"] for c in read_cases(ff.DEFAULT_METADATA)]
     assert len(committed["tables"]["table_recall_by_type_eps_k"]) == 5 * 3 * 5 * 6
     assert len(committed["sizes"]) == 30 * 5 * 6 and len(committed["tables"]["table_damage_size"]) == 5 * 6
+    assert len(committed["tables"]["table_term_auc"]) == 4 * (1 + 5 + 1)   # Terms x (all, each type, natural)
+
+
+def test_term_auc_agrees_with_the_scores(committed):
+    """Score1 is the momentum term alone, so their AUCs are the same; a damage that leaves a term alone gives 0.5."""
+    terms = committed["tables"]["table_term_auc"].set_index(["term", "experiment", "group"])
+    overall = committed["metrics"]["overall"].set_index("score")
+    assert terms.loc[("mom_bar", ff.SYNTHETIC, ff.ALL), "auc"] == pytest.approx(overall.loc[S1, "auc"], abs=1e-12)
+    summary = committed["tables"]["table_synthetic_vs_natural"].set_index(["experiment", "score", "k"])
+    assert terms.loc[("mom_bar", ff.NATURAL, ff.ALL), "auc"] == pytest.approx(
+        summary.loc[(ff.NATURAL, S1, ff.ALL), "auc"], abs=1e-12)
+    unchanged = terms[terms["unchanged"]]
+    assert set(unchanged.index) == {("div_bar", ff.SYNTHETIC, "pressure"), ("E_bar", ff.SYNTHETIC, "pressure")}
+    assert (unchanged["auc"] == 0.5).all()
 
 
 def test_both_experiments_in_the_same_terms(committed):
@@ -527,7 +596,7 @@ def test_captions_explain_what_36_asks(committed):
     assert "22 of its 30 damaged fields" in captions["fig_recall_vs_eps_by_k"]
     # The false alarms by k, and the energy term
     text = captions["fig_clean_scores_vs_tau"]
-    for case_id in ("case\\_46", "case\\_48", "case\\_53", "case\\_34", "case\\_45", "case\\_36"):
+    for case_id in ("case 46", "case 48", "case 53", "case 34", "case 45", "case 36"):
         assert case_id in text
     assert "$U_0^4$" in text and "$-0.80$" in text
 
@@ -537,12 +606,25 @@ def test_captions_of_the_two_experiments(committed):
     natural = captions["fig_natural_score_vs_error"]
     assert "Every score flags all 142 inaccurate checkpoints" in natural
     assert "the 38 Adam checkpoints with errors from 2.96 to 10\\%" in natural
-    assert "between 0.73\\% (the least accurate final model, case\\_58) and 2.96\\%" in natural
+    assert "between 0.73\\% (the least accurate final model, case 58) and 2.96\\%" in natural
     shared = captions["fig_score_vs_velocity_error"]
-    assert "Score2, velocity divergence damage at $\\varepsilon = 0.002$ (0.14--0.2\\%)" in shared
-    assert "the five scores flag 0, 2, 3, 3 and 2 of these 30 models" in shared
-    assert "The pressure damage changes only the pressure" in shared
-    assert "the 142 inaccurate ones" in captions["table_synthetic_vs_natural"]
+    assert "the rise of its score over its own clean field" in shared
+    assert "Not shown: the pressure damage, which changes only the pressure" in shared
+    assert "(32, 10, 29, 22 and 19 for Score1 to Score5" in shared
+    assert "the median rise is 0.79, 15, 6.1, 6.3 and 11 $\\tau$" in shared
+    summary = captions["table_synthetic_vs_natural"]
+    assert "the 142 inaccurate ones" in summary
+    assert "over the 4 strengths from $\\varepsilon = 0.01$ on it is 0.967--1.000" in summary
+    assert "partly built in" in summary
+    assert "case 34 ($k = 1$" in captions["fig_damage_fields"]
+    assert "The pressure and temporal mismatch damages keep the flow divergence-free" in captions["fig_damage_fields"]
+    assert "fitted slope is 6.1" in captions["fig_energy_term_vs_u0"]
+    assert "above every old case of its $k$" in captions["fig_energy_term_vs_u0"]
+    assert "0.420 [0.376, 0.465]" in captions["table_term_auc"]
+    assert "pressure damage: div and E" in captions["table_term_auc"]
+    assert "from a median of 0.60 (Adam, 100 steps) to 1.31" in captions["table_term_auc"]
+    assert "0.23--1.61\\%" in captions["table_cases"] and "pressure errors 0.36--1.22\\%" in captions["table_cases"]
+    assert "stops growing from $\\varepsilon = 0.03$" in captions["table_damage_size"]
 
 
 def test_captions_are_plain_latex(committed):
@@ -554,7 +636,7 @@ def test_captions_are_plain_latex(committed):
         assert caption.count("$") % 2 == 0, name
         text = "".join(caption.split("$")[0::2])   # The caption outside math
         text = re.sub(r"\\ref\{[^}]*\}", "", text)  # Labels may hold underscores
-        for bad in ("#", "PROTOCOL", ".md", "τ", "ε"):
+        for bad in ("#", "PROTOCOL", ".md", "τ", "ε", "\\_", "95\\% range"):   # No code names; CIs by their name
             assert bad not in caption, (name, bad)
         assert "_" not in text.replace("\\_", ""), name
         assert "%" not in text.replace("\\%", ""), name
@@ -589,6 +671,7 @@ def test_committed_tables_and_captions_are_the_scripts(committed):
     }
     for name, text in expected.items():
         assert (OUTPUT_DIR / name).read_text(encoding="utf-8") == text, name
+        assert "\\_" not in text, f"{name} names something by its code name"
 
 
 def test_committed_figures_exist():

@@ -34,8 +34,9 @@ anyone noticing.
 
 To put both experiments on one axis, it sizes each synthetic damage as a velocity
 error: the benchmark's own damage code (perturbations.apply_perturbation) applied
-to the exact solution on the accuracy audit's test grid. That needs the case file
-and the damage formulas, no model.
+to the exact solution on the accuracy audit's test grid. The same code, with
+autograd residuals, draws what each damage does to the flow. That needs the case
+file and the damage formulas, no model.
 
 Outputs, in results/figures/. Each figure as .pdf and .png (300 dpi), sized for
 a two-column page (7.16 in wide, one column 3.5 in), plus a .tex file holding
@@ -55,18 +56,26 @@ can be read on its own. Each table as .csv (full precision) and .tex:
     fig_natural_score_vs_error         the natural errors (#39's figure, in this style): the
                                        score / tau of each checkpoint against its true velocity
                                        error, by training stage and k, with the 10% rule
-    fig_score_vs_velocity_error        both experiments on one axis: score / tau against the
-                                       size of the velocity error, of each damaged field (the
-                                       change its damage makes) and of each checkpoint
+    fig_score_vs_velocity_error        both experiments on one axis: what a deviation adds to
+                                       each score against its size, for each damaged field (the
+                                       velocity change of its damage, its rise over its clean
+                                       field) and each checkpoint (its own error, its score)
+    fig_damage_fields                  what each damage does to the exact solution of one case:
+                                       the change, and the momentum and continuity residuals
+    fig_energy_term_vs_u0              the energy term of the 60 clean fields against U0, and
+                                       the relative energy error, with the energy false alarms
     table_recall_by_type_eps_k         the numbers behind fig_recall_vs_eps_by_k, computed from
                                        the flags of confirmation_scores_raw.csv (#35's tables
                                        have no type x strength x k breakdown)
-    table_cases                        one row per new case: k, U0, Re, phases, the three seeds,
-                                       acceptance pass/fail and the final velocity errors
+    table_cases                        one row per new case: k, U0, Re, nu, decay time, T, phases,
+                                       the three seeds, acceptance pass/fail, and the final
+                                       model's velocity errors (overall, at T) and pressure error
     table_synthetic_vs_natural         both experiments in the same terms, overall and by k: AUC,
                                        recall and false alarms at tau, with their ranges
     table_damage_size                  the size of each synthetic damage as a velocity error, by
                                        damage type and strength (over the 30 cases)
+    table_term_auc                     the AUC of each score term on its own, by damage type and
+                                       on the natural errors, with confidence intervals
 The captions are written from the numbers, so they can't drift from the figures.
 A paper includes a figure with \\input{fig_roc.tex}, with results/figures/ in its
 \\graphicspath. Two runs on the same machine give the same files, byte for byte.
@@ -77,6 +86,7 @@ Usage:
 """
 
 import argparse
+import math
 import sys
 from pathlib import Path
 
@@ -102,6 +112,8 @@ from src.hallucinations.generate_hallucinations import load_case_metadata
 from src.hallucinations.perturbations import PERTURBATION_NAMES, apply_perturbation
 from src.models.accuracy_audit import INACCURATE_ABOVE, accuracy_grid, read_cases, relative_l2
 from src.models.checkpoints import FINAL_STAGE
+from src.models.scaling import ResidualScaler
+from src.physics.navier_stokes import compute_residuals
 from src.physics.taylor_green import compute_decay_timescale, compute_nu, compute_T, generate_tgv
 from src.utils.console import enable_utf8_output
 
@@ -146,6 +158,10 @@ SCORE_LABELS = {
 # also has its own marker shape, and every number is in a table.
 SCORE_COLOURS = dict(zip(SCORE_NAMES, ("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4")))
 SCORE_MARKERS = dict(zip(SCORE_NAMES, ("o", "s", "^", "D", "v")))
+# Defines the short names of the score labels, for every caption that shows the scores
+SCORE_KEY = ("Score terms: mom, the momentum residual; div, the continuity residual; bc, the boundary-localization "
+             "term; E, the energy-decay term; PHS, the sum of all four, each divided by its mean over the calibration "
+             "fields.")
 DAMAGE_LABELS = {name: name.replace("_", " ") for name in PERTURBATION_NAMES}
 K_COLOUR = SCORE_COLOURS[SCORE_NAMES[0]]   # The new clean fields (one series: the first slot)
 OLD_COLOUR = ne.INK_MUTED                  # The old calibration fields, a grey reference
@@ -165,7 +181,8 @@ PNG_DPI = 300
 PRINT_RC = {
     **ne.FIGURE_RC,
     "font.size": 7.5, "axes.titlesize": 7.5, "axes.labelsize": 7.5, "legend.fontsize": 7,
-    "xtick.labelsize": 6.5, "ytick.labelsize": 6.5, "figure.titlesize": 7.5, "figure.labelsize": 7.5,
+    # No text below 7 pt at print size, the smallest many journals accept
+    "xtick.labelsize": 7, "ytick.labelsize": 7, "figure.titlesize": 7.5, "figure.labelsize": 7.5,
     "axes.linewidth": 0.6, "axes.titlepad": 4,
     "xtick.major.width": 0.6, "ytick.major.width": 0.6, "xtick.minor.width": 0.4, "ytick.minor.width": 0.4,
     "xtick.major.size": 2.5, "ytick.major.size": 2.5, "xtick.minor.size": 1.5, "ytick.minor.size": 1.5,
@@ -178,9 +195,11 @@ SHARED_BAND_COLOUR = ne.INK_MUTED
 SHARED_BAND_ALPHA = 0.16     # A range several scores share, drawn once
 
 FIGURES = ("fig_recall_vs_eps", "fig_recall_vs_eps_new_detections", "fig_recall_vs_eps_by_k", "fig_roc",
-           "fig_clean_scores_vs_tau", "fig_natural_score_vs_error", "fig_score_vs_velocity_error")
+           "fig_clean_scores_vs_tau", "fig_natural_score_vs_error", "fig_score_vs_velocity_error", "fig_damage_fields",
+           "fig_energy_term_vs_u0")
 NARROW_FIGURES = ("fig_roc",)   # One column wide; the others span the page
-TABLES = ("table_recall_by_type_eps_k", "table_cases", "table_synthetic_vs_natural", "table_damage_size")
+TABLES = ("table_recall_by_type_eps_k", "table_cases", "table_synthetic_vs_natural", "table_damage_size",
+          "table_term_auc")
 # The title of each PNG, so it says what it shows when read on its own (a README, slides). The PDF, for
 # the paper, has none: there the caption is the title.
 PNG_TITLES = {
@@ -191,8 +210,10 @@ PNG_TITLES = {
     "fig_roc": "Synthetic damage: ROC curves, damaged vs clean fields",
     "fig_clean_scores_vs_tau": "The clean fields of the new final models against the frozen τ",
     "fig_natural_score_vs_error": "Natural errors: the score of each checkpoint against its true velocity error",
-    "fig_score_vs_velocity_error": "Synthetic damage and natural errors: score against the size of the "
-                                   "velocity error",
+    "fig_score_vs_velocity_error": "Synthetic damage and natural errors: what a deviation adds to the score, "
+                                   "by its size",
+    "fig_damage_fields": "What each synthetic damage changes, and the residuals it creates",
+    "fig_energy_term_vs_u0": "The energy term of the clean fields against the velocity scale U₀",
 }
 PNG_TITLE_BAND = 0.26   # in: the band above a PNG that holds its title
 PNG_TITLE_SIZE = 8.5    # pt
@@ -201,12 +222,19 @@ SUMMARY_COLUMNS = ("experiment", "score", "k", "tau", "n_cases", "n_positive", "
                    "recall_high", "recall_n_boot", "fpr", "fpr_low", "fpr_high", "fpr_n_boot", "fpr_range_method")
 DAMAGE_SIZE_COLUMNS = ("perturbation", "epsilon", "n_cases", "velocity_change_min", "velocity_change_median",
                        "velocity_change_max")
+TERM_AUC_COLUMNS = ("term", "experiment", "group", "n_cases", "n_positive", "n_negative", "auc", "auc_low",
+                    "auc_high", "auc_n_boot", "unchanged")
+TERM_LABELS = dict(zip(BAR_NAMES, ("mom: momentum residual", "div: continuity residual",
+                                   "bc: boundary localization", "E: energy decay")))
+FIELD_EPSILON = 0.01   # The strength fig_damage_fields shows: from it on every score flags (almost) every field
+FIELD_GRID = 128       # Points per side of its maps
 
 RECALL_BY_K_COLUMNS = ("score", "k", "perturbation", "epsilon", "n_cases", "n_damaged", "n_damaged_flagged",
                        "recall", "recall_low", "recall_high", "n_preflagged_cases", "n_damaged_new",
                        "n_damaged_new_flagged", "recall_new", "recall_new_low", "recall_new_high")
-CASE_COLUMNS = ("case_id", "k", "U0", "Re", "phi_x", "phi_y", "seed_points", "seed_train", "seed_scoring",
-                "passed_acceptance", "rel_l2_eval_grid", "relL2_uv")
+CASE_COLUMNS = ("case_id", "k", "U0", "Re", "nu", "tau_decay", "T", "phi_x", "phi_y", "seed_points", "seed_train",
+                "seed_scoring", "passed_acceptance", "rel_l2_eval_grid", "relL2_uv", "relL2_uv_T", "relL2_p")
+CASE_ERROR_COLUMNS = ("relL2_uv", "relL2_uv_T", "relL2_p")   # Of the final model, from the accuracy audit (#37)
 
 
 # --- Reading and checking the inputs ---
@@ -402,11 +430,14 @@ def recall_by_type_eps_k(fields: pd.DataFrame) -> pd.DataFrame:
 def case_table(cases: list, errors: pd.DataFrame, loss: pd.DataFrame, fields: pd.DataFrame) -> pd.DataFrame:
     """
     The table of the new cases: one row per case, in case-file order, with its
-    settings, its seeds, whether its run passed the training acceptance test, and the
-    final model's relative L2 velocity error on the acceptance test's 64 x 64 x 20
-    evaluation grid (rel_l2_eval_grid, from loss_summary.csv) and on the independent
-    64 x 64 x 11 grid of the accuracy audit (relL2_uv, #37; PROTOCOL.md section 6: the
-    main number).
+    settings and the quantities that follow from them (viscosity nu = U0 / (Re k),
+    velocity decay time tau_decay = 1 / (2 nu k^2), time window T = min(2, tau_decay);
+    src/physics/taylor_green.py), its seeds, whether its run passed the training
+    acceptance test, and the final model's errors: the relative L2 velocity error on the
+    acceptance test's 64 x 64 x 20 evaluation grid (rel_l2_eval_grid, from
+    loss_summary.csv), and on the independent 64 x 64 x 11 grid of the accuracy audit
+    (#37; PROTOCOL.md section 6) over all times (relL2_uv, the main number) and at t = T
+    (relL2_uv_T), and the pressure error there (relL2_p, mean-free at each time).
 
     Refuses inputs that disagree: every case must be in loss_summary.csv and have an
     lbfgs_final row in the true errors, each once; its pass/fail must be the same there
@@ -423,6 +454,9 @@ def case_table(cases: list, errors: pd.DataFrame, loss: pd.DataFrame, fields: pd
         pd.DataFrame: One row per case, with CASE_COLUMNS.
     """
     case_ids = [case["case_id"] for case in cases]
+    missing = [column for column in CASE_ERROR_COLUMNS if column not in errors.columns]
+    if missing:
+        raise ValueError(f"The true errors have no column(s) {missing}; write them with src/models/accuracy_audit.py")
     final = errors[errors["stage"] == FINAL_STAGE]
     for name, table in (("the true errors' lbfgs_final rows", final), ("loss_summary.csv", loss)):
         listed = table["case_id"].tolist()
@@ -452,11 +486,14 @@ def case_table(cases: list, errors: pd.DataFrame, loss: pd.DataFrame, fields: pd
                                  "loss_summary.csv")
         if int(final.loc[case_id, "k"]) != case["k"]:
             raise ValueError(f"{case_id}: k differs between the case file and the true errors")
-        rows.append({"case_id": case_id, "k": case["k"], "U0": case["U0"], "Re": case["Re"],
+        nu = compute_nu(case["U0"], case["Re"], case["k"])
+        rows.append({"case_id": case_id, "k": case["k"], "U0": case["U0"], "Re": case["Re"], "nu": nu,
+                     "tau_decay": compute_decay_timescale(nu, case["k"]),
+                     "T": compute_T(case["U0"], case["Re"], case["k"]),
                      "phi_x": case["phi_x"], "phi_y": case["phi_y"], "seed_points": case["seed_points"],
                      "seed_train": case["seed_train"], "seed_scoring": case["seed_scoring"],
                      "passed_acceptance": passed, "rel_l2_eval_grid": float(summary["rel_l2"]),
-                     "relL2_uv": float(final.loc[case_id, "relL2_uv"])})
+                     **{column: float(final.loc[case_id, column]) for column in CASE_ERROR_COLUMNS}})
     return pd.DataFrame(rows)[list(CASE_COLUMNS)]
 
 
@@ -644,6 +681,111 @@ def damage_size_table(sizes: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)[list(DAMAGE_SIZE_COLUMNS)]
 
 
+def field_case(cases: list) -> dict:
+    """The case fig_damage_fields shows, by a fixed rule: of the k = 1 cases, the one with the median U0 (lower middle)."""
+    k1 = sorted((case for case in cases if case["k"] == 1), key=lambda case: case["U0"])
+    return k1[(len(k1) - 1) // 2]
+
+
+def damage_field_maps(case: dict, epsilon: float, n: int = FIELD_GRID, t_fraction: float = 0.5) -> dict:
+    """
+    What each damage does to the exact solution of a case, on an n x n grid of [0, 2 pi)
+    at t = t_fraction * T, with the benchmark's own damage code as damage_sizes() uses it:
+      change      the velocity change |(du, dv)| / U0, or, for a damage that leaves the
+                  velocity alone, the pressure change |dp| / U0^2;
+      momentum    the momentum residual sqrt(R_u^2 + R_v^2) / (U0^2 k);
+      continuity  the continuity residual |R_c| / (U0 k);
+    the residuals by autograd (navier_stokes.compute_residuals) and scaled as the scores
+    scale them (ResidualScaler). The exact solution has no residual (refused otherwise),
+    so each residual map is the damage's own.
+
+    Outputs:
+        dict: axis (the n grid values), t, and maps ({perturbation: {"change", "change_of",
+              "momentum", "continuity"}}, each map an (n, n) array indexed [x, y]).
+    """
+    U0, Re, k = case["U0"], case["Re"], case["k"]
+    nu, T = compute_nu(U0, Re, k), compute_T(U0, Re, k)
+    params = {"U0": U0, "k": k, "T": T, "tau_decay": compute_decay_timescale(nu, k)}
+    scaler, flow = ResidualScaler(U0, k), _ExactFlow(case, nu)
+    axis = 2 * math.pi * torch.arange(n, dtype=torch.float64) / n   # 2 pi left out: on the periodic domain it is 0
+    X, Y = torch.meshgrid(axis, axis, indexing="ij")
+    t_value = t_fraction * T
+
+    def fields_on_grid():
+        x = X.reshape(-1, 1).clone().requires_grad_(True)
+        y = Y.reshape(-1, 1).clone().requires_grad_(True)
+        t = torch.full_like(x, t_value).requires_grad_(True)
+        out = flow(torch.cat([x, y, t], dim=1))
+        return x, y, t, {"u": out[:, 0:1], "v": out[:, 1:2], "p": out[:, 2:3]}
+
+    def scaled_residuals(field, x, y, t):
+        return scaler.scale_residuals(*compute_residuals(field["u"], field["v"], field["p"], x, y, t, nu))
+
+    x, y, t, exact = fields_on_grid()
+    largest = max(float(r.detach().abs().max()) for r in scaled_residuals(exact, x, y, t))
+    if largest > 1e-8:
+        raise ValueError(f"The exact solution of {case['case_id']} has a scaled residual of {largest:.3g}")
+    maps = {}
+    for perturbation in PERTURBATION_NAMES:
+        x, y, t, clean = fields_on_grid()
+        damaged = apply_perturbation(perturbation, clean, {"x": x, "y": y, "t": t}, params, float(epsilon),
+                                     model=flow if perturbation == "temporal_mismatch" else None, no_grad=False)
+        R_u, R_v, R_c = scaled_residuals(damaged, x, y, t)
+        velocity = torch.sqrt((damaged["u"] - clean["u"]) ** 2 + (damaged["v"] - clean["v"]) ** 2) / U0
+        pressure = (damaged["p"] - clean["p"]).abs() / U0 ** 2
+        change, change_of = (velocity, "velocity") if float(velocity.detach().max()) > 0 else (pressure, "pressure")
+        maps[perturbation] = {name: value.detach().reshape(n, n).numpy() for name, value in (
+            ("change", change), ("momentum", torch.sqrt(R_u ** 2 + R_v ** 2)), ("continuity", R_c.abs()))}
+        maps[perturbation]["change_of"] = change_of
+    return {"axis": axis.numpy(), "t": t_value, "maps": maps}
+
+
+def term_auc_table(fields: pd.DataFrame, natural: pd.DataFrame, n_boot: int = N_BOOT,
+                   seed: int = BOOT_SEED) -> pd.DataFrame:
+    """
+    The AUC of each score term on its own (its normalized value, BAR_NAMES), with its
+    case-bootstrap 95% confidence interval (PROTOCOL.md section 7): for the synthetic
+    damage, the damaged fields against the clean ones, over every damage type and for
+    each type (that type's damaged fields against all clean fields, as #35's
+    metrics_by_type); for the natural errors, the inaccurate checkpoints against the
+    accurate ones. "unchanged" marks a damage type that leaves the term exactly as it was
+    on every field (each damaged value equals its case's clean value), whose AUC is then
+    0.5 by construction.
+
+    Inputs:
+        fields (pd.DataFrame): The benchmark, from read_fields().
+        natural (pd.DataFrame): The checkpoints, from read_natural().
+        n_boot, seed: Of the case bootstrap.
+
+    Outputs:
+        pd.DataFrame: One row per term x group, with TERM_AUC_COLUMNS.
+    """
+    clean = fields[fields["label"] == "clean"]
+    damaged = fields[fields["label"] != "clean"]
+    clean_value = clean.set_index("case_id")
+    groups = [(SYNTHETIC, ALL, fields)]
+    for perturbation in sorted(damaged["perturbation"].unique(), key=bm._perturbation_order):
+        groups.append((SYNTHETIC, perturbation, pd.concat([clean, damaged[damaged["perturbation"] == perturbation]])))
+    groups.append((NATURAL, ALL, natural))
+    rows = []
+    for term in BAR_NAMES:
+        for experiment, group_name, group in groups:
+            positive = (group["inaccurate"].to_numpy(dtype=bool) if experiment == NATURAL
+                        else (group["label"] != "clean").to_numpy())
+            view = pd.DataFrame({"case_id": group["case_id"].to_numpy(), "k": group["k"].to_numpy(),
+                                 "damaged": positive, "value": group[term].to_numpy(dtype=float)})
+            auc, low, high, used = case_bootstrap(view, bm.auc, n_boot=n_boot, seed=seed)
+            unchanged = False
+            if experiment == SYNTHETIC and group_name != ALL:
+                of_type = group[group["label"] != "clean"]
+                unchanged = bool((of_type[term].to_numpy() == of_type["case_id"].map(clean_value[term]).to_numpy()).all())
+            rows.append({"term": term, "experiment": experiment, "group": group_name,
+                         "n_cases": int(group["case_id"].nunique()), "n_positive": int(positive.sum()),
+                         "n_negative": int((~positive).sum()), "auc": auc, "auc_low": low, "auc_high": high,
+                         "auc_n_boot": used, "unchanged": unchanged})
+    return pd.DataFrame(rows)[list(TERM_AUC_COLUMNS)].astype({"auc_n_boot": "Int64"})
+
+
 # --- LaTeX of the tables ---
 
 def _percent(value) -> str:
@@ -654,26 +796,37 @@ def _percent(value) -> str:
 def case_table_latex(table: pd.DataFrame, caption: str) -> str:
     """
     The case table as a full-width LaTeX table (booktabs): one row per case, numbers
-    rounded, errors in %, the seeds and the errors under grouped headers.
+    rounded, errors in %, the seeds and the errors under grouped headers. The time
+    window T gets a column only when it differs between cases (otherwise the caption
+    gives it).
     """
+    with_t = table["T"].nunique() > 1
+    flow = ["$k$", "$U_0$", "Re", "$\\nu$", "$\\tau_d$", *(["$T$"] if with_t else []), "$\\phi_x$", "$\\phi_y$"]
+    first_seed = 2 + len(flow)
     lines = [
         "% Written by src/detection/final_figures.py; needs \\usepackage{booktabs}.",
         "\\begin{table*}[tb]",
         "\\centering",
+        "\\footnotesize",
+        "\\setlength{\\tabcolsep}{4pt}",
         f"\\caption{{{caption}}}",
         "\\label{tab:cases}",
-        "\\begin{tabular}{lrrrrrrrrcrr}",
+        "\\begin{tabular}{l" + "r" * (len(flow) + 3) + "c" + "r" * 4 + "}",
         "\\toprule",
-        " & & & & & & \\multicolumn{3}{c}{Seeds} & & \\multicolumn{2}{c}{Velocity error (\\%)} \\\\",
-        "\\cmidrule(lr){7-9} \\cmidrule(lr){11-12}",
-        "Case & $k$ & $U_0$ & Re & $\\phi_x$ & $\\phi_y$ & points & training & scoring & Passed & eval.\\ grid & "
-        "test grid \\\\",
+        " & " * (len(flow) + 1) + "\\multicolumn{3}{c}{Seeds} & & \\multicolumn{3}{c}{Velocity error (\\%)} & "
+        "Pressure \\\\",
+        f"\\cmidrule(lr){{{first_seed}-{first_seed + 2}}} \\cmidrule(lr){{{first_seed + 4}-{first_seed + 6}}}",
+        "Case & " + " & ".join(flow) + " & points & training & scoring & Passed & eval.\\ grid & test grid & at $T$ & "
+        "error (\\%) \\\\",
         "\\midrule",
     ]
     for row in table.itertuples(index=False):
-        cells = [bm._tex_escape(row.case_id), str(row.k), f"{row.U0:.3f}", f"{row.Re:.1f}", f"{row.phi_x:.3f}",
-                 f"{row.phi_y:.3f}", str(row.seed_points), str(row.seed_train), str(row.seed_scoring),
-                 "yes" if row.passed_acceptance else "no", _percent(row.rel_l2_eval_grid), _percent(row.relL2_uv)]
+        cells = [row.case_id.split("_")[1], str(row.k), f"{row.U0:.3f}", f"{row.Re:.1f}",
+                 f"{row.nu:#.3g}".rstrip("."), f"{row.tau_decay:#.3g}".rstrip("."),   # 3 digits, zeros kept: 0.0330
+                 *([f"{row.T:g}"] if with_t else []), f"{row.phi_x:.3f}", f"{row.phi_y:.3f}",
+                 str(row.seed_points), str(row.seed_train), str(row.seed_scoring),
+                 "yes" if row.passed_acceptance else "no", _percent(row.rel_l2_eval_grid), _percent(row.relL2_uv),
+                 _percent(row.relL2_uv_T), _percent(row.relL2_p)]
         lines.append(" & ".join(cells) + " \\\\")
     lines += ["\\bottomrule", "\\end{tabular}", "\\end{table*}", ""]
     return "\n".join(lines)
@@ -685,7 +838,7 @@ def recall_by_k_latex(table: pd.DataFrame, caption: str) -> str:
     rows = []
     for (score, k, perturbation), group in table.groupby(["score", "k", "perturbation"], sort=False):
         group = group.set_index("epsilon")
-        cells = {"Score": bm._tex_escape(score.split("_")[0]), "$k$": str(k), "Damage": bm._tex_escape(perturbation)}
+        cells = {"Score": bm._tex_escape(score.split("_")[0]), "$k$": str(k), "Damage": DAMAGE_LABELS[perturbation]}
         for epsilon in epsilons:
             cells[f"$\\varepsilon={epsilon:g}$"] = (f"{int(group.loc[epsilon, 'n_damaged_flagged'])}/"
                                                    f"{int(group.loc[epsilon, 'n_damaged'])}")
@@ -733,9 +886,14 @@ def summary_latex(table: pd.DataFrame, caption: str) -> str:
     return "\n".join(lines)
 
 
+def _two_digits(value: float) -> str:
+    """A number with 2 significant digits, trailing zeros kept: 0.0019, 0.15, 1.0, 15."""
+    return f"{value:#.2g}".rstrip(".")   # '#' keeps trailing zeros (1.0, not 1); '15.' -> '15'
+
+
 def _size(value: float) -> str:
-    """A velocity change in %, with 2 significant digits: 0.0019, 0.15, 5.4; '0' for none."""
-    return "0" if value == 0 else f"{100 * value:.2g}"
+    """A velocity change in %, with 2 significant digits: 0.0019, 0.15, 1.0, 5.4; '0' for none."""
+    return "0" if value == 0 else _two_digits(100 * value)
 
 
 def damage_size_latex(table: pd.DataFrame, caption: str) -> str:
@@ -776,18 +934,63 @@ def damage_size_latex(table: pd.DataFrame, caption: str) -> str:
     return "\n".join(lines)
 
 
+def term_auc_latex(table: pd.DataFrame, caption: str) -> str:
+    """
+    table_term_auc as a full-width LaTeX table (booktabs): one row per score term, one
+    column per group, each cell the AUC over its 95% confidence interval; a dagger marks
+    a damage that leaves the term unchanged.
+    """
+    synthetic = [g for g in dict.fromkeys(table.loc[table["experiment"] == SYNTHETIC, "group"]) if g != ALL]
+    columns = [(SYNTHETIC, ALL, "\\shortstack{all\\\\types}")]
+    columns += [(SYNTHETIC, g, "\\shortstack{" + DAMAGE_LABELS[g].replace(" ", "\\\\") + "}") for g in synthetic]
+    columns.append((NATURAL, ALL, "\\shortstack{inaccurate vs\\\\accurate}"))
+    lines = [
+        "% Written by src/detection/final_figures.py; needs \\usepackage{booktabs}.",
+        "\\begin{table*}[tb]",
+        "\\centering",
+        "\\footnotesize",
+        "\\setlength{\\tabcolsep}{4pt}",
+        f"\\caption{{{caption}}}",
+        "\\label{tab:term_auc}",
+        "\\begin{tabular}{l" + "c" * len(columns) + "}",
+        "\\toprule",
+        f" & \\multicolumn{{{len(columns) - 1}}}{{c}}{{Synthetic damage}} & Natural errors \\\\",
+        f"\\cmidrule(lr){{2-{len(columns)}}} \\cmidrule(lr){{{len(columns) + 1}-{len(columns) + 1}}}",
+        "Score term & " + " & ".join(header for _, _, header in columns) + " \\\\",
+        "\\midrule",
+    ]
+    indexed = table.set_index(["term", "experiment", "group"])
+    for term in BAR_NAMES:
+        cells = [TERM_LABELS[term]]
+        for experiment, group, _ in columns:
+            row = indexed.loc[(term, experiment, group)]
+            mark = "$^\\dagger$" if row["unchanged"] else ""
+            # \\{} so LaTeX doesn't read the interval's "[" as the optional spacing of the line break
+            cells.append(f"\\shortstack{{{bm._number(row['auc'])}{mark}\\\\{{}}[{bm._number(row['auc_low'])}, "
+                         f"{bm._number(row['auc_high'])}]}}")
+        lines.append(" & ".join(cells) + " \\\\[2pt]")
+    lines += ["\\bottomrule", "\\end{tabular}", "\\end{table*}", ""]
+    return "\n".join(lines)
+
+
 def table_latex(stem: str, table: pd.DataFrame, caption: str) -> str:
     """The .tex of one of TABLES."""
     writers = {"table_recall_by_type_eps_k": recall_by_k_latex, "table_cases": case_table_latex,
-               "table_synthetic_vs_natural": summary_latex, "table_damage_size": damage_size_latex}
+               "table_synthetic_vs_natural": summary_latex, "table_damage_size": damage_size_latex,
+               "table_term_auc": term_auc_latex}
     return writers[stem](table, caption)
 
 
 # --- Facts for the captions ---
 
+def _case_name(case_id: str) -> str:
+    """'case_46' -> 'case 46', as a paper names it."""
+    return case_id.replace("_", " ")
+
+
 def _tex_cases(case_ids) -> str:
-    """'case\\_34 and case\\_45'."""
-    names = [bm._tex_escape(case_id) for case_id in case_ids]
+    """'case 34 and case 45'."""
+    names = [_case_name(case_id) for case_id in case_ids]
     if len(names) <= 1:
         return "".join(names)
     return ", ".join(names[:-1]) + " and " + names[-1]
@@ -949,12 +1152,12 @@ def caption_recall_vs_eps(type_eps: pd.DataFrame, fields: pd.DataFrame, threshol
     return (f"Recall of the damaged fields of the {n_cases} new cases against the damage strength $\\varepsilon$ "
             f"({epsilons}; log scale), one panel per damage type and one line per score. A field is flagged when "
             f"its score is above the frozen $\\tau$. Each point is out of {n_cases} fields, one per case; bands: "
-            "exact (Clopper--Pearson) 95\\% ranges, drawn once in grey where several scores have the same count "
-            "and so the same range. "
+            "exact (Clopper--Pearson) 95\\% confidence intervals, drawn once in grey where several scores have the "
+            "same count and so the same interval. "
             + recall_sentence(type_eps, "recall", "n_damaged_flagged", "n_damaged")
             + f" At $\\varepsilon = {facts['epsilon']:g}$ nearly all flagged fields belong to cases whose clean "
               f"field the score already flags ({shares}{other_text}); "
-              "Fig.~\\ref{fig:recall_vs_eps_new_detections} leaves those cases out.")
+              "Fig.~\\ref{fig:recall_vs_eps_new_detections} leaves those cases out. " + SCORE_KEY)
 
 
 def caption_recall_new(type_eps: pd.DataFrame, fields: pd.DataFrame, thresholds: dict) -> str:
@@ -978,7 +1181,7 @@ def caption_recall_new(type_eps: pd.DataFrame, fields: pd.DataFrame, thresholds:
         smallest = f" At $\\varepsilon = {facts['epsilon']:g}$ no score detects anything new."
     return ("Recall as in Fig.~\\ref{fig:recall_vs_eps}, but only over the cases whose clean field the score does "
             "not flag, since flagging a damaged field of an already-flagged case is no new detection. Cases per "
-            f"score: {counts}; bands: exact 95\\% ranges." + smallest + " "
+            f"score: {counts}; bands: exact 95\\% confidence intervals." + smallest + " "
             + recall_sentence(type_eps, "recall_new", "n_damaged_new_flagged", "n_damaged_new"))
 
 
@@ -998,10 +1201,11 @@ def caption_recall_by_k(by_k: pd.DataFrame, metrics: dict, fields: pd.DataFrame)
         others = "; ".join(f"{_short(r['score'])} for $k = {r['k']}$, {_range_text(r, 'recall')}, every case "
                            f"{c} of {n_fields}" for r, c, n_fields in zero[1:])
         zero_text = (" Pooled over the six strengths instead (Table~\\ref{tab:benchmark_metrics_by_k}), some "
-                     f"case-bootstrap ranges have no width: {_short(row['score'])}'s recall for $k = {row['k']}$ is "
+                     f"case-bootstrap confidence intervals have no width: {_short(row['score'])}'s recall for "
+                     f"$k = {row['k']}$ is "
                      f"{_range_text(row, 'recall')}, because every $k = {row['k']}$ case has {count} of its "
                      f"{per_case} damaged fields flagged, so no resample of cases can change the rate"
-                     + (f" (also {others})" if others else "") + ". The exact ranges per strength shown here don't "
+                     + (f" (also {others})" if others else "") + ". The exact intervals per strength shown here don't "
                      "have this problem.")
     ks = sorted(by_k["k"].unique())
     k_text = ", ".join(str(k) for k in ks)
@@ -1009,7 +1213,7 @@ def caption_recall_by_k(by_k: pd.DataFrame, metrics: dict, fields: pd.DataFrame)
     falls = all((np.diff([pooled.loc[(score, k), "n_damaged_flagged"] for k in ks]) < 0).all() for score in SCORE_NAMES)
     trend = "Recall falls with $k$ for every score" if falls else "Recall depends on $k$"
     return (f"Recall as in Fig.~\\ref{{fig:recall_vs_eps}}, split by $k$ (rows): each point is out of the "
-            f"{int(by_k['n_damaged'].iloc[0])} cases with that $k$, with exact 95\\% ranges "
+            f"{int(by_k['n_damaged'].iloc[0])} cases with that $k$, with exact 95\\% confidence intervals "
             f"(Table~\\ref{{tab:recall_by_type_eps_k}}). {trend}: at "
             f"$\\varepsilon = {second:g}$, the damaged fields flagged out of {n} ({n_types} types $\\times$ "
             f"{n // n_types} cases) for $k = {k_text}$ are {'; '.join(parts)}." + zero_text)
@@ -1030,13 +1234,14 @@ def caption_roc(overall: pd.DataFrame, metrics: dict, fields: pd.DataFrame) -> s
             if points[a][0] == points[b][0] and abs(points[a][1] - points[b][1]) <= 0.01 * n_damaged]
     text = (f"ROC curves of the five scores on the {len(fields)} fields of the {fields['case_id'].nunique()} new "
             f"cases ({n_damaged} damaged, {n_clean} clean); the inset enlarges the top-left corner. Legend: AUC "
-            "[95\\% range: case bootstrap, 2000 resamples of whole cases within each $k$]. Markers: the frozen "
+            "[95\\% confidence interval: case bootstrap, 2000 resamples of whole cases within each $k$]. Markers: the "
+            "frozen "
             f"$\\tau$ of each score, at its false-alarm rate on the {n_clean} clean fields and its recall")
     if same:
         a, b = same[0]
         text += (f" ({_short(a)} and {_short(b)} nearly coincide: {points[a][0]} false alarms each, "
                  f"{points[a][1]} and {points[b][1]} damaged fields flagged)")
-    text += (f"; the false-alarm axis moves in steps of 1/{n_clean}. The ranges lean above their estimates "
+    text += (f"; the false-alarm axis moves in steps of 1/{n_clean}. The intervals lean above their estimates "
              f"({_short(leaning['score'])}: {_range_text(leaning, 'auc')})")
     if above:
         name, row = above[0]
@@ -1053,7 +1258,7 @@ def caption_roc(overall: pd.DataFrame, metrics: dict, fields: pd.DataFrame) -> s
                  "the pairs across cases), so the resampled AUCs run high.")
     else:
         text += "."
-    return text
+    return text + " " + SCORE_KEY
 
 
 def relative_energy_error(clean: pd.DataFrame) -> pd.Series:
@@ -1076,7 +1281,7 @@ def caption_clean_scores(fields: pd.DataFrame, old: pd.DataFrame, thresholds: di
     alarms = []
     for score in SCORE_NAMES:
         flagged = clean[clean[f"flagged_{score}"]]
-        listed = "none" if flagged.empty else _and([f"{bm._tex_escape(case_id)} ($k = {row['k']}$)"
+        listed = "none" if flagged.empty else _and([f"{_case_name(case_id)} ($k = {row['k']}$)"
                                                    for case_id, row in flagged.iterrows()])
         alarms.append(f"{_short(score)} {listed}")
     text = (f"The clean field of each of the {n_new} new cases (filled), and of the {n_old} old cases the calibration "
@@ -1108,8 +1313,8 @@ def caption_clean_scores(fields: pd.DataFrame, old: pd.DataFrame, thresholds: di
                      f"models ($\\sqrt{{S_E}}$ over the exact initial energy $U_0^2/4$: "
                      f"{_and([f'{100 * energy[c]:.2f}' for c in top])}\\%, against at most {100 * old_max:.2f}\\% "
                      "for the old cases)")
-        text += "."
-    return text
+        text += " (Fig.~\\ref{fig:energy_term_vs_u0})."
+    return text + " " + SCORE_KEY
 
 
 def _seed_rule(table: pd.DataFrame, column: str) -> str:
@@ -1124,22 +1329,32 @@ def caption_cases(table: pd.DataFrame) -> str:
     ranges = "; ".join(f"$k = {k}$: {_percent(values.min())}--{_percent(values.max())}\\%" for k, values in by_k)
     passed = (f"All {len(table)} runs passed" if n_passed == len(table)
               else f"{n_passed} of {len(table)} runs passed (failed runs stay in every table)")
-    return (f"The {len(table)} new cases, pre-registered before training: wavenumber $k$, velocity scale $U_0$, "
-            "Reynolds number Re, phases $\\phi_x$, $\\phi_y$, and the seeds of case $n$: of its training and "
+    windows = sorted(table["T"].unique())
+    window = f"which is {windows[0]:g} for every case" if len(windows) == 1 else "given in its own column"
+    return (f"The {len(table)} new cases, pre-registered before training. Each is the decaying Taylor--Green vortex on "
+            "the periodic square $[0, 2\\pi]^2$, $u = U_0 \\sin(kx + \\phi_x)\\cos(ky + \\phi_y)\\,e^{-t/\\tau_d}$, "
+            "$v = -U_0 \\cos(kx + \\phi_x)\\sin(ky + \\phi_y)\\,e^{-t/\\tau_d}$, with wavenumber $k$, velocity scale "
+            "$U_0$, phases $\\phi_x$, $\\phi_y$, Reynolds number Re (on the length $1/k$), viscosity "
+            "$\\nu = U_0/(\\mathrm{Re}\\,k)$ and velocity decay time $\\tau_d = 1/(2\\nu k^2)$. Each model is trained "
+            f"over $0 \\le t \\le T$, $T = \\min(2, \\tau_d)$, {window}. Seeds of case $n$: of its training and "
             f"evaluation points{_seed_rule(table, 'seed_points')}, of its weights and "
             f"mini-batches{_seed_rule(table, 'seed_train')} and of its scoring points"
             f"{_seed_rule(table, 'seed_scoring')}. Passed: the final model passes the training acceptance test "
             f"(velocity relative $L_2$ error below {ACCEPT_REL_L2_BELOW:g} on the $64\\times64\\times20$ evaluation "
             f"grid, MSE($R_c$) below $10^{{{int(np.log10(ACCEPT_MSE_RC_BELOW))}}}$ and MSE($R_m$) below "
             f"$10^{{{int(np.log10(ACCEPT_MSE_RM_BELOW))}}}$). Velocity error: the final model's relative $L_2$ "
-            "velocity error on that evaluation grid and on an independent $64\\times64\\times11$ test grid. "
-            f"{passed}; test-grid errors {ranges}.")
+            "velocity error on that evaluation grid, on an independent $64\\times64\\times11$ test grid, and on that "
+            "test grid at $t = T$ alone; pressure error: on the test grid, with the spatial mean of the pressure "
+            f"removed at each time from both the model and the exact solution. {passed}; test-grid velocity errors "
+            f"{ranges}; at $t = T$, {_percent(table['relL2_uv_T'].min())}--{_percent(table['relL2_uv_T'].max())}\\%; "
+            f"pressure errors {_percent(table['relL2_p'].min())}--{_percent(table['relL2_p'].max())}\\%.")
 
 
 def caption_recall_by_k_table(table: pd.DataFrame) -> str:
     n_cases = int(table["n_damaged"].iloc[0])
     return (f"Damaged fields flagged by each score, by $k$, damage type and strength, out of the {n_cases} cases "
-            "with that $k$ (frozen calibration, flagged above $\\tau$). The .csv adds the exact 95\\% ranges and the "
+            "with that $k$ (frozen calibration, flagged above $\\tau$). The .csv adds the exact 95\\% confidence "
+            "intervals and the "
             "counts over the cases whose clean field the score doesn't flag.")
 
 
@@ -1177,9 +1392,9 @@ def caption_natural(natural: pd.DataFrame) -> str:
     best_adam = natural[~final].sort_values("relL2_uv").iloc[0]
     if worst_final["relL2_uv"] < best_adam["relL2_uv"]:
         text += (f" No checkpoint has an error between {_percent(worst_final['relL2_uv'])}\\% (the least accurate "
-                 f"final model, {bm._tex_escape(worst_final['case_id'])}) and {_percent(best_adam['relL2_uv'])}\\% "
+                 f"final model, {_case_name(worst_final['case_id'])}) and {_percent(best_adam['relL2_uv'])}\\% "
                  "(the most accurate Adam checkpoint).")
-    return text
+    return text + " " + SCORE_KEY
 
 
 def _damaged_with_sizes(fields: pd.DataFrame, sizes: pd.DataFrame) -> pd.DataFrame:
@@ -1198,57 +1413,87 @@ def _unchanged_types(sizes: pd.DataFrame) -> list:
                   key=bm._perturbation_order)
 
 
-def smallest_full_damage(damaged: pd.DataFrame, score: str):
+def score_rises(fields: pd.DataFrame, sizes: pd.DataFrame, thresholds: dict) -> pd.DataFrame:
     """
-    (median, smallest, largest velocity change, type, strength) of the damage, among those
-    that change the velocity, that the score flags in every case with the smallest median
-    velocity change; None if there is none.
+    The damaged fields that change the velocity, each with the velocity change its damage
+    makes (velocity_change) and, for each score, what the damage adds to the score over
+    its case's own clean field, divided by the score's tau (rise_<score>). That is the
+    part of the score that the damage causes, as a checkpoint's whole score is the part
+    its own error causes (the exact solution has no residual and no energy gap, so it
+    scores zero).
     """
-    found = []
-    for (perturbation, epsilon), group in damaged[damaged["velocity_change"] > 0].groupby(["perturbation", "epsilon"]):
-        if _flags(group, score).all():
-            values = group["velocity_change"]
-            found.append((values.median(), values.min(), values.max(), perturbation, epsilon))
-    return min(found) if found else None
-
-
-def caption_shared(fields: pd.DataFrame, sizes: pd.DataFrame, natural: pd.DataFrame) -> str:
     damaged = _damaged_with_sizes(fields, sizes)
+    damaged = damaged[damaged["velocity_change"] > 0].copy()
+    clean = fields[fields["label"] == "clean"].set_index("case_id")
+    for score in SCORE_NAMES:
+        damaged[f"rise_{score}"] = (damaged[score] - damaged["case_id"].map(clean[score])) / thresholds[score]
+    return damaged
+
+
+def caption_shared(fields: pd.DataFrame, sizes: pd.DataFrame, natural: pd.DataFrame, thresholds: dict) -> str:
+    rises = score_rises(fields, sizes, thresholds)
     final = natural[(natural["stage"] == FINAL_STAGE).to_numpy()]
     n_cases = fields["case_id"].nunique()
     unchanged = _unchanged_types(sizes)
-    text = ("Both experiments on one axis: each score over its frozen $\\tau$ (flagged above 1) against the size of the "
-            "velocity error, relative to the exact velocity on the $64\\times64\\times11$ test grid. Synthetic damage "
-            f"(orange; marker: damage type): each damaged field of the {n_cases} new cases, at the velocity change its "
-            "damage makes (Table~\\ref{tab:damage_size}). Natural errors (blue, light to dark: the training stage): "
-            "each checkpoint, at its own velocity error against the exact solution.")
+    text = ("Both experiments on one axis: what a deviation adds to each score, over the score's frozen $\\tau$, "
+            "against the size of the deviation, relative to the exact velocity on the $64\\times64\\times11$ test grid. "
+            f"Synthetic damage (orange; marker: damage type): each damaged field of the {n_cases} new cases, at the "
+            "velocity change its damage makes (Table~\\ref{tab:damage_size}) and the rise of its score over its own "
+            "clean field. Natural errors (blue, light to dark: the training stage): each checkpoint, at its own "
+            "velocity error and its whole score, since the exact solution scores zero (it has no residual and no "
+            "energy gap). Line: a rise of one $\\tau$; a field is flagged when its whole score, not its rise, is "
+            "above $\\tau$.")
+    hidden = {score: rises[rises[f"rise_{score}"] <= 0] for score in SCORE_NAMES}
+    left_out = []
     if unchanged:
-        text += f" The {_and([DAMAGE_LABELS[p] for p in unchanged])} damage changes only the pressure and is not shown."
-    smallest = {score: smallest_full_damage(damaged, score) for score in SCORE_NAMES}
-    listed = [f"{_short(score)}, {DAMAGE_LABELS[found[3]]} damage at $\\varepsilon = {found[4]:g}$ "
-              f"({_size(found[1])}--{_size(found[2])}\\%)" for score, found in smallest.items() if found]
-    if listed:
-        text += (f" The smallest damage each score flags in all {n_cases} cases, and the velocity change it makes: "
-                 f"{'; '.join(listed)}.")
-    n_final_alarms = [int(_flags(final, score).sum()) for score in SCORE_NAMES]
-    text += (f" The final models' own errors are {_percent(final['relL2_uv'].min())}--"
-             f"{_percent(final['relL2_uv'].max())}\\%, and the five scores flag {_and([str(n) for n in n_final_alarms])} "
-             f"of these {len(final)} models")
-    louder = all(found is not None and found[0] < final["relL2_uv"].max() for found in smallest.values())
-    if louder and max(n_final_alarms) < len(final) / 2:
-        text += (": per unit of velocity error, the synthetic damages raise the scores more than the errors of the "
-                 "trained models do.")
-    else:
-        text += "."
-    return text
+        left_out.append(f"the {_and([DAMAGE_LABELS[p] for p in unchanged])} damage, which changes only the pressure")
+    if any(len(rows) for rows in hidden.values()):
+        strengths = sorted(set().union(*(set(rows["epsilon"]) for rows in hidden.values())))
+        left_out.append(f"the fields whose score did not rise ({_and([str(len(hidden[s])) for s in SCORE_NAMES])} "
+                        f"for Score1 to Score5, all at $\\varepsilon$ = {_and([f'{e:g}' for e in strengths])})")
+    if left_out:
+        text += " Not shown: " + "; ".join(left_out) + "."
+    low, high = final["relL2_uv"].min(), final["relL2_uv"].max()
+    same_size = rises[(rises["velocity_change"] >= low) & (rises["velocity_change"] <= high)]
+    if len(same_size):
+        rise = _and([_two_digits(same_size[f"rise_{s}"].median()) for s in SCORE_NAMES])
+        whole = _and([_two_digits((final[s] / thresholds[s]).median()) for s in SCORE_NAMES])
+        text += (f" Among the {len(same_size)} damages of the same size as the final models' own errors "
+                 f"({_percent(low)}--{_percent(high)}\\%), the median rise is {rise} $\\tau$ for Score1 to Score5; "
+                 f"the final models' median scores are {whole} $\\tau$.")
+    return text + " " + SCORE_KEY
 
 
-def caption_summary(summary: pd.DataFrame, natural: pd.DataFrame) -> str:
+def caption_summary(summary: pd.DataFrame, natural: pd.DataFrame, fields: pd.DataFrame, type_eps: pd.DataFrame) -> str:
     pooled = summary[summary["k"] == ALL]
     synthetic = pooled[pooled["experiment"] == SYNTHETIC].iloc[0]
     checkpoints = pooled[pooled["experiment"] == NATURAL].iloc[0]
     final = (natural["stage"] == FINAL_STAGE).to_numpy()
     accurate = ~natural["inaccurate"].to_numpy(dtype=bool)
+    flagged_by_all = np.logical_and.reduce([_flags(natural, score) for score in SCORE_NAMES])
+    half_trained = accurate & ~final
+    # The pooled synthetic recall leans on the strengths tested: above and below the strength from which
+    # most scores flag everything
+    common = pd.Series(full_recall_epsilon(type_eps, "recall")).dropna().mode().min()
+    damaged = fields[fields["label"] != "clean"]
+    strong, weak = damaged[damaged["epsilon"] >= common], damaged[damaged["epsilon"] < common]
+    recall_strong = [_flags(strong, score).mean() for score in SCORE_NAMES]
+    recall_weak = [_flags(weak, score).mean() for score in SCORE_NAMES]
+    n_strong, n_weak = strong["epsilon"].nunique(), weak["epsilon"].nunique()
+    energy_scores = [score for score in SCORE_NAMES if "E" in SCORE_DEFINITIONS[score]]
+    caveats = (f" Caveats for reading the two side by side. The pooled synthetic recall depends on which strengths "
+               f"were tested: over the {n_strong} strengths from $\\varepsilon = {common:g}$ on it is "
+               f"{min(recall_strong):.3f}--{max(recall_strong):.3f}, over the {n_weak} below it "
+               f"{min(recall_weak):.3f}--{max(recall_weak):.3f}, depending on the score. The natural numbers depend on "
+               f"which checkpoints were saved and on the {100 * INACCURATE_ABOVE:g}\\% rule")
+    if half_trained.any() and flagged_by_all[half_trained].all():
+        errors = 100 * natural.loc[half_trained, "relL2_uv"]
+        caveats += (f": the {int(half_trained.sum())} accurate Adam checkpoints ({errors.min():.2f}--"
+                    f"{100 * INACCURATE_ABOVE:g}\\% error) are flagged by every score and make most of the false "
+                    "alarms")
+    caveats += (f". {_and([_short(s) for s in energy_scores])} hold the energy term, the only term that compares the "
+                "model with the exact solution, against which the true error is also measured, so their higher AUC "
+                "on the checkpoints is partly built in.")
     return (f"Both experiments at the frozen $\\tau$, in the same terms. Synthetic damage: the "
             f"{int(synthetic['n_positive'] + synthetic['n_negative'])} fields of the {int(synthetic['n_cases'])} new "
             f"cases; positive: the {int(synthetic['n_positive'])} damaged fields, negative: the "
@@ -1258,9 +1503,138 @@ def caption_summary(summary: pd.DataFrame, natural: pd.DataFrame) -> str:
             f"(velocity error above {100 * INACCURATE_ABOVE:g}\\%), negative: the {int(checkpoints['n_negative'])} "
             f"accurate ones, {int((accurate & final).sum())} final models and {int((accurate & ~final).sum())} Adam "
             "checkpoints. AUC: positives against negatives; recall: the share of positives flagged; both with a "
-            f"case-bootstrap 95\\% range ({N_BOOT} resamples of whole cases within each $k$). False alarms: negatives "
-            "flagged. The .csv adds the ranges of the false-alarm rates (exact for the clean fields, one per case; case "
-            "bootstrap for the checkpoints) and the same numbers for each $k$.")
+            f"case-bootstrap 95\\% confidence interval ({N_BOOT} resamples of whole cases within each $k$). False "
+            "alarms: negatives flagged. The .csv adds the confidence intervals of the false-alarm rates (exact for the "
+            "clean fields, one per case; case bootstrap for the checkpoints) and the same numbers for each $k$."
+            + caveats + " " + SCORE_KEY)
+
+
+def caption_term_auc(table: pd.DataFrame, checkpoints: pd.DataFrame) -> str:
+    synthetic = table[(table["experiment"] == SYNTHETIC) & (table["group"] == ALL)].set_index("term")
+    per_type = table[(table["experiment"] == SYNTHETIC) & (table["group"] != ALL)]
+    natural = table[table["experiment"] == NATURAL].set_index("term")
+    first = synthetic.iloc[0]
+    name = {term: label.split(":")[0] for term, label in TERM_LABELS.items()}
+    text = ("The AUC of each score term on its own, with its case-bootstrap 95\\% confidence interval "
+            f"({N_BOOT} resamples of whole cases within each $k$). Synthetic damage: the "
+            f"{int(first['n_positive'])} damaged fields of the {int(first['n_cases'])} new cases against their "
+            f"{int(first['n_negative'])} clean fields, over every type and for each type "
+            f"({int(per_type['n_positive'].iloc[0])} against {int(per_type['n_negative'].iloc[0])}). Natural errors: "
+            f"the {int(natural['n_positive'].iloc[0])} inaccurate checkpoints against the "
+            f"{int(natural['n_negative'].iloc[0])} accurate ones. Below 0.5, the term is lower on the damaged (or "
+            "inaccurate) fields than on the others.")
+    unchanged = per_type[per_type["unchanged"]]
+    if len(unchanged):
+        by_type = {}
+        for _, row in unchanged.iterrows():
+            by_type.setdefault(row["group"], []).append(name[row["term"]])
+        text += (" $^\\dagger$: the damage leaves the term exactly as it was on every field ("
+                 + "; ".join(f"{DAMAGE_LABELS[g]} damage: {_and(terms)}" for g, terms in by_type.items())
+                 + "), so its AUC is 0.5 by construction.")
+    best = synthetic["auc"].idxmax()
+    below = [term for term in BAR_NAMES if synthetic.loc[term, "auc"] < 0.5]
+    text += f" Over all types, {name[best]} alone reaches {_range_text(synthetic.loc[best], 'auc')}"
+    if below:
+        text += ("; " + _and([f"{name[t]} alone ranks damaged fields below clean ones "
+                              f"({_range_text(synthetic.loc[t], 'auc')})" for t in below]))
+    text += "."
+    below_natural = [term for term in BAR_NAMES if natural.loc[term, "auc"] < 0.5]
+    if below_natural:
+        text += (" On the checkpoints, " + _and([f"{name[t]} alone ranks the inaccurate ones below the accurate ones "
+                                                f"({_range_text(natural.loc[t], 'auc')})" for t in below_natural]))
+        if "bc_bar" in below_natural:
+            ratio = checkpoints.groupby("stage")["bc"].median()
+            first = [stage for stage in ne.STAGES if stage in ratio.index][0]
+            text += (f": its near-to-far residual ratio grows during training, from a median of {ratio[first]:.2f} "
+                     f"({ne.stage_label(first)}) to {ratio[FINAL_STAGE]:.2f} for the final models, since a half-trained "
+                     "model's residual lies mostly away from the edges")
+        text += "."
+    energy = "E_bar"
+    if energy in natural.index:
+        text += (f" On the checkpoints, {name[energy]} alone reaches {_range_text(natural.loc[energy], 'auc')}; it is "
+                 "the only term that compares the model with the exact solution, against which the true error is "
+                 "also measured.")
+    return text + " " + SCORE_KEY
+
+
+def _energy_scores() -> list:
+    """The scores that hold the energy term."""
+    return [score for score in SCORE_NAMES if "E" in SCORE_DEFINITIONS[score]]
+
+
+def _energy_points(fields: pd.DataFrame, old: pd.DataFrame, cases: list) -> tuple:
+    """
+    (new, old): the clean fields of the new and the old cases with case_id, k, U0, E,
+    E_bar and their relative energy error (relative_energy_error()); the new ones also
+    with energy_alarm, whether a score holding the energy term flags them.
+    """
+    case_by_id = {case["case_id"]: case for case in cases}
+    clean = fields[fields["label"] == "clean"]
+    new = pd.DataFrame({"case_id": clean["case_id"].to_numpy(), "k": clean["k"].to_numpy(),
+                        "U0": [case_by_id[c]["U0"] for c in clean["case_id"]], "E": clean["E"].to_numpy(),
+                        "E_bar": clean["E_bar"].to_numpy(),
+                        "energy_alarm": np.logical_or.reduce([_flags(clean, s) for s in _energy_scores()])})
+    new["relative"] = relative_energy_error(new).to_numpy()
+    old_points = old[["case_id", "k", "U0", "E", "E_bar"]].copy()
+    old_points["relative"] = relative_energy_error(old_points).to_numpy()
+    return new, old_points
+
+
+def _vanishing(maps: dict, key: str) -> list:
+    """The damage types whose map `key` is zero to rounding (below 1e-9 of the largest map of that row)."""
+    largest = max(m[key].max() for m in maps.values())
+    return [p for p, m in maps.items() if m[key].max() <= 1e-9 * largest]
+
+
+def caption_damage_fields(info: dict, case: dict, epsilon: float) -> str:
+    maps = info["maps"]
+    n = len(info["axis"])
+    pressure_only = [p for p, m in maps.items() if m["change_of"] == "pressure"]
+    text = (f"What each synthetic damage does, at $\\varepsilon = {epsilon:g}$, to the exact solution of "
+            f"{_case_name(case['case_id'])} ($k = {case['k']}$, $U_0 = {case['U0']:.2f}$, Re $= {case['Re']:.1f}$) at "
+            f"$t = {info['t']:g}$, half its time window, on a ${n}\\times{n}$ grid of the periodic square ($x$ across, "
+            "$y$ up). Top row: the change it makes, the velocity change $|\\Delta\\mathbf{u}|/U_0$")
+    if pressure_only:
+        text += (f", or for the {_and([DAMAGE_LABELS[p] for p in pressure_only])} damage, which leaves the velocity "
+                 "alone, the pressure change $|\\Delta p|/U_0^2$")
+    text += ("; middle row: the momentum residual it creates, $|\\mathbf{R}_m|/(U_0^2 k)$; bottom row: its continuity "
+             "residual, $|R_c|/(U_0 k)$. The residuals are scaled as in the scores, whose momentum and continuity "
+             "terms are the mean squares of such maps over space and time. The exact solution has no residual, so "
+             "every residual shown is the damage's own; a trained model, which differs from the exact solution by "
+             "less than 1\\%, gets nearly the same residual from the same damage. Each row has one colour scale.")
+    free = _vanishing(maps, "continuity")
+    if free:
+        verb = "damages keep" if len(free) > 1 else "damage keeps"
+        text += f" The {_and([DAMAGE_LABELS[p] for p in free])} {verb} the flow divergence-free."
+    if "temporal_mismatch" in maps:
+        text += (" The time shift reports the velocity at a later time but keeps the pressure of the original one; "
+                 "its momentum residual is that mismatch.")
+    return text
+
+
+def caption_energy(fields: pd.DataFrame, old: pd.DataFrame, cases: list) -> str:
+    new, old_points = _energy_points(fields, old, cases)
+    both = pd.concat([new, old_points])
+    slope = np.polyfit(np.log(both["U0"]), np.log(both["E_bar"]), 1)[0]
+    rho = spearmanr(both["relative"], both["U0"]).statistic
+    text = (f"The energy term of the clean field of each of the {len(new)} new cases (filled) and the {len(old_points)} "
+            "old calibration cases (open) against the velocity scale $U_0$ (log axes; marker: $k$). (a) The normalized "
+            "energy term $\\bar S_E$. (b) The relative energy error $\\sqrt{S_E}/(U_0^2/4)$: the root-mean-square gap "
+            "between the model's kinetic energy and its exact decay, over the exact initial energy. $S_E$ is that gap "
+            "squared in absolute units, so it grows like $U_0^4$ times the squared relative error (dashed line: "
+            f"slope 4). Over the {len(both)} fields the fitted slope is {slope:.1f}, steeper, because the relative "
+            f"error itself grows with $U_0$ (Spearman correlation {rho:.2f}).")
+    labelled = new[new["energy_alarm"]]
+    if len(labelled):
+        text += (f" Labelled: the new clean fields that {_and([_short(s) for s in _energy_scores()])} flag, "
+                 f"{_tex_cases(labelled['case_id'].tolist())} ($U_0$ = "
+                 f"{_and([f'{u:.2f}' for u in labelled['U0']])})")
+        old_max = old_points.groupby("k")["U0"].max()
+        if all(row["U0"] > old_max[row["k"]] for _, row in labelled.iterrows()):
+            text += (", each with a $U_0$ above every old case of its $k$ (old maxima "
+                     + _and([f"{old_max[k]:.2f} for $k = {k}$" for k in sorted(set(labelled["k"]))]) + ")")
+        text += "."
+    return text
 
 
 def caption_damage_size(table: pd.DataFrame, n_cases: int) -> str:
@@ -1272,6 +1646,14 @@ def caption_damage_size(table: pd.DataFrame, n_cases: int) -> str:
             "and the time shift's size is its change to the exact flow.")
     if unchanged:
         text += f" The {_and([DAMAGE_LABELS[p] for p in unchanged])} damage changes only the pressure."
+    shift = table[table["perturbation"] == "temporal_mismatch"].sort_values("epsilon")
+    smallest = shift["velocity_change_min"].to_numpy()
+    flat = [i for i in range(1, len(smallest)) if smallest[i] < 1.01 * smallest[i - 1]]
+    if flat:
+        start = shift["epsilon"].iloc[flat[0] - 1]
+        text += (f" For the time shift, the smallest change stops growing from $\\varepsilon = {start:g}$ on: in the "
+                 "cases with the shortest decay time the shifted time reaches the end of the window $T$ and is held "
+                 "there.")
     return text
 
 
@@ -1289,7 +1671,8 @@ def save_figure(fig, output_dir: Path, stem: str, top_legend=None) -> list:
     above the figure, and the layout below it stays the PDF's.
     """
     pdf_path, png_path = output_dir / f"{stem}.pdf", output_dir / f"{stem}.png"
-    fig.savefig(pdf_path, metadata={"CreationDate": None})
+    # dpi sets only the resolution of an embedded image (fig_damage_fields); lines and text stay vector
+    fig.savefig(pdf_path, metadata={"CreationDate": None}, dpi=PNG_DPI)
     if top_legend is not None:
         top_legend.set_title(PNG_TITLES[stem], prop={"size": PNG_TITLE_SIZE})
     else:
@@ -1321,6 +1704,13 @@ def _style(ax) -> None:
     ax.set_axisbelow(True)
 
 
+def _letter(ax, index: int) -> None:
+    """The panel's letter, (a), (b), ..., in bold in its top-left corner, on white so no line runs through it."""
+    ax.text(0.03, 0.97, f"({chr(ord('a') + index)})", transform=ax.transAxes, ha="left", va="top", fontsize=7.5,
+            fontweight="bold", color=ne.INK, zorder=6,
+            bbox={"boxstyle": "square,pad=0.15", "facecolor": "white", "edgecolor": "none"})
+
+
 def _score_handles(bands: bool = False) -> list:
     """The legend entries of the five scores, and with bands, of the grey band of a shared range."""
     handles = [Line2D([], [], color=SCORE_COLOURS[s], linewidth=LINE_WIDTH, marker=SCORE_MARKERS[s],
@@ -1328,7 +1718,7 @@ def _score_handles(bands: bool = False) -> list:
                for s in SCORE_NAMES]
     if bands:
         handles.append(Patch(facecolor=SHARED_BAND_COLOUR, alpha=SHARED_BAND_ALPHA, linewidth=0,
-                             label="shared 95% range"))
+                             label="shared 95% CI"))
     return handles
 
 
@@ -1383,12 +1773,13 @@ def plot_recall(table: pd.DataFrame, rate: str, output_dir, stem: str) -> list:
     epsilons = sorted(table["epsilon"].unique())
     with plt.rc_context(PRINT_RC):
         fig, axes = plt.subplots(1, len(perturbations), figsize=(TEXT_WIDTH, 2.05), sharey=True, layout="constrained")
-        for ax, perturbation in zip(axes, perturbations):
+        for i, (ax, perturbation) in enumerate(zip(axes, perturbations)):
             _style(ax)
             _recall_lines(ax, table, perturbation, rate)
             _epsilon_axis(ax, epsilons)
             ax.set_ylim(-0.04, 1.04)
             ax.set_title(DAMAGE_LABELS[perturbation])
+            _letter(ax, i)
         axes[0].set_ylabel("recall" if rate == "recall" else "recall, new detections")
         fig.supxlabel("damage strength \u03b5")
         legend = fig.legend(handles=_score_handles(bands=True), loc="outside upper center", ncol=len(SCORE_NAMES) + 1,
@@ -1416,6 +1807,7 @@ def plot_recall_by_k(table: pd.DataFrame, output_dir) -> list:
                 ax.set_ylim(-0.04, 1.04)
                 if i == 0:
                     ax.set_title(DAMAGE_LABELS[perturbation])
+                _letter(ax, i * len(perturbations) + j)
             axes[i, 0].set_ylabel(f"k = {k}\nrecall")
         fig.supxlabel("damage strength \u03b5")
         legend = fig.legend(handles=_score_handles(bands=True), loc="outside upper center", ncol=len(SCORE_NAMES) + 1,
@@ -1470,7 +1862,7 @@ def plot_roc(fields: pd.DataFrame, overall: pd.DataFrame, output_dir) -> list:
         ax.set_ylabel("recall (damaged fields flagged)")
         inset.set_xlim(*inset_x)
         inset.set_ylim(*inset_y)
-        inset.tick_params(labelsize=6)
+        inset.tick_params(labelsize=7)
         inset.set_facecolor("white")
         for side in ("top", "right"):
             inset.spines[side].set_visible(True)
@@ -1485,7 +1877,7 @@ def plot_roc(fields: pd.DataFrame, overall: pd.DataFrame, output_dir) -> list:
                           markeredgewidth=0.9, label=SCORE_LABELS[s]) for s in SCORE_NAMES]
         blanks = [Line2D([], [], linestyle="", label=_range_text(overall[overall["score"] == s].iloc[0], "auc"))
                   for s in SCORE_NAMES]
-        ax.legend(handles=handles + blanks, ncol=2, title="AUC [95% range]; open marker: the frozen \u03c4",
+        ax.legend(handles=handles + blanks, ncol=2, title="AUC [95% CI]; open marker: the frozen \u03c4",
                   loc="lower right", frameon=False, alignment="left", handlelength=2.0, handletextpad=0.5,
                   columnspacing=-1.2, borderaxespad=0.2)
         paths = save_figure(fig, Path(output_dir), "fig_roc")
@@ -1537,7 +1929,8 @@ def plot_clean_scores(fields: pd.DataFrame, old: pd.DataFrame, thresholds: dict,
     old_x, new_x, half = -0.2, 0.12, 0.08
     with plt.rc_context(PRINT_RC):
         fig, axes = plt.subplots(2, 3, figsize=(TEXT_WIDTH, 4.3), layout="constrained")
-        for ax, score in zip(axes.flat, SCORE_NAMES):
+        for panel, (ax, score) in enumerate(zip(axes.flat, SCORE_NAMES)):
+            _letter(ax, panel)
             tau = thresholds[score]
             values = np.concatenate([clean[score].to_numpy(dtype=float), old[score].to_numpy(dtype=float), [tau]])
             low, high = values.min() / 1.5, values.max() * 1.6
@@ -1566,7 +1959,7 @@ def plot_clean_scores(fields: pd.DataFrame, old: pd.DataFrame, thresholds: dict,
                     heights = _label_positions(alarms[score].tolist(), min_ratio=1.16, floor=tau * 1.08)
                     for x, y, label_y, case_id in zip(alarm_x, alarms[score], heights, alarms["case_id"]):
                         ax.annotate(case_id.split("_")[1], xy=(x, y), xytext=(k + new_x + half + 0.07, label_y),
-                                    ha="left", va="center", fontsize=6.5, color=ne.INK,
+                                    ha="left", va="center", fontsize=7, color=ne.INK,
                                     arrowprops={"arrowstyle": "-", "color": ne.INK_MUTED, "linewidth": 0.5,
                                                 "shrinkA": 0, "shrinkB": 1.5})
             ax.set_xlim(ks[0] - 0.5, ks[-1] + 0.5)
@@ -1604,7 +1997,7 @@ def _power_label(value, _=None) -> str:
     return f"{value:g}" if -1 <= exponent <= 3 else "10" + str(exponent).translate(_SUPERSCRIPTS)
 
 
-def _ratio_panels(n_panels: int, x_range: tuple, y_range: tuple):
+def _ratio_panels(n_panels: int, x_range: tuple, y_range: tuple, ylabel: str = "score / τ"):
     """
     The 2 x 3 grid of a figure with one panel per score and the legend in the last slot:
     shared log axes, x an error in % and y a score / tau, each with its line at tau.
@@ -1625,7 +2018,7 @@ def _ratio_panels(n_panels: int, x_range: tuple, y_range: tuple):
         ax.text(1.01, 1.0, "τ", transform=ax.get_yaxis_transform(), ha="left", va="center",
                 color=ne.INK_SECONDARY, fontsize=7.5)
     for ax in axes[:, 0]:
-        ax.set_ylabel("score / τ")
+        ax.set_ylabel(ylabel)
     legend_ax = axes.flat[n_panels]
     legend_ax.axis("off")
     # The panel above the legend has no panel below it to carry the shared x labels
@@ -1659,7 +2052,8 @@ def plot_natural(natural: pd.DataFrame, thresholds: dict, output_dir) -> list:
     inaccurate = natural["inaccurate"].to_numpy(dtype=bool)
     with plt.rc_context(PRINT_RC):
         fig, axes, legend_ax = _ratio_panels(len(SCORE_NAMES), x_range, y_range)
-        for ax, score in zip(axes.flat, SCORE_NAMES):
+        for i, (ax, score) in enumerate(zip(axes.flat, SCORE_NAMES)):
+            _letter(ax, i)
             ax.fill_between([x_range[0], rule], 1.0, y_range[1], color=ne.WASH, linewidth=0, zorder=0)
             ax.fill_between([rule, x_range[1]], y_range[0], 1.0, color=ne.WASH, linewidth=0, zorder=0)
             ax.axvline(rule, color=ne.INK_SECONDARY, linewidth=0.8, linestyle=(0, (4, 2)), zorder=1)
@@ -1695,28 +2089,29 @@ def plot_natural(natural: pd.DataFrame, thresholds: dict, output_dir) -> list:
 def plot_shared(fields: pd.DataFrame, sizes: pd.DataFrame, natural: pd.DataFrame, thresholds: dict,
                 output_dir) -> list:
     """
-    fig_score_vs_velocity_error: both experiments on one axis. For each score, the score /
-    tau against the size of the velocity error: of each damaged field (orange, marker by
-    damage type), the velocity change its damage makes (damage_sizes()); of each
-    checkpoint (blue, by training stage), its own velocity error against the exact
-    solution. A damage type that never changes the velocity (pressure) has no place on
-    the axis and is left out.
+    fig_score_vs_velocity_error: both experiments on one axis, as what a deviation adds to
+    a score against its size. For each score: each damaged field (orange, marker by damage
+    type) at the velocity change its damage makes and the rise of its score over its own
+    clean field (score_rises()); each checkpoint (blue, by training stage) at its own
+    velocity error and its whole score, which is what its error adds over the exact
+    solution. Both over tau. A damage type that never changes the velocity (pressure),
+    and the fields whose score did not rise (no place on a log axis), are left out; the
+    caption counts them.
     """
-    damaged = _damaged_with_sizes(fields, sizes)
-    shown = damaged[damaged["velocity_change"] > 0]
-    perturbations = sorted(shown["perturbation"].unique(), key=bm._perturbation_order)
-    x_damage = 100 * shown["velocity_change"].to_numpy(dtype=float)
+    rises = score_rises(fields, sizes, thresholds)
+    perturbations = sorted(rises["perturbation"].unique(), key=bm._perturbation_order)
+    x_damage = 100 * rises["velocity_change"].to_numpy(dtype=float)
     x_natural = 100 * natural["relL2_uv"].to_numpy(dtype=float)
-    y_damage = {score: shown[score].to_numpy(dtype=float) / thresholds[score] for score in SCORE_NAMES}
+    y_damage = {score: rises[f"rise_{score}"].to_numpy(dtype=float) for score in SCORE_NAMES}
     y_natural = {score: natural[score].to_numpy(dtype=float) / thresholds[score] for score in SCORE_NAMES}
     x_range = (min(x_damage.min(), x_natural.min()) / 1.6, max(x_damage.max(), x_natural.max()) * 1.6)
-    y_all = np.concatenate([*y_damage.values(), *y_natural.values()])
+    y_all = np.concatenate([*(y[y > 0] for y in y_damage.values()), *y_natural.values()])
     y_range = (y_all.min() / 1.8, y_all.max() * 1.8)
     with plt.rc_context(PRINT_RC):
-        fig, axes, legend_ax = _ratio_panels(len(SCORE_NAMES), x_range, y_range)
-        for ax, score in zip(axes.flat, SCORE_NAMES):
+        fig, axes, legend_ax = _ratio_panels(len(SCORE_NAMES), x_range, y_range, ylabel="added score / τ")
+        for i, (ax, score) in enumerate(zip(axes.flat, SCORE_NAMES)):
             for perturbation in perturbations:
-                chosen = (shown["perturbation"] == perturbation).to_numpy()
+                chosen = (rises["perturbation"] == perturbation).to_numpy() & (y_damage[score] > 0)
                 ax.scatter(x_damage[chosen], y_damage[score][chosen], s=7, marker=DAMAGE_MARKERS[perturbation],
                            color=SYNTHETIC_COLOUR, edgecolors="white", linewidths=0.25, alpha=0.85, zorder=2)
             for stage in ne.STAGES:
@@ -1724,25 +2119,135 @@ def plot_shared(fields: pd.DataFrame, sizes: pd.DataFrame, natural: pd.DataFrame
                 ax.scatter(x_natural[chosen], y_natural[score][chosen], s=9, marker=NATURAL_MARKER,
                            color=ne.STAGE_COLOURS[stage], edgecolors="white", linewidths=0.3, zorder=3)
             ax.set_title(SCORE_LABELS[score])
-        fig.supxlabel("size of the velocity error (% of the exact velocity)")
-        # Two legends stacked, each in two columns, so the long damage names have the width of the slot
+            _letter(ax, i)
+        fig.supxlabel("size of the deviation (% of the exact velocity)")
+        # Two legends stacked: the long damage names in one column, the short stage names in two
         damage_handles = [Line2D([], [], linestyle="", marker=DAMAGE_MARKERS[p], markersize=4.2,
                                  markerfacecolor=SYNTHETIC_COLOUR, markeredgecolor="white", markeredgewidth=0.4,
                                  label=DAMAGE_LABELS[p]) for p in perturbations]
-        synthetic = legend_ax.legend(handles=damage_handles, title="Synthetic damage", ncol=2, loc="upper left",
-                                     frameon=False, alignment="left", handletextpad=0.3, columnspacing=1.0,
-                                     borderaxespad=0.0)
+        synthetic = legend_ax.legend(handles=damage_handles, title="Synthetic damage", loc="upper left",
+                                     frameon=False, alignment="left", handletextpad=0.3, borderaxespad=0.0,
+                                     labelspacing=0.3)
         legend_ax.add_artist(synthetic)
         legend_ax.legend(handles=_stage_handles(_short_stage_label), title="Natural errors (training stage)", ncol=2,
-                         loc="upper left", bbox_to_anchor=(0.0, 0.66), frameon=False, alignment="left",
-                         handletextpad=0.3, columnspacing=1.0, borderaxespad=0.0)
-        unchanged = _unchanged_types(sizes)
-        note = "x: the velocity change a damage makes, or a\nmodel's own error. Flagged above τ."
-        if unchanged:
-            note += f"\nNot shown: {_and([DAMAGE_LABELS[p] for p in unchanged])} damage (velocity unchanged)."
+                         loc="upper left", bbox_to_anchor=(0.0, 0.62), frameon=False, alignment="left",
+                         handletextpad=0.3, columnspacing=1.0, borderaxespad=0.0, labelspacing=0.3)
+        note = "Synthetic: damage size, score it adds.\nNatural: own error, whole score."
         legend_ax.text(0.0, 0.0, note, transform=legend_ax.transAxes, ha="left", va="bottom",
                        color=ne.INK_SECONDARY, fontsize=7)
         paths = save_figure(fig, Path(output_dir), "fig_score_vs_velocity_error")
+        plt.close(fig)
+    return paths
+
+
+FIELD_CMAP = "Blues"   # One hue, white at zero to dark
+FIELD_ROWS = (("change", "change\n$|\\Delta\\mathbf{u}|/U_0$ (pressure: $|\\Delta p|/U_0^2$)"),
+              ("momentum", "momentum residual\n$|\\mathbf{R}_m|/(U_0^2 k)$"),
+              ("continuity", "continuity residual\n$|R_c|/(U_0 k)$"))
+
+
+def plot_damage_fields(info: dict, output_dir) -> list:
+    """
+    fig_damage_fields: for each damage type (column), the change it makes to the exact
+    solution and the momentum and continuity residuals it creates (rows), from
+    damage_field_maps(); one colour scale per row, white at zero.
+    """
+    maps = info["maps"]
+    perturbations = list(maps)
+    ticks, labels = [0, math.pi, 2 * math.pi], ["0", "π", "2π"]
+    with plt.rc_context(PRINT_RC):
+        fig, axes = plt.subplots(len(FIELD_ROWS), len(perturbations), figsize=(TEXT_WIDTH, 4.4), sharex=True,
+                                 sharey=True, layout="constrained", squeeze=False)
+        for r, (key, label) in enumerate(FIELD_ROWS):
+            largest = max(m[key].max() for m in maps.values())
+            vanishing = _vanishing(maps, key)
+            for c, perturbation in enumerate(perturbations):
+                ax = axes[r, c]
+                image = ax.imshow(maps[perturbation][key].T, origin="lower", extent=(0, 2 * math.pi, 0, 2 * math.pi),
+                                  cmap=FIELD_CMAP, vmin=0, vmax=largest, interpolation="bilinear")
+                if perturbation in vanishing:
+                    ax.text(math.pi, math.pi, "none", ha="center", va="center", color=ne.INK_SECONDARY, fontsize=7)
+                ax.set_xticks(ticks, labels)
+                ax.set_yticks(ticks, labels)
+                ax.tick_params(length=2)
+                for spine in ax.spines.values():
+                    spine.set_visible(True)
+                if r == 0:
+                    ax.set_title(DAMAGE_LABELS[perturbation])
+                if r == len(FIELD_ROWS) - 1:
+                    ax.set_xlabel("x")
+                _letter(ax, r * len(perturbations) + c)
+            axes[r, 0].set_ylabel("y")
+            bar = fig.colorbar(image, ax=axes[r, :], location="right", shrink=0.92, pad=0.015, aspect=14)
+            bar.set_label(label, fontsize=7)
+            bar.ax.tick_params(labelsize=7, length=2)
+            bar.outline.set_linewidth(0.5)
+        paths = save_figure(fig, Path(output_dir), "fig_damage_fields")
+        plt.close(fig)
+    return paths
+
+
+def plot_energy(fields: pd.DataFrame, old: pd.DataFrame, cases: list, output_dir) -> list:
+    """
+    fig_energy_term_vs_u0: the energy term of the clean fields against U0, for the new
+    cases (filled) and the old calibration cases (open), marker by k: (a) the normalized
+    term S_E bar, with a line of slope 4; (b) the relative energy error. The new fields
+    that a score holding the energy term flags are labelled with their case number.
+    """
+    new, old_points = _energy_points(fields, old, cases)
+    both = pd.concat([new, old_points])
+    x_range = (both["U0"].min() / 1.15, both["U0"].max() * 1.15)
+    with plt.rc_context(PRINT_RC):
+        fig, axes = plt.subplots(1, 2, figsize=(TEXT_WIDTH, 2.6), layout="constrained")
+        for i, (ax, column, label) in enumerate(((axes[0], "E_bar", "normalized energy term $\\bar S_E$"),
+                                                 (axes[1], "relative", "relative energy error (%)"))):
+            scale = 100 if column == "relative" else 1
+            _style(ax)
+            ax.set_xscale("log")
+            ax.set_yscale("log")
+            ax.set_xlim(*x_range)
+            ax.xaxis.set_major_locator(FixedLocator([0.5, 1, 2]))
+            ax.xaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:g}"))
+            ax.xaxis.set_minor_formatter(NullFormatter())
+            values = scale * both[column].to_numpy(dtype=float)
+            low, high = values.min() / 1.6, values.max() * 1.6
+            ax.set_ylim(low, high)
+            if high / low < 1e3:   # Under three decades: plain 1-2-5 ticks, not 6 x 10^-1
+                ax.yaxis.set_major_locator(FixedLocator(_log_ticks(low, high)))
+                ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:g}"))
+                ax.yaxis.set_minor_locator(NullLocator())
+            else:
+                ax.yaxis.set_major_formatter(FuncFormatter(_power_label))
+            for k, marker in ne.K_MARKERS.items():
+                of_k = old_points[old_points["k"] == k]
+                ax.scatter(of_k["U0"], scale * of_k[column], s=13, marker=marker, facecolors="white",
+                           edgecolors=OLD_COLOUR, linewidths=0.7, zorder=2)
+                of_k = new[new["k"] == k]
+                ax.scatter(of_k["U0"], scale * of_k[column], s=15, marker=marker, color=K_COLOUR, edgecolors="white",
+                           linewidths=0.4, zorder=3)
+            for _, row in new[new["energy_alarm"]].iterrows():
+                ax.annotate(row["case_id"].split("_")[1], xy=(row["U0"], scale * row[column]), xytext=(4, 2),
+                            textcoords="offset points", fontsize=7, color=ne.INK)
+            if column == "E_bar":
+                # Slope 4 through the middle of the points (geometric means), over the U0 range
+                centre_x, centre_y = np.exp(np.log(both["U0"]).mean()), np.exp(np.log(both["E_bar"]).mean())
+                xs = np.array(x_range)
+                ax.plot(xs, centre_y * (xs / centre_x) ** 4, color=ne.INK_MUTED, linewidth=0.8,
+                        linestyle=(0, (4, 2)), zorder=1)
+            ax.set_xlabel("velocity scale $U_0$")
+            ax.set_ylabel(label)
+            _letter(ax, i)
+        handles = [Line2D([], [], linestyle="", marker="o", markersize=4.2, markerfacecolor=K_COLOUR,
+                          markeredgecolor="white", label="new cases (final models)"),
+                   Line2D([], [], linestyle="", marker="o", markersize=4, markerfacecolor="white",
+                          markeredgecolor=OLD_COLOUR, label="old cases (calibration)"),
+                   *(Line2D([], [], linestyle="", marker=m, markersize=4, markerfacecolor=ne.INK_MUTED,
+                            markeredgecolor="white", label=f"k = {k}") for k, m in ne.K_MARKERS.items()),
+                   Line2D([], [], color=ne.INK_MUTED, linewidth=0.8, linestyle=(0, (4, 2)),
+                          label="∝ U₀⁴")]
+        legend = fig.legend(handles=handles, loc="outside upper center", ncol=len(handles), frameon=False,
+                            handlelength=1.6, handletextpad=0.4, columnspacing=1.0)
+        paths = save_figure(fig, Path(output_dir), "fig_energy_term_vs_u0", top_legend=legend)
         plt.close(fig)
     return paths
 
@@ -1789,6 +2294,9 @@ def build(benchmark_dir=DEFAULT_BENCHMARK_DIR, errors_csv=DEFAULT_ERRORS_CSV, me
     summary = summary_table(metrics, natural, read_natural_stage_table(natural_dir), thresholds)
     sizes = damage_sizes(cases, sorted(fields.loc[fields["label"] != "clean", "epsilon"].unique()))
     size_table = damage_size_table(sizes)
+    terms = term_auc_table(fields, natural)
+    shown_case = field_case(cases)
+    damage_maps = damage_field_maps(shown_case, FIELD_EPSILON)
     type_eps = metrics["by_type_eps"]
     captions = {
         "fig_recall_vs_eps": caption_recall_vs_eps(type_eps, fields, thresholds),
@@ -1797,16 +2305,19 @@ def build(benchmark_dir=DEFAULT_BENCHMARK_DIR, errors_csv=DEFAULT_ERRORS_CSV, me
         "fig_roc": caption_roc(metrics["overall"], metrics, fields),
         "fig_clean_scores_vs_tau": caption_clean_scores(fields, old, thresholds, cases),
         "fig_natural_score_vs_error": caption_natural(natural),
-        "fig_score_vs_velocity_error": caption_shared(fields, sizes, natural),
+        "fig_score_vs_velocity_error": caption_shared(fields, sizes, natural, thresholds),
+        "fig_damage_fields": caption_damage_fields(damage_maps, shown_case, FIELD_EPSILON),
+        "fig_energy_term_vs_u0": caption_energy(fields, old, cases),
         "table_recall_by_type_eps_k": caption_recall_by_k_table(by_k),
         "table_cases": caption_cases(cases_table),
-        "table_synthetic_vs_natural": caption_summary(summary, natural),
+        "table_synthetic_vs_natural": caption_summary(summary, natural, fields, type_eps),
         "table_damage_size": caption_damage_size(size_table, len(cases)),
+        "table_term_auc": caption_term_auc(terms, natural),
     }
     tables = {"table_recall_by_type_eps_k": by_k, "table_cases": cases_table,
-              "table_synthetic_vs_natural": summary, "table_damage_size": size_table}
+              "table_synthetic_vs_natural": summary, "table_damage_size": size_table, "table_term_auc": terms}
     return {"fields": fields, "old": old, "metrics": metrics, "calib": calib, "cases": cases, "natural": natural,
-            "sizes": sizes, "tables": tables, "captions": captions}
+            "sizes": sizes, "damage_maps": damage_maps, "tables": tables, "captions": captions}
 
 
 def run(benchmark_dir=DEFAULT_BENCHMARK_DIR, errors_csv=DEFAULT_ERRORS_CSV, metadata=DEFAULT_METADATA,
@@ -1833,6 +2344,8 @@ def run(benchmark_dir=DEFAULT_BENCHMARK_DIR, errors_csv=DEFAULT_ERRORS_CSV, meta
     written += plot_clean_scores(fields, built["old"], thresholds, output_dir)
     written += plot_natural(built["natural"], thresholds, output_dir)
     written += plot_shared(fields, built["sizes"], built["natural"], thresholds, output_dir)
+    written += plot_damage_fields(built["damage_maps"], output_dir)
+    written += plot_energy(fields, built["old"], built["cases"], output_dir)
     for stem in FIGURES:
         written.append(write_text(output_dir / f"{stem}.tex",
                                   figure_tex(stem, captions[stem], wide=stem not in NARROW_FIGURES)))
