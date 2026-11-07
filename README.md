@@ -11,7 +11,14 @@ A "physical hallucination" is defined as a generated flow field that appears vis
 *Can a normalized physics-based score detect visually plausible but physically inconsistent perturbations of PINN-generated 2D incompressible Navier-Stokes flow fields?*
 
 ## Reproducibility
-All randomized case generations and network initializations are controlled via a global seed utility (`src.utils.seed.set_global_seed()`) to ensure deterministic behavior.
+All randomized case generations and network initializations are controlled via a global seed utility (`src.utils.seed.set_global_seed()`) to ensure deterministic behavior. The 30 cases of the final iteration each carry their own seeds for their points, their training and their scoring (`cases/confirmation_cases.json`, see [`PROTOCOL.md`](PROTOCOL.md)).
+
+### Final iteration (Oct–Nov 2026)
+The last round of experiments, asked for by Barak in October 2026: 30 new test cases (`case_30` … `case_59`, 10 per k), each trained once and saved at 7 stages (`models/confirmation/`), a calibration frozen on the 30 old cases (`calibration/`), five scores, a synthetic-damage benchmark and a natural-error study. [`PROTOCOL.md`](PROTOCOL.md) fixes every setting; it was frozen (tag `protocol-v1`) before any new case was scored. Every result is in `results/`, and one command rebuilds all of them from the committed models, with no training (about 2 h on a CPU):
+```bash
+python run_pipeline.py --preset final --device cpu
+```
+The package sent to Barak is this repository at the tag `final-v1`, built by `release/build_final_package.py`; its guide, [`release/PACKAGE_README.md`](release/PACKAGE_README.md), lists what is where and summarizes the results. The work is tracked in GitHub issues #35–#48, with the roadmap in #47.
 
 ## Project Workflow & Training Execution
 
@@ -39,8 +46,9 @@ This project does not aim to create a new PINN architecture or a faster CFD solv
 │   ├── data/                        # Point sampling and dataset generation
 │   │   ├── generate_datasets.py
 │   │   ├── point_samplers.py
-│   │   └── sampler.py
+│   │   └── sampler.py               # The 30 old cases; --confirmation: the 30 new ones (#44)
 │   ├── models/                      # PINN architecture and loss functions
+│   │   ├── accuracy_audit.py        # #37: true error of every model against the exact solution
 │   │   ├── checkpoints.py           # save_checkpoint()/load_checkpoint(): .pth + .json sidecar (opens old models too)
 │   │   ├── loss.py
 │   │   ├── pinn.py
@@ -58,16 +66,24 @@ This project does not aim to create a new PINN architecture or a faster CFD solv
 │   │   ├── phs.py                   # Pure formula module: Smom/Sdiv/Sbc(ratio)/SE, normalization, scoring
 │   │   ├── evaluate_phs.py          # Full detection pipeline: scores every field, calibrates tau, evaluates
 │   │   ├── detection_sensitivity.py # Probes detection precision below the canonical epsilon floor
-│   │   └── publication_figures.py   # Issues #12-13: curated Figures 1-3 / Tables 1-2 for the paper
+│   │   ├── publication_figures.py   # Issues #12-13: curated Figures 1-3 / Tables 1-2 for the paper
+│   │   ├── frozen_calibration.py    # #45: the calibration fitted once on the 30 old clean fields, and apply()
+│   │   ├── grouped_eval.py          # #41: case bootstrap and Clopper-Pearson ranges
+│   │   ├── benchmark_metrics.py     # #35: the synthetic-damage benchmark's tables
+│   │   ├── natural_errors.py        # #39: scores of the 210 checkpoints against their true errors
+│   │   └── final_figures.py         # #36: the final figures and tables, from the saved tables
 │   └── utils/                       # Utility functions (e.g., seeding)
 │       └── seed.py
-├── tests/                           # Pytest suite for physics, samplers, losses, perturbations, and PHS
-│   ├── test_checkpoints.py
-│   ├── test_pinn_loss.py
-│   ├── test_point_samplers.py
-│   ├── test_residuals.py
-│   ├── test_perturbations.py
-│   └── test_phs.py
+├── tests/                           # Pytest suite: physics, samplers, losses, perturbations, PHS, and each final-iteration script
+├── cases/confirmation_cases.json    # The 30 new cases and their seeds (tag cases-v1)
+├── calibration/                     # The frozen calibration and the old scores it was fitted on (tag protocol-v1)
+├── models/                          # case_00.pth … case_29.pth: the 30 old models;
+│   └── confirmation/                #   case_30/ … case_59/: 7 checkpoints each, training logs, MANIFEST.sha256 (tag models-v1)
+├── results/                         # accuracy/ (#37), benchmark/ (#35), natural_errors/ (#39), figures/ (#36)
+├── release/                         # #46: build_final_package.py and PACKAGE_README.md, the package for Barak
+├── PROTOCOL.md                      # The evaluation protocol of the final iteration
+├── PIPELINE.md                      # Which script to run when, and what each needs and makes
+├── run_pipeline.py                  # Runs a whole pipeline: the original one, or --preset final
 ├── requirements.txt                 # Python dependencies
 └── README.md                        # Project documentation
 ```
@@ -124,6 +140,42 @@ To verify the physical constraints, residual computations, and point sampling lo
 ```bash
 pytest tests/
 ```
+
+### Rebuilding the Final Iteration's Results (#46)
+One command rebuilds every result of the final iteration from the committed models, with no training (about 2 h on a CPU; `--device cuda` on a GPU):
+```bash
+python run_pipeline.py --preset final --device cpu
+python run_pipeline.py --preset final --list     # its 9 stages and the exact command of each
+```
+It runs these scripts, in this order, and overwrites the committed files in `results/` with the rebuilt ones, so `git status` shows any file that came out different (on another OS the CSVs can differ in the last digits, about 1e-13; counts, flags and `.tex` files don't):
+```bash
+python src/data/sampler.py                       # data/cases_metadata.json: the 30 old cases
+python src/data/generate_datasets.py --metadata cases/confirmation_cases.json --output_dir data/confirmation/tensors
+python src/hallucinations/generate_hallucinations.py --metadata cases/confirmation_cases.json \
+    --models_dir models/confirmation --tensors_dir data/confirmation/tensors --output_dir data/confirmation/hallucinations
+python src/detection/evaluate_phs.py --calibration calibration/frozen_calibration.json \
+    --metadata cases/confirmation_cases.json --models_dir models/confirmation \
+    --hallucinations_dir data/confirmation/hallucinations --scores_dir data/confirmation/phs_scores
+python src/detection/benchmark_metrics.py        # -> results/benchmark/ (#35)
+python src/models/accuracy_audit.py --metadata data/cases_metadata.json --models_dir models \
+    --out results/accuracy/reference_errors_existing.csv
+python src/models/accuracy_audit.py --metadata cases/confirmation_cases.json --models_dir models/confirmation \
+    --out results/accuracy/reference_errors_confirmation.csv
+python src/detection/natural_errors.py           # -> results/natural_errors/ (#39)
+python src/detection/final_figures.py            # -> results/figures/ (#36)
+```
+The damage stage also writes about 1.8 GB of damaged fields into `data/confirmation/hallucinations/` (gitignored) that nothing reads afterwards. `python src/detection/natural_errors.py --from_scores` rebuilds the natural-error tables and figures from the saved `checkpoint_scores.csv` without rescoring. [`PIPELINE.md`](PIPELINE.md) says what each stage needs, makes and costs.
+
+### Building the Package for Barak (#46)
+`release/build_final_package.py` exports the repository at the tag `final-v1` with `git archive`, adds `release/PACKAGE_README.md` as `00_README.md`, the rebuilt `data/cases_metadata.json` and `pip_freeze.txt`, checks that every item Barak asked for is there and that the checkpoints match `models/confirmation/MANIFEST.sha256`, compares the outputs of a rebuild from scratch with the package's copies (`reproduction_check.txt`), and zips it:
+```bash
+git worktree add ../pinn-final-check final-v1
+cd ../pinn-final-check
+python run_pipeline.py --preset final --device cpu > ../repro_log.txt 2>&1
+cd -
+python release/build_final_package.py --rebuilt ../pinn-final-check --log ../repro_log.txt
+```
+It writes `barak_package_final/` and `barak_package_final.zip` in the repository root (gitignored). `--trial --ref HEAD` builds a trial package of the current commit without the comparison.
 
 ### Training with Checkpoints
 `train_model.py` with no flags trains the 30 cases of `data/cases_metadata.json` into `models/{case_id}.pth`
@@ -234,6 +286,10 @@ Based on the project blueprint, the following components are implemented or acti
       sized (`src/detection/publication_figures.py`, output in `plots/paper_figures/`). One caveat: Figure
       1's residual panel should be regenerated against the actual retrained models before being treated as
       final — see [`FINDINGS.md`](FINDINGS.md).
+- [x] **Final Iteration (Issues #35-#48):** 30 pre-registered test cases with staged checkpoints, a frozen calibration,
+      five scores, the synthetic-damage benchmark, the natural-error study, the true errors and the final figures
+      (`PROTOCOL.md`, `results/`), rebuilt from the models by `python run_pipeline.py --preset final`, and packaged
+      for Barak by `release/build_final_package.py`.
 - [ ] **Technical Report & Archiving (Issue #14):** Not started.
 
 ## 📝 Documentation
