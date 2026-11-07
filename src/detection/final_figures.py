@@ -833,7 +833,12 @@ def case_table_latex(table: pd.DataFrame, caption: str) -> str:
 
 
 def recall_by_k_latex(table: pd.DataFrame, caption: str) -> str:
-    """The type x strength x k recall as a LaTeX longtable: one row per score x k x type, one column per strength."""
+    """
+    The type x strength x k recall as a LaTeX longtable: one row per score x k x type, one
+    column per strength. Its 75 rows run over a page, so it is a longtable, which LaTeX
+    refuses in two-column mode; the header says so (a paper puts it after \\onecolumn, in
+    an appendix).
+    """
     epsilons = sorted(table["epsilon"].unique())
     rows = []
     for (score, k, perturbation), group in table.groupby(["score", "k", "perturbation"], sort=False):
@@ -843,8 +848,11 @@ def recall_by_k_latex(table: pd.DataFrame, caption: str) -> str:
             cells[f"$\\varepsilon={epsilon:g}$"] = (f"{int(group.loc[epsilon, 'n_damaged_flagged'])}/"
                                                    f"{int(group.loc[epsilon, 'n_damaged'])}")
         rows.append(cells)
-    return pd.DataFrame(rows).to_latex(index=False, escape=False, longtable=True, caption=caption,
-                                       label="tab:recall_by_type_eps_k")
+    header = ("% Written by src/detection/final_figures.py; needs \\usepackage{booktabs} and \\usepackage{longtable}.\n"
+              "% A longtable works only in one-column mode: in a two-column paper, put \\onecolumn before it "
+              "(e.g. in an appendix).\n")
+    return header + pd.DataFrame(rows).to_latex(index=False, escape=False, longtable=True, caption=caption,
+                                                label="tab:recall_by_type_eps_k")
 
 
 TEX_SCORE_LABELS = {score: label.replace("−", "$-$") for score, label in SCORE_LABELS.items()}
@@ -1420,7 +1428,9 @@ def score_rises(fields: pd.DataFrame, sizes: pd.DataFrame, thresholds: dict) -> 
     its case's own clean field, divided by the score's tau (rise_<score>). That is the
     part of the score that the damage causes, as a checkpoint's whole score is the part
     its own error causes (the exact solution has no residual and no energy gap, so it
-    scores zero).
+    scores zero). The exception is the bc term, a near/far ratio of the residual that
+    doesn't shrink with the error; caption_shared() says how much of the final models'
+    scores it makes up.
     """
     damaged = _damaged_with_sizes(fields, sizes)
     damaged = damaged[damaged["velocity_change"] > 0].copy()
@@ -1461,6 +1471,15 @@ def caption_shared(fields: pd.DataFrame, sizes: pd.DataFrame, natural: pd.DataFr
         text += (f" Among the {len(same_size)} damages of the same size as the final models' own errors "
                  f"({_percent(low)}--{_percent(high)}\\%), the median rise is {rise} $\\tau$ for Score1 to Score5; "
                  f"the final models' median scores are {whole} $\\tau$.")
+    # bc is a ratio of residuals, so it doesn't shrink with the error: part of a checkpoint's whole score is not
+    # "what its error adds" (the exact solution's 0 comes only from the guard in the ratio's denominator)
+    bc_scores = [score for score in SCORE_NAMES if "bc" in SCORE_DEFINITIONS[score]]
+    if bc_scores:
+        part = _and([_two_digits((final["bc_bar"] / thresholds[s]).median()) for s in bc_scores])
+        text += (" Not all of a checkpoint's score is what its error adds: the bc term of "
+                 f"{_and([_short(s) for s in bc_scores])}, a ratio of the residual near the edges to the residual far "
+                 "from them, does not shrink with the error, and makes up a median of "
+                 f"{part} $\\tau$ of the final models' scores.")
     return text + " " + SCORE_KEY
 
 

@@ -612,6 +612,9 @@ def test_captions_of_the_two_experiments(committed):
     assert "Not shown: the pressure damage, which changes only the pressure" in shared
     assert "(32, 10, 29, 22 and 19 for Score1 to Score5" in shared
     assert "the median rise is 0.79, 15, 6.1, 6.3 and 11 $\\tau$" in shared
+    # bc doesn't shrink with the error, so part of a checkpoint's whole score isn't its error's
+    assert "the bc term of Score3 and Score5, a ratio of the residual" in shared
+    assert "makes up a median of 0.10 and 0.18 $\\tau$ of the final models' scores" in shared
     summary = captions["table_synthetic_vs_natural"]
     assert "the 142 inaccurate ones" in summary
     assert "over the 4 strengths from $\\varepsilon = 0.01$ on it is 0.967--1.000" in summary
@@ -678,6 +681,13 @@ def test_committed_figures_exist():
     for stem in ff.FIGURES:
         for ext in ("pdf", "png"):
             assert (OUTPUT_DIR / f"{stem}.{ext}").stat().st_size > 10_000, f"{stem}.{ext}"
+
+
+def test_longtable_says_it_needs_one_column():
+    """LaTeX refuses a longtable in two-column mode, so its header must say so."""
+    text = (OUTPUT_DIR / "table_recall_by_type_eps_k.tex").read_text(encoding="utf-8")
+    header, found, _ = text.partition("\\begin{longtable}")
+    assert found and "\\usepackage{longtable}" in header and "\\onecolumn" in header
 
 
 def test_path_flags_default_to_the_repo_paths():
