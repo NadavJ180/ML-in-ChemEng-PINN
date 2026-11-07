@@ -251,6 +251,26 @@ def test_the_checkpoint_stages_are_the_training_code_s():
     assert b.STAGES == STAGES
 
 
+def test_the_rebuild_must_be_a_checkout_of_the_package_s_commit_changed_only_in_results(tmp_path):
+    def git(*args):
+        b.git("-c", "user.name=t", "-c", "user.email=t@t", "-c", "core.autocrlf=false", *args, cwd=tmp_path)
+    write(tmp_path / "results/a.csv", "1\n")
+    write(tmp_path / "src/x.py", "x = 1\n")
+    git("init", "-q")
+    git("add", ".")
+    git("commit", "-q", "-m", "c")
+    commit = b.git("rev-parse", "HEAD", cwd=tmp_path)
+
+    (tmp_path / "results/a.csv").write_text("2\n")
+    note, problems = b.check_rebuilt_checkout(tmp_path, commit)
+    assert problems == [] and "1 files in results/" in note
+    assert b.check_rebuilt_checkout(tmp_path, "0" * 40)[1] == [
+        f"{tmp_path} is at commit {commit[:7]}, not at the package's 0000000"]
+    (tmp_path / "src/x.py").write_text("x = 2\n")
+    assert b.check_rebuilt_checkout(tmp_path, commit)[1] == [
+        "the rebuild changed tracked files outside results/: src/x.py"]
+
+
 # --- the log, the report and the ZIP ---
 
 def test_read_log_hides_folder_names_and_reads_the_run(tmp_path):

@@ -119,12 +119,12 @@ class BuildError(RuntimeError):
 
 # --- git and files ---
 
-def git(*args, cwd=ROOT) -> str:
-    """Runs git and returns its stripped output; raises BuildError if git fails."""
+def git(*args, cwd=ROOT, strip=True) -> str:
+    """Runs git and returns its output (stripped unless strip=False); raises BuildError if git fails."""
     result = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True)
     if result.returncode != 0:
         raise BuildError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
-    return result.stdout.strip()
+    return result.stdout.strip() if strip else result.stdout
 
 
 def resolve_ref(ref: str) -> str:
@@ -486,8 +486,9 @@ def check_rebuilt_checkout(rebuilt_dir: Path, commit: str) -> tuple:
         return "The rebuilt folder is not a git checkout, so its commit was not checked.", []
     if head != commit:
         return "", [f"{rebuilt_dir} is at commit {head[:7]}, not at the package's {commit[:7]}"]
+    # Each line is "XY path"; the leading space of " M path" matters, so the output is not stripped
     changed = [line[3:] for line in git("status", "--porcelain=v1", "--untracked-files=no",
-                                        cwd=rebuilt_dir).splitlines()]
+                                        cwd=rebuilt_dir, strip=False).splitlines() if line]
     outside = [p for p in changed if not p.startswith("results/")]
     if outside:
         return "", [f"the rebuild changed tracked files outside results/: {', '.join(outside)}"]
