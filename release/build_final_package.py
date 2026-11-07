@@ -91,6 +91,7 @@ PROTOCOL = "PROTOCOL.md"
 PROTOCOL_HASHED = ("models/confirmation/MANIFEST.sha256",
                    "calibration/source_phs_components_raw.csv",
                    "calibration/frozen_calibration.json")
+# The 7 checkpoints of each new case: src/models/checkpoints.STAGES (not imported, to keep torch out of this script)
 STAGES = ("adam_00100", "adam_00500", "adam_01000", "adam_02500", "adam_04000", "adam_05000", "lbfgs_final")
 N_OLD_CASES = 30
 # Rebuilt by the final preset, and so compared with the rebuild
@@ -128,7 +129,11 @@ def git(*args, cwd=ROOT) -> str:
 
 def resolve_ref(ref: str) -> str:
     """The full commit hash of a tag, branch or commit."""
-    return git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+    try:
+        return git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+    except BuildError:
+        raise BuildError(f"{ref!r} is no tag, branch or commit of this repository"
+                         + (" yet: tag the merged PR first" if ref == DEFAULT_REF else "")) from None
 
 
 def export_tree(ref: str, dest: Path, paths=()) -> None:

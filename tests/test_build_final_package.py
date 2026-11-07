@@ -241,8 +241,14 @@ def test_export_tree_writes_files_as_git_stores_them(tmp_path):
 def test_export_tree_of_an_unknown_ref_fails_cleanly(tmp_path):
     with pytest.raises(b.BuildError):
         b.export_tree("no-such-ref-46", tmp_path)
-    with pytest.raises(b.BuildError):
+    with pytest.raises(b.BuildError, match="no tag, branch or commit"):
         b.resolve_ref("no-such-ref-46")
+    assert b.resolve_ref("HEAD") == b.git("rev-parse", "HEAD")
+
+
+def test_the_checkpoint_stages_are_the_training_code_s():
+    from src.models.checkpoints import STAGES
+    assert b.STAGES == STAGES
 
 
 # --- the log, the report and the ZIP ---
