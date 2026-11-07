@@ -121,12 +121,12 @@ class BuildError(RuntimeError):
 
 # --- git and files ---
 
-def git(*args, cwd=ROOT, strip=True) -> str:
-    """Runs git and returns its output (stripped unless strip=False); raises BuildError if git fails."""
+def git(*args, cwd=ROOT) -> str:
+    """Runs git and returns its stripped output; raises BuildError if git fails."""
     result = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True)
     if result.returncode != 0:
         raise BuildError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
-    return result.stdout.strip() if strip else result.stdout
+    return result.stdout.strip()
 
 
 def resolve_ref(ref: str) -> str:
@@ -384,7 +384,8 @@ def compare_csv(packaged: Path, rebuilt: Path) -> tuple:
                 if rel > worst:
                     worst, worst_column = rel, column
         else:
-            differs = x.astype(str).to_numpy() != y.astype(str).to_numpy()
+            # Empty cells read as NaN (pandas 3 keeps them NaN in text columns too), and NaN != NaN
+            differs = ~((x == y) | (x.isna() & y.isna())).to_numpy(dtype=bool)
             if differs.any():
                 row = int(np.flatnonzero(differs)[0])
                 return DIFFERENT, f"{column} differs in row {row + 2}: {x.iloc[row]!r} here, {y.iloc[row]!r} rebuilt"
@@ -503,6 +504,11 @@ def compare_outputs(package_dir: Path, rebuilt_dir: Path) -> list:
         if (rebuilt_dir / folder).is_dir():
             rows += [(NEW, f"{folder}/{name}", "rebuilt, but not in the package")
                      for name in files_under(rebuilt_dir / folder) if f"{folder}/{name}" not in known]
+    # A PDF stores its coordinates as text, so a last-digit change in the data can alter its bytes; its PNG says more
+    status_of = {path: status for status, path, _ in rows}
+    for i, (status, path, detail) in enumerate(rows):
+        if status == DRAWN_DIFFERENTLY and path.endswith(".pdf") and status_of.get(path[:-4] + ".png") == IDENTICAL:
+            rows[i] = (status, path, f"{detail}; its .png is identical")
     return rows
 
 
@@ -520,15 +526,15 @@ def check_rebuilt_checkout(rebuilt_dir: Path, commit: str) -> tuple:
         return "The rebuilt folder is not a git checkout, so its commit was not checked.", []
     if head != commit:
         return "", [f"{rebuilt_dir} is at commit {head[:7]}, not at the package's {commit[:7]}"]
-    # Each line is "XY path"; the leading space of " M path" matters, so the output is not stripped
-    changed = [line[3:] for line in git("status", "--porcelain=v1", "--untracked-files=no",
-                                        cwd=rebuilt_dir, strip=False).splitlines() if line]
+    # git diff compares contents with line endings normalized; git status would also list files whose
+    # line endings alone changed (the scripts write LF, a Windows checkout has CRLF)
+    changed = git("diff", "--name-only", cwd=rebuilt_dir).splitlines()
     outside = [p for p in changed if not p.startswith("results/")]
     if outside:
         return "", [f"the rebuild changed tracked files outside results/: {', '.join(outside)}"]
-    return (f"The run was made in a clean checkout of commit {commit[:7]}, and it changed no tracked file "
-            f"outside results/ ({len(changed)} files in results/ differ from git in their bytes, "
-            "line endings aside).", [])
+    return (f"The run was made in a checkout of commit {commit[:7]}, and it changed the contents of no "
+            f"tracked file outside results/. In results/, {len(changed)} rebuilt files differ from git in "
+            "their bytes, line endings aside; they are compared below.", [])
 
 
 # --- the console log ---

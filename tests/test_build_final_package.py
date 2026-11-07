@@ -51,6 +51,14 @@ def test_a_csv_that_differs_in_the_last_digits_has_the_same_numbers(tmp_path):
     assert "e-1" in detail
 
 
+def test_empty_text_cells_match_each_other(tmp_path):
+    """An empty cell reads as NaN, in text columns too (pandas 3), and NaN != NaN must not count as a change."""
+    packaged = "score,false_alarm_cases,fpr\nScore1,,0.0\nScore2,case_34;case_45,0.06666666666666667\n"
+    rebuilt = packaged.replace("0.06666666666666667", "0.06666666666666668")
+    assert b.compare_file(*pair(tmp_path, "a.csv", packaged, rebuilt))[0] == b.SAME_NUMBERS
+    assert b.compare_file(*pair(tmp_path, "b.csv", packaged, rebuilt.replace(",,", ",case_30,")))[0] == b.DIFFERENT
+
+
 @pytest.mark.parametrize("old, new, why", [
     ("True,3", "False,3", "flagged_Score1"),        # a flag
     ("True,3", "True,4", "n_flagged"),              # a count
@@ -120,6 +128,18 @@ def test_compare_outputs_lists_missing_and_new_files(tmp_path):
     assert rows["results/benchmark/metrics_passed_only.csv"] == b.NEW
     assert rows[b.OLD_CASES] == b.IDENTICAL
     assert len(rows) == 1 + 2 * len(b.RESULT_DIRS) + 1
+
+
+def test_a_pdf_whose_png_is_identical_says_so(tmp_path):
+    package, rebuilt = tmp_path / "package", tmp_path / "rebuilt"
+    for folder, pdf in ((package, b"%PDF 1.000"), (rebuilt, b"%PDF 1.001")):
+        make_results(folder)
+        write(folder / "results/figures/fig_a.pdf", pdf)
+        write(folder / "results/figures/fig_a.png", b"same png")
+        write(folder / "results/figures/fig_b.pdf", pdf)
+    details = {path: (status, detail) for status, path, detail in b.compare_outputs(package, rebuilt)}
+    assert details["results/figures/fig_a.pdf"] == (b.DRAWN_DIFFERENTLY, "the bytes differ; its .png is identical")
+    assert details["results/figures/fig_b.pdf"] == (b.DRAWN_DIFFERENTLY, "the bytes differ")
 
 
 # --- the checks of the package ---
@@ -275,7 +295,7 @@ def test_the_rebuild_must_be_a_checkout_of_the_package_s_commit_changed_only_in_
 
     (tmp_path / "results/a.csv").write_text("2\n")
     note, problems = b.check_rebuilt_checkout(tmp_path, commit)
-    assert problems == [] and "1 files in results/" in note
+    assert problems == [] and "In results/, 1 rebuilt files differ" in note
     assert b.check_rebuilt_checkout(tmp_path, "0" * 40)[1] == [
         f"{tmp_path} is at commit {commit[:7]}, not at the package's 0000000"]
     (tmp_path / "src/x.py").write_text("x = 2\n")
