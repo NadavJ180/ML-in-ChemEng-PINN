@@ -77,7 +77,7 @@ This project does not aim to create a new PINN architecture or a faster CFD solv
 ├── tests/                           # Pytest suite: physics, samplers, losses, perturbations, PHS, and each final-iteration script
 ├── cases/confirmation_cases.json    # The 30 new cases and their seeds (tag cases-v1)
 ├── calibration/                     # The frozen calibration and the old scores it was fitted on (tag protocol-v1)
-├── models/                          # case_00.pth … case_29.pth: the 30 old models;
+├── models/                          # case_00.pth … case_29.pth: the 30 old models, loss_summary.csv: their training record;
 │   └── confirmation/                #   case_30/ … case_59/: 7 checkpoints each, training logs, MANIFEST.sha256 (tag models-v1)
 ├── results/                         # accuracy/ (#37), benchmark/ (#35), natural_errors/ (#39), figures/ (#36)
 ├── release/                         # #46: build_final_package.py and PACKAGE_README.md, the package for Barak

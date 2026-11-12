@@ -31,7 +31,7 @@ python run_pipeline.py --preset final --device cpu
 | Raw scores | `results/benchmark/confirmation_scores_raw.csv` (the 930 fields of the synthetic-damage benchmark) and `results/natural_errors/checkpoint_scores.csv` (the 210 checkpoints): raw and normalized components, the five scores and their flags. `calibration/source_phs_components_raw.csv`: the old pipeline's scores of the 930 fields of the 30 old cases, whose clean rows the calibration was fitted on (its normalized columns and Score1–3 use the old calibration) |
 | Reference errors | `results/accuracy/reference_errors_confirmation.csv` (the 210 checkpoints) and `reference_errors_existing.csv` (the 30 old models) |
 | Frozen calibration | `calibration/frozen_calibration.json`: the four normalizers and the five τ. The rules: `PROTOCOL.md` |
-| Training logs | `models/confirmation/case_NN/loss_history.json` (every loss term at every Adam step and L-BFGS evaluation), `models/confirmation/loss_summary.csv` (final losses, pass/fail and minutes per case), `training_summary.log` (pass/fail), `RESTARTS.md` |
+| Training logs | `models/confirmation/case_NN/loss_history.json` (every loss term at every Adam step and L-BFGS evaluation), `models/confirmation/loss_summary.csv` (final losses, pass/fail and minutes per case), `training_summary.log` (pass/fail), `RESTARTS.md`. The 30 old models: `models/loss_summary.csv` (the same columns; their runs saved only the final model) |
 | Complete code | the whole package; `pip_freeze.txt` |
 | Figures (PDF and PNG) and tables (CSV and LaTeX) | `results/figures/`: the paper's figures and tables. `results/benchmark/` and `results/natural_errors/`: every table of the two experiments |
 | Every false alarm and every miss | Synthetic damage: `results/benchmark/false_alarms.csv`, `missed_detections.csv`, `clean_false_positives.csv`, `preflagged_cases.csv`. Natural errors: `results/natural_errors/false_alarms.csv`, `missed_failures.csv` (empty: there are none), `inaccurate_final_models.csv` (empty: there are none) |
@@ -64,7 +64,7 @@ python run_pipeline.py --preset final --device cpu
 ### Training: every run passed
 
 - All 30 runs passed the acceptance test; none failed and none was restarted (`models/confirmation/RESTARTS.md`). So the extra "passed runs only" tables that the protocol calls for when a run fails are not needed.
-- The final models' velocity errors are 0.15–0.73% (k = 1: 0.15–0.28%, k = 2: 0.26–0.54%, k = 3: 0.18–0.73%). The 30 old models: 0.14–0.56%.
+- The final models' velocity errors are 0.15–0.73% (k = 1: 0.15–0.28%, k = 2: 0.26–0.54%, k = 3: 0.18–0.73%). The 30 old models: 0.14–0.56%; all 30 of their runs passed too (10.5 GPU hours, 18.6–22.7 minutes per case, `models/loss_summary.csv`).
 - Training took 11.0 GPU hours in all, on an NVIDIA RTX 3050 in float64: 18–23 minutes per case, and 60 minutes for `case_32`, because the GPU ran slower during that run.
 - The checkpoints: at the six Adam stages, 30, 30, 30, 22, 16 and 14 of the 30 are inaccurate, and no final model is. That gives 142 inaccurate and 68 accurate checkpoints: 38 Adam checkpoints with errors from 2.96% to 10%, and the 30 final models.
 

@@ -89,6 +89,8 @@ NEW_CASES = "cases/confirmation_cases.json"
 MANIFEST = "models/confirmation/MANIFEST.sha256"
 PROTOCOL = "PROTOCOL.md"
 FROZEN_CALIBRATION = "calibration/frozen_calibration.json"
+# The training summary of the 30 old models (final losses, pass/fail, minutes per case), as sent in October 2026
+OLD_TRAINING_SUMMARY = "models/loss_summary.csv"
 # The files whose SHA-256 PROTOCOL.md records (sections 2 and 8)
 PROTOCOL_HASHED = ("models/confirmation/MANIFEST.sha256",
                    "calibration/source_phs_components_raw.csv",
@@ -220,7 +222,7 @@ def expected_files(package_dir: Path) -> list:
         ("Locked calibration and rules", ["calibration/frozen_calibration.json", PROTOCOL]),
         ("Training logs", [f"models/confirmation/{c}/loss_history.json" for c in new_ids]
                           + ["models/confirmation/loss_summary.csv", "models/confirmation/training_summary.log",
-                             "models/confirmation/RESTARTS.md"]),
+                             "models/confirmation/RESTARTS.md", OLD_TRAINING_SUMMARY]),
         ("Code", ["run_pipeline.py", "requirements.txt", "README.md", "PIPELINE.md",
                   "release/build_final_package.py", FREEZE_NAME]),
         ("Every false alarm and every miss", ["results/benchmark/false_alarms.csv",

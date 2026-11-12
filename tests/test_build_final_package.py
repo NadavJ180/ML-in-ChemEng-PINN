@@ -249,6 +249,15 @@ def test_the_real_checkpoints_and_frozen_files_pass_their_checks():
     assert b.check_protocol_hashes(ROOT) == []
 
 
+def test_the_old_training_summary_is_the_copy_sent_in_october():
+    """real: models/loss_summary.csv is stored byte for byte (.gitattributes -text), as in the October package."""
+    path = ROOT / b.OLD_TRAINING_SUMMARY
+    assert b.sha256(path) == "00781b4ab6d8b42a455d6b110264d16d4f280034ab0773b308829f7b9826e1e1"
+    table = pd.read_csv(path)
+    assert sorted(table["case_id"]) == [f"case_{n:02d}" for n in range(b.N_OLD_CASES)]
+    assert table["passed"].all()
+
+
 def test_the_real_calibration_refits_to_the_frozen_file_and_a_changed_one_does_not(tmp_path):
     """real: the committed code refits calibration/frozen_calibration.json from its source scores."""
     b.export_tree("HEAD", tmp_path, ["src", "calibration"])

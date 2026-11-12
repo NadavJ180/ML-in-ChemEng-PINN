@@ -6,3 +6,6 @@ models/confirmation/** -text
 # The calibration source scores and the frozen calibration are stored byte for byte too,
 # since frozen_calibration.json and PROTOCOL.md record their SHA-256 (#45).
 calibration/** -text
+
+# The training summary of the 30 old models, as sent to Barak in October 2026, stored byte for byte (#46).
+models/loss_summary.csv -text
