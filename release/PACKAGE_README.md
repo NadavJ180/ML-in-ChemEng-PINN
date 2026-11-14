@@ -165,4 +165,5 @@ The steps after `scores` read what the earlier ones wrote, so `--from metrics` n
 
 - `plots/paper_figures/` holds the first paper's figures and tables, from the 30 old cases. They are not part of this iteration and were not rechecked for it; `python run_pipeline.py --stages sample,hallucinate,phs,figures --device cpu` rebuilds them (checked byte for byte at commit `4437907`, October 2026).
 - `calibration/source_phs_components_raw.csv` is that run's table of the 930 old fields, copied byte for byte; `PROTOCOL.md` (sections 4, 5 and 8) records how it and the calibration were checked, and their SHA-256.
+- `PINN suggestion-1.pdf` is the project's original plan (June 2026). Parts of it were changed later: S_bc is a near/far residual ratio instead of its periodicity check, and the calibration is frozen on the 30 old clean fields instead of fitted on the validation fields. `PROTOCOL.md` describes what this iteration did.
 - More detail: `PROTOCOL.md` (every setting), `README.md` and `PIPELINE.md` (the code), and issues #35 to #48 of the repository (the work, step by step; the roadmap is #47).

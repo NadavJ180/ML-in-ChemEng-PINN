@@ -11,7 +11,7 @@ A "physical hallucination" is defined as a generated flow field that appears vis
 *Can a normalized physics-based score detect visually plausible but physically inconsistent perturbations of PINN-generated 2D incompressible Navier-Stokes flow fields?*
 
 ## Reproducibility
-All randomized case generations and network initializations are controlled via a global seed utility (`src.utils.seed.set_global_seed()`) to ensure deterministic behavior. The 30 cases of the final iteration each carry their own seeds for their points, their training and their scoring (`cases/confirmation_cases.json`, see [`PROTOCOL.md`](PROTOCOL.md)).
+All randomized case generations and network initializations are controlled via a global seed utility (`src.utils.seed.set_global_seed()`), so a run draws the same points and starts from the same weights each time. Training on a GPU is still not repeatable bit for bit, so the final results are rebuilt from the saved models, not retrained (see [`release/PACKAGE_README.md`](release/PACKAGE_README.md)). The 30 cases of the final iteration each carry their own seeds for their points, their training and their scoring (`cases/confirmation_cases.json`, see [`PROTOCOL.md`](PROTOCOL.md)).
 
 ### Final iteration (Oct–Nov 2026)
 The last round of experiments, asked for by Barak in October 2026: 30 new test cases (`case_30` … `case_59`, 10 per k), each trained once and saved at 7 stages (`models/confirmation/`), a calibration frozen on the 30 old cases (`calibration/`), five scores, a synthetic-damage benchmark and a natural-error study. [`PROTOCOL.md`](PROTOCOL.md) fixes every setting; it was frozen (tag `protocol-v1`) before any new case was scored. Every result is in `results/`, and one command rebuilds all of them from the committed models, with no training (about 80 min on a CPU):
@@ -33,8 +33,8 @@ The current pipeline trains individual Physics-Informed Neural Networks for each
 
 **Training Pipeline:**
 1. **Adam Pre-training:** Guides the network out of local minima using dynamic spatial/temporal mini-batches.
-2. **L-BFGS Fine-tuning:** A full-batch quasi-Newton optimization phase to drive physics residuals below the required $\mathcal{O}(10^{-4})$ thresholds.
-3. **Automated Evaluation:** Models are strictly evaluated against the WP3 usability criteria (Relative L2 error, Continuity MSE, Momentum MSE). Failing models trigger the Section 12.4 risk mitigation protocol.
+2. **L-BFGS Fine-tuning:** A quasi-Newton phase on one fixed batch of the case's points (by default 4,000 of its 100,000 interior points, `--n_int`), which lowers the residuals further. L-BFGS needs the same objective at every step, so the batch does not change during this phase.
+3. **Automated Evaluation:** Each model is checked on its case's 64 × 64 × 20 evaluation grid: velocity relative L2 error below 0.10, MSE(R_c) below 1e-4 and MSE(R_m) below 1e-3 (`evaluate_model` in `src/models/train_model.py`). The first run saved only the models that passed. The final iteration keeps every run and marks a failed one FAILED (`PROTOCOL.md` section 2); all 30 of its runs passed.
 This project does not aim to create a new PINN architecture or a faster CFD solver. Instead, it provides a small, interpretable **detection framework** for identifying physically inconsistent generated flow fields using a Physical Hallucination Score (PHS).
 
 ## 🗂️ Repository Structure
@@ -269,15 +269,17 @@ Based on the project blueprint, the following components are implemented or acti
 - [x] **Physical Hallucination Score (Issue #10):** Smom/Sdiv/Sbc(near/far ratio)/SE components,
       validation-split normalization, and threshold calibration (`src/detection/phs.py`).
 - [x] **Detection Metrics & Baseline Comparison (Issue #11):** ROC-AUC/Precision/Recall/F1 for PHS vs. 2
-      baselines, plus a per-perturbation-type recall breakdown (`src/detection/evaluate_phs.py`). The
-      acceptance bar (`AUC(PHS) > 0.90`) is met on the current epsilon range (`AUC(Score3_PHS_full) =
-      0.908`) — see [`FINDINGS.md`](FINDINGS.md) for the full investigation, including why
-      `Score2_momentum_divergence` (`AUC = 0.928`) still edges out PHS in this pooled ranking, and why that's
-      an expected consequence of testing PHS against its own detection boundary rather than a flaw.
+      baselines, plus a per-perturbation-type recall breakdown (`src/detection/evaluate_phs.py`). First
+      iteration (calibrated on the 5 validation cases, tested on the 5 test cases): `AUC(Score3_PHS_full) =
+      0.908`, above the planned bar of 0.90, and `AUC(Score2_momentum_divergence) = 0.928` (see
+      [`FINDINGS.md`](FINDINGS.md)). The final iteration, on 30 new cases with a frozen calibration, finds the
+      same order: Score2 0.900 and PHS 0.884, so the PHS does not beat the simpler Score2
+      ([`release/PACKAGE_README.md`](release/PACKAGE_README.md), bad result 1).
 - [x] **Publication Figures & Tables (Issues #12-13):** Figures 1-3 and Tables 1-2, IEEE double-column
-      sized (`src/detection/publication_figures.py`, output in `plots/paper_figures/`). One caveat: Figure
-      1's residual panel should be regenerated against the actual retrained models before being treated as
-      final — see [`FINDINGS.md`](FINDINGS.md).
+      sized (`src/detection/publication_figures.py`, output in `plots/paper_figures/`). Figure 1's residual
+      panel is a difference map (the damaged field's residual minus the clean one's, see
+      [`FINDINGS.md`](FINDINGS.md)), and all 7 files were rebuilt byte for byte from the current models on
+      6 Oct 2026 (commit `4437907`).
 - [x] **Final Iteration (Issues #35-#48):** 30 pre-registered test cases with staged checkpoints, a frozen calibration,
       five scores, the synthetic-damage benchmark, the natural-error study, the true errors and the final figures
       (`PROTOCOL.md`, `results/`), rebuilt from the models by `python run_pipeline.py --preset final`, and packaged
@@ -285,11 +287,11 @@ Based on the project blueprint, the following components are implemented or acti
 - [ ] **Technical Report & Archiving (Issue #14):** Not started.
 
 ## 📝 Documentation
-Please refer to the `PINN suggestion-1.pdf` within the repository for the full academic roadmap, methodological details, and risk management strategies. [`FINDINGS.md`](FINDINGS.md) is the project's research log — every bug, design change, and investigation, documented as it happened; read it for the full "why" behind a design decision. For a practical run-order guide (which script to run when, what it needs, what it costs, and when it's safe to skip), see [`PIPELINE.md`](PIPELINE.md); [`run_pipeline.py`](run_pipeline.py) automates running every stage end to end.
+`PINN suggestion-1.pdf` is the project's original plan (June 2026): its roadmap, methods and risk strategies. Parts of it were changed later, among them S_bc (a near/far residual ratio instead of a periodicity check) and, in the final iteration, the calibration (frozen on the clean fields of the 30 old cases instead of the validation fields); [`PROTOCOL.md`](PROTOCOL.md) describes what the final iteration did. [`FINDINGS.md`](FINDINGS.md) is the project's research log — every bug, design change, and investigation, documented as it happened; read it for the full "why" behind a design decision. For a practical run-order guide (which script to run when, what it needs, what it costs, and when it's safe to skip), see [`PIPELINE.md`](PIPELINE.md); [`run_pipeline.py`](run_pipeline.py) automates running every stage end to end.
 
 ## 🚀 Future Research Directions
 
-Having established a robust baseline pipeline and trained 30 independent Taylor-Green Vortex (TGV) models, the Physical Hallucination Score (PHS) framework opens up several exciting, high-impact avenues for subsequent academic research:
+With a baseline pipeline in place and 60 trained Taylor-Green Vortex (TGV) models (the 30 old cases and the 30 new ones), the Physical Hallucination Score (PHS) framework suggests several directions for further research:
 
 ---
 
@@ -306,5 +308,5 @@ Having established a robust baseline pipeline and trained 30 independent Taylor-
 * **Approach:** Inject varying levels of Gaussian white noise into the pristine validation and test datasets. The research goal is to demonstrate that the PHS can mathematically distinguish between standard, expected experimental measurement noise and smooth, structurally incorrect deep-learning hallucinations.
 
 ### 4. Cross-PDE Methodological Generalization
-* **Objective:** Prove that the normalization and thresholding framework is universally applicable to physics-informed models.
+* **Objective:** Test whether the normalization and thresholding framework carries over to other physics-informed models.
 * **Approach:** Port the exact PHS methodology (calculating component-wise residuals, normalizing them using clean validation cases, and establishing a unified detection threshold tau) to entirely different partial differential equations, such as the Heat Equation, Burgers' Equation, or 3D flow systems.
