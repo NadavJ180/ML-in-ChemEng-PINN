@@ -219,19 +219,10 @@ def compute_clean_and_perturbed(model, x, y, t, params, perturbation_name: str, 
 
 def residual_stats(u, v, p, x, y, t, nu: float, scaler: ResidualScaler, band_sigma: float = 0.2, band_width_factor: float = 3.0):
     """
-    Computes the scaled Navier-Stokes PDE residual MSEs for a given
-    (u, v, p) field, both globally and split into a thin band near the
-    periodic x-boundaries vs. the rest of the domain.
-
-    The near-boundary split exists because the "boundary" perturbation's
-    m(x) = exp(-x^2/sigma^2) + exp(-(2*pi-x)^2/sigma^2) is symmetric by
-    construction: m(0) == m(2*pi) exactly, so it shifts both edges by the
-    same amount and is invisible to a naive x=0 vs x=2*pi value comparison
-    (see bc_violation_stats). Its actual signature is a spurious, spatially
-    localized structure near BOTH edges that a translation-invariant
-    periodic flow should not have -- which only shows up as an elevated
-    residual concentrated in a thin band near x=0 and x=2*pi, diluted away
-    in a whole-domain average. Splitting the residual by region surfaces it.
+    Computes the scaled Navier-Stokes residual MSEs of a (u, v, p) field over the whole
+    domain, and separately in a band near the x-edges and in the rest of the domain. The
+    boundary damage's bump is symmetric (m(0) == m(2*pi)), so it shows up as a residual
+    concentrated near both edges rather than as a mismatch between them.
 
     Inputs:
         u, v, p (torch.Tensor): Velocity/pressure predictions, shape (N, 1),
@@ -239,22 +230,18 @@ def residual_stats(u, v, p, x, y, t, nu: float, scaler: ResidualScaler, band_sig
         x, y, t (torch.Tensor): Coordinates with requires_grad=True, shape (N, 1).
         nu (float): Kinematic viscosity for this case.
         scaler (ResidualScaler): The case's residual scaler.
-        band_sigma (float): The sigma used by the boundary perturbation's
-                             Gaussian bumps; defines the band width below.
-        band_width_factor (float): The near-boundary band extends
-                                    band_width_factor * band_sigma in from
-                                    each edge (default 3 sigma, i.e. where
-                                    the boundary perturbation's Gaussian
-                                    bumps have effectively decayed to ~0).
+        band_sigma (float): The sigma of the boundary damage's bumps; sets the band width.
+        band_width_factor (float): The band extends band_width_factor * band_sigma in from
+                                    each x-edge (default 3 sigma, where the bumps have
+                                    decayed to about 0).
 
     Outputs:
         dict: {
             "mse_Ru", "mse_Rv", "mse_Rc": whole-domain scaled residual MSEs,
             "mse_Ru_near_boundary", "mse_Rv_near_boundary", "mse_Rc_near_boundary":
-                scaled residual MSEs restricted to points within
-                band_width_factor * band_sigma of x=0 or x=2*pi,
+                the same, within band_width_factor * band_sigma of x=0 or x=2*pi,
             "mse_Ru_far_from_boundary", "mse_Rv_far_from_boundary", "mse_Rc_far_from_boundary":
-                the same, restricted to the remaining (interior) points.
+                the same, at the remaining points.
         }
     """
     R_u, R_v, R_c = compute_residuals(u, v, p, x, y, t, nu)
@@ -288,19 +275,9 @@ def residual_stats(u, v, p, x, y, t, nu: float, scaler: ResidualScaler, band_sig
 
 def bc_violation_stats(model, x_left, x_right, y_b, t_b, params, perturbation_name: str, epsilon: float):
     """
-    Checks periodic boundary consistency of a perturbed field by comparing
-    predictions at x=0 vs x=2*pi (same y, t) after applying the requested
-    perturbation independently on each side.
-
-    CAVEAT: this check is blind to the "boundary" perturbation itself. Its
-    m(x) = exp(-x^2/sigma^2) + exp(-(2*pi-x)^2/sigma^2) satisfies
-    m(0) == m(2*pi) exactly by construction, so both edges are shifted by
-    the identical amount and a raw value comparison sees no mismatch. Use
-    the near-boundary-band residual stats in residual_stats() instead to
-    detect that perturbation's actual (spatially localized) violation.
-    This check remains useful for the other 4 perturbation types, and for
-    confirming the boundary perturbation's symmetric-by-design blind spot
-    empirically rather than just asserting it.
+    Checks periodic boundary consistency of a damaged field by comparing its values at x=0
+    and x=2*pi (same y, t), the damage applied on each side. It cannot see the boundary
+    damage, whose bump has the same value at both edges; residual_stats() measures that one.
 
     Inputs:
         model (nn.Module): The trained BaselinePINN.
@@ -314,7 +291,7 @@ def bc_violation_stats(model, x_left, x_right, y_b, t_b, params, perturbation_na
     Outputs:
         dict: {"bc_u_mismatch": float, "bc_v_mismatch": float,
                "bc_p_mismatch": float} mean squared differences between the
-              left- and right-boundary hallucinated predictions.
+              left- and right-boundary values.
     """
     with torch.no_grad():
         clean_left = model(torch.cat([x_left, y_b, t_b], dim=1))
@@ -369,25 +346,14 @@ def analytical_deviation(u, v, x, y, t, case_meta: dict, nu: float):
 
 def phase_amplitude_fit_diagnostic(model, x, y, t, case_meta: dict, nu: float, n_phase_steps: int = 36):
     """
-    Empirically tests whether a model's clean prediction is a phase-shifted
-    (rather than genuinely wrong) member of the Taylor-Green Vortex family.
+    Tests whether a model's clean prediction is a Taylor-Green flow at the wrong phase rather
+    than a wrong flow. The equations and the periodic boundaries are the same under a shift in
+    x or y, so only the initial-condition loss ties a model to the target phase (DESIGN.md,
+    section 2).
 
-    WHY THIS EXISTS: the governing PDE + periodic boundary condition are
-    translation-invariant, so u(x,y,t; phi_x, phi_y) satisfies the same
-    physics for ANY (phi_x, phi_y) -- the PDE residual and periodic-BC loss
-    are structurally blind to phase. Only the initial-condition loss anchors
-    a trained model to the SPECIFIC target phase. If IC loss is under-weighted
-    or under-converged, a model can have near-zero PDE/BC residuals while
-    sitting on the wrong member of that family -- which shows up as a large
-    rel_l2_vs_analytical even though the model is physically self-consistent.
-
-    This function searches over a grid of candidate phases (phi_x', phi_y')
-    and, for each, finds the closed-form optimal amplitude scale that best
-    matches the model's clean output to that phase-shifted analytical
-    solution. If the best achievable residual after this search is small,
-    it confirms the "phase mismatch" explanation empirically. If it remains
-    large even at the best-fit phase, something else is going on (e.g. a
-    genuine training failure) and the phase-symmetry explanation does not apply.
+    Searches a grid of phases (phi_x', phi_y') and, for each, the best amplitude in closed
+    form. A small error at the best-fit phase together with a large error at the target phase
+    means a phase mismatch; a large error at both means the model is wrong in another way.
 
     Inputs:
         model (nn.Module): The trained BaselinePINN for this case.
@@ -401,16 +367,13 @@ def phase_amplitude_fit_diagnostic(model, x, y, t, case_meta: dict, nu: float, n
 
     Outputs:
         dict: {
-            "target_phi_x", "target_phi_y": the case's true target phase,
+            "target_phi_x", "target_phi_y": the case's target phase,
             "best_fit_phi_x", "best_fit_phi_y": the phase that best matches
                 the model's clean output,
-            "best_fit_amplitude_scale": the optimal amplitude scale factor
-                (relative to case U0) at that best-fit phase,
-            "rel_l2_at_target_phase": the original rel_l2_vs_analytical,
-                i.e. how wrong the model looks WITHOUT allowing phase to vary,
-            "rel_l2_at_best_fit_phase": how wrong the model looks AFTER
-                allowing phase (and amplitude) to vary -- small here + large
-                above confirms the phase-mismatch explanation.
+            "best_fit_amplitude_scale": the best amplitude factor (relative to U0)
+                at that phase,
+            "rel_l2_at_target_phase": the error with the phase fixed at the target,
+            "rel_l2_at_best_fit_phase": the error with phase and amplitude fitted.
         }
     """
     U0, k, target_phi_x, target_phi_y = case_meta["U0"], case_meta["k"], case_meta["phi_x"], case_meta["phi_y"]
@@ -712,38 +675,14 @@ def plot_pressure_field_check(model, case_id: str, case_meta: dict, args, output
 def plot_vector_field_check(model, case_id: str, case_meta: dict, args, output_dir: Path,
                               vector_res: int = 18, demo_epsilon: float = 0.1):
     """
-    Generates quiver (vector) plots showing how each perturbation affects
-    the DIRECTION of the velocity field, not just its magnitude.
+    Quiver plots of how each damage changes the DIRECTION of the velocity, which magnitude
+    contours can't show (a rotation leaves the magnitude unchanged). Uses a clearly visible
+    epsilon (default 0.1), since it shows each damage's mechanism rather than testing whether
+    it is visible. The pressure damage shows no change, by design.
 
-    WHY THIS IS A DIFFERENT CHECK FROM THE CONTOUR PLOTS: velocity-magnitude
-    contours (plot_visual_check, plot_full_sweep) show sqrt(u^2+v^2), which is
-    blind to pure rotation -- a perturbation could rotate every vector and
-    leave the magnitude field completely unchanged. This function makes the
-    directional effect visible directly, and the five perturbation types have
-    genuinely different signatures here:
-      - velocity_divergence only modifies u, so it TILTS vectors (breaks the
-        u/v balance continuity depends on), not just rescales them.
-      - momentum perturbs u and v independently, producing a more complex,
-        spatially varying rotation pattern.
-      - pressure should show EXACTLY zero vector change (u, v untouched by
-        design), same caveat as the pressure-space contour check.
-      - temporal_mismatch, if the model tracks the analytical TGV decay
-        reasonably, should mostly RESCALE vectors uniformly rather than
-        rotate them (the decay factor multiplies u and v identically), unlike
-        velocity_divergence/momentum which genuinely change direction.
-      - boundary tilts vectors, but only in a thin band near the periodic
-        x-edges, leaving the interior essentially untouched.
-
-    NOTE: unlike the imperceptibility check, this uses a large, clearly
-    visible epsilon (default 0.1) by design -- the goal here is showing the
-    MECHANISM of each perturbation, not re-testing whether it's invisible
-    (that's already covered by plot_visual_check at eps in {0.01, 0.02}).
-
-    Uses a coarse grid (vector_res x vector_res, default 18x18) since dense
-    quiver plots become unreadable clutter. Clean and perturbed columns
-    within each row share an identical arrow-length scale and color range
-    (derived from the clean field) so a fair visual comparison is possible;
-    the difference column gets its own scale since it's a much smaller quantity.
+    A coarse vector_res x vector_res grid keeps the arrows readable. The clean and damaged
+    columns of a row share one arrow scale and colour range (from the clean field); the
+    difference column has its own.
 
     Inputs:
         model (nn.Module): The trained BaselinePINN for this case.
@@ -927,30 +866,10 @@ def plot_residual_curves(rows: list, case_id: str, output_dir: Path):
     Outputs:
         None. Saves "residual_curves.png" to output_dir.
     """
-    # The metric most relevant to each perturbation's intended violation.
-    # NOTE: "boundary" uses the near-boundary-band residual, not bc_u_mismatch --
-    # see the caveat in bc_violation_stats(): the boundary perturbation's m(x)
-    # is symmetric (m(0) == m(2*pi)) by construction, so a raw left/right value
-    # comparison cannot see it; its violation only shows up as a spatially
-    # localized residual spike near the edges.
-    #
-    # NOTE: "temporal_mismatch" uses rel_l2_vs_clean (self-consistency: how much
-    # the model's own output changes under the time shift), not
-    # rel_l2_vs_analytical (deviation from ground truth). The latter is
-    # confounded by the model's own baseline training quality -- if the clean
-    # prediction is already far from the analytical solution (e.g. an
-    # under-trained model), that baseline error dominates the ratio and
-    # swamps the epsilon-dependent signal, making the curve look falsely
-    # flat. rel_l2_vs_clean isolates the perturbation's own effect and scales
-    # with epsilon regardless of model quality. (An earlier version of this
-    # plot also drew rel_l2_vs_analytical as a secondary dashed reference
-    # line, to show whether it was saturated -- useful while diagnosing why
-    # the original epsilon*T-based temporal_mismatch was hard to detect.
-    # Now that the perturbation itself scales with the case's own decay
-    # timescale and detection is confirmed to work (see the README's
-    # Findings section), that reference line no longer answers an open
-    # question and was removed as visual noise; rel_l2_vs_analytical is
-    # still available in residual_summary.csv/json for anyone who wants it.)
+    # The metric that matches each damage's intended violation. "boundary" uses the near-edge
+    # residual: its bump has the same value at both edges, so bc_u_mismatch can't see it.
+    # "temporal_mismatch" uses rel_l2_vs_clean, the change of the model's own output, since the
+    # model's distance from the exact solution would otherwise dominate (DESIGN.md, section 6).
     dominant_metric = {
         "velocity_divergence": "mse_Rc",
         "momentum": "mse_Ru",
@@ -1070,20 +989,12 @@ def check_phase_mismatch(model, case_id: str, case_meta: dict, rows: list, args,
 
 def main():
     """
-    Entry point. Verifies one representative case with full plots + table
-    (the required visual imperceptibility check plus the extra robustness
-    figures), and optionally sweeps every trained case's quantitative
-    violation table (--all_cases) to confirm the activation patterns hold
-    across the whole dataset, not just one case.
+    Entry point. Verifies one case with every plot and the full table, and with --all_cases
+    also writes the quantitative table of every trained case.
 
-    If any case's clean rel_l2_vs_analytical is large (>0.1), also runs
-    check_phase_mismatch() / phase_amplitude_fit_diagnostic() on that case
-    to empirically test whether it's explained by the PDE's translation
-    invariance (a phase-mismatched but otherwise physically valid solution)
-    rather than a genuine model quality issue -- see phase_amplitude_fit_diagnostic()'s
-    docstring for the underlying reasoning. Runs for the primary case always,
-    and for every case when --all_cases is set, so a systemic IC-loss-weighting
-    issue (vs. a one-off) can be told apart from the aggregated results.
+    For any case whose clean field is more than 10% from the exact solution, also runs
+    check_phase_mismatch() (phase_amplitude_fit_diagnostic()) to test whether the model sits
+    at the wrong phase.
 
     Inputs:
         None (reads parsed command-line arguments via parse_args()).

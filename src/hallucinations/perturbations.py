@@ -192,77 +192,31 @@ def perturb_pressure(fields, coords, params, epsilon, model=None, **kwargs):
 @register("temporal_mismatch")
 def perturb_temporal_mismatch(fields, coords, params, epsilon, model=None, no_grad=True, **kwargs):
     """
-    Injects a temporal-consistency hallucination by re-querying the trained
-    model at a shifted time and reporting that as the prediction at the
-    original grid time: ũ(t) = u(clamp(t + ε*tau_decay, 0, T)),
-    ṽ(t) = v(clamp(t + ε*tau_decay, 0, T)). Unlike the other 4 perturbations,
-    this is NOT a value-space transformation of `fields` — it requires a
-    second forward pass through `model`, since the shifted-time prediction
-    cannot be derived from the clean (u, v) values alone.
+    Reports the model's velocity at a later time as its velocity at time t:
+    u~(t) = u(clamp(t + epsilon * tau_decay, 0, T)), and the same for v; p is the clean p.
+    Unlike the other damages it needs the model itself, for a second forward pass.
 
-    WHY THE SHIFT IS epsilon * tau_decay, NOT epsilon * T: an earlier version
-    of this perturbation shifted by epsilon * T, where T = min(2.0, tau_decay)
-    is the (possibly capped) training/evaluation window. The PHS detection
-    evaluation found this version intrinsically weak -- checked against all
-    30 cases in the dataset, EVERY case has tau_decay > 2.0 (median 8.8x
-    longer, up to 114x), so even the largest epsilon only nudged time by a
-    small fraction of how long the flow actually takes to evolve, for every
-    case. Recall for this perturbation type was 72% vs. 100% for the other 4,
-    concentrated entirely at the smallest epsilons. Shifting by
-    epsilon * tau_decay -- the flow's own UNCAPPED natural decay timescale
-    (see src.physics.taylor_green.compute_decay_timescale) -- instead means a
-    given epsilon represents roughly the same PHYSICAL fraction of evolution
-    for every case, not a fraction of an artificial, sometimes much shorter,
-    cap. Measured result on the same 14-case evaluation: 100% recall at
-    every epsilon, including the smallest (0.005). See the README's Findings
-    section for the full before/after comparison.
-
-    The result is clamped to [0, T] before querying the model. WITHOUT this
-    clamp, epsilon * tau_decay could land far outside [0, T] for
-    slow-decaying cases (up to 114x T), asking the model about a time it was
-    never trained on -- pure extrapolation, which tends to produce wildly
-    unphysical output. That would make this perturbation trivially easy to
-    detect (any check would flag obvious garbage), defeating the point of a
-    SUBTLE hallucination benchmark. Clamping means the largest epsilon
-    values may saturate at exactly t=T for the slowest-decaying cases
-    (multiple epsilons producing the identical shift) -- this is an
-    intentional, physically-motivated ceiling ("as far as we can push this
-    without leaving the domain the model actually knows"), not a bug.
+    The shift is a fraction of the flow's own decay time tau_decay, and the shifted time is
+    cut off at T so the model is never asked about times it wasn't trained on. For a
+    slowly decaying case the largest strengths therefore saturate at t = T (DESIGN.md,
+    section 4).
 
     Args:
-        fields (dict): Clean predictions with keys "u", "v", "p", each a
-                        torch.Tensor of shape (N, 1). Only "p" is reused
-                        here (returned unchanged); "u"/"v" are regenerated
-                        from `model` at the shifted time.
-        coords (dict): Evaluation grid coordinates with keys "x", "y", "t",
-                        each a torch.Tensor of shape (N, 1).
-        params (dict): Case-specific physical constants; requires "T" (for
-                        clamping) and "tau_decay" (the shift scale -- see
-                        src.physics.taylor_green.compute_decay_timescale;
-                        callers compute this once from (nu, k) and pass it
-                        through, the same way "T" itself is precomputed).
-        epsilon (float): Perturbation strength; the (pre-clamp) time shift
-                          is epsilon * tau_decay.
-        model (nn.Module): The trained PINN to re-query at the shifted time.
-                            Required for this perturbation (raises otherwise).
-        no_grad (bool): If True (default, used during dataset generation),
-                        wraps the re-query in torch.no_grad() for speed/memory.
-                        Set to False when the caller needs to backprop through
-                        this perturbation (e.g. to compute PDE residuals of
-                        the hallucinated field during verification) — in that
-                        case `x`, `y`, `t` must already have requires_grad=True.
-        **kwargs: Accepted and ignored, so all registered perturbations share
-                   a uniform call signature via apply_perturbation().
+        fields (dict): Clean predictions "u", "v", "p", each (N, 1); only "p" is used.
+        coords (dict): Coordinates "x", "y", "t", each (N, 1).
+        params (dict): Needs "T" and "tau_decay" (compute_decay_timescale).
+        epsilon (float): Strength; the shift before the cut-off is epsilon * tau_decay.
+        model (nn.Module): The trained PINN to re-query. Required.
+        no_grad (bool): If True (default), the re-query runs in torch.no_grad(). Pass False
+                        to differentiate through it (for residuals); x, y, t must then have
+                        requires_grad=True.
+        **kwargs: Ignored, for a common signature (apply_perturbation).
 
     Returns:
-        dict: {"u": model prediction at clamp(t + epsilon*tau_decay, 0, T) (N, 1),
-               "v": same (N, 1),
-               "p": clean p (N, 1) unchanged, since this perturbation only
-               redefines (u, v)}.
+        dict: {"u", "v"} at the shifted time and the clean "p", each (N, 1).
 
     Raises:
-        ValueError: If `model` is None, since the shifted-time query cannot
-                    be computed without it.
+        ValueError: If model is None.
     """
     if model is None:
         raise ValueError("perturb_temporal_mismatch requires the trained model to re-query "
@@ -368,22 +322,10 @@ def apply_perturbation(name, fields, coords, params, epsilon, model=None, **kwar
     return PERTURBATION_REGISTRY[name](fields, coords, params, epsilon, model=model, **kwargs)
 
 
-# Canonical strengths & ordering used throughout the hallucination sweep. This is the single
-# epsilon list every script in the project imports (detection_sensitivity.py included); the
-# one deliberate exception is VISUAL_CHECK_EPSILONS in verify_hallucinations.py, independently
-# fixed at its own named visual-plausibility values (0.01, 0.02) regardless of what this list
-# contains.
-#
-# Chosen to span the actual detection boundary (empirically ~eps=0.0003-0.0016, 50%/90% recall
-# crossings) rather than an earlier {0.005, 0.01, 0.02, 0.05, 0.1} range, which sat entirely
-# inside the "easy" regime (recall was already 1.0 at every one of those values). See the
-# README's Findings section for the full investigation and the range's history.
-#
-# CAVEAT when reading a pooled AUC off this range: a higher AUC here is largely a mechanical
-# effect of how many easy, high-epsilon points are included, not evidence the method got more
-# sensitive at the hard end -- recall at the smallest epsilon is unaffected by what else is in
-# the list, since AUC is a pairwise ranking statistic. See the README's Findings section for the
-# full comparison across candidate ranges.
+# The damage strengths and types every script imports (VISUAL_CHECK_EPSILONS in
+# verify_hallucinations.py is the one exception). The strengths run from below what any score
+# detects to where every score flags every field; a pooled AUC depends on how many easy strengths
+# are included, so read recall per strength (DESIGN.md, section 4).
 EPSILON_VALUES = [0.0001, 0.002, 0.01, 0.02, 0.03, 0.05]
 PERTURBATION_NAMES = [
     "velocity_divergence",

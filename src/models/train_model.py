@@ -397,13 +397,7 @@ def evaluate_model(model, case_meta, eval_grid, device, chunk_size=5000, verbose
     Re = case_meta["Re"]
     U0 = case_meta["U0"]
     k = case_meta["k"]
-    # FIX: phi_x/phi_y were never read from case_meta here -- this function was
-    # silently comparing every model against phi_x=0, phi_y=0 regardless of the
-    # case's actual target phase (the same bug found in verify_model.py and
-    # generate_datasets.py). Since this is the function that decides
-    # PASSED/FAILED for the acceptance criteria, every prior pass/fail
-    # decision and every eval_interval RelL2 reading logged during L-BFGS was
-    # made against the wrong ground truth.
+    # The case's own phases: the exact solution the model is compared with
     phi_x = case_meta["phi_x"]
     phi_y = case_meta["phi_y"]
     nu = compute_nu(U0, Re, k)
@@ -439,9 +433,7 @@ def evaluate_model(model, case_meta, eval_grid, device, chunk_size=5000, verbose
         sum_mse_rv += torch.sum(R_v**2).item()
         sum_mse_rc += torch.sum(R_c**2).item()
         
-        # 2. Compute exact analytical velocities for RelL2
-        # FIX: now uses this case's actual target phase (phi_x, phi_y) via
-        # generate_tgv(), instead of a hardcoded phi_x=0, phi_y=0 formula.
+        # 2. Compute exact analytical velocities for RelL2, at the case's own phases
         u_true, v_true, _ = generate_tgv(x, y, t, U0, k, phi_x, phi_y, nu)
         
         # Accumulate L2 error components

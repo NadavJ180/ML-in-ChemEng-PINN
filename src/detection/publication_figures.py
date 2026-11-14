@@ -1,44 +1,17 @@
 """
-Publication Figures & Tables
+Publication Figures & Tables of the first iteration: a small set for a paper, at IEEE
+two-column sizes (IEEE_PAGE_WIDTH = 7.16 in, fonts 8-9 pt).
 
-Generates a small, curated set of illustrative figures and tables for a
-paper:
-
-    Figure 1: Valid field, hallucinated field, difference map, and
-              residual heatmap.
+    Figure 1: Valid field, damaged field, difference map, and residual difference heatmap.
     Figure 2: Histogram of log10(PHS) and ROC curve.
-    Figure 3: Violation signature heatmap showing perturbation types
-              versus score components.
+    Figure 3: Heatmap of damage types against score components.
     Table 1:  Experimental setup.
-    Table 2:  Detection results comparing momentum-only, momentum plus
-              divergence, and full PHS.
+    Table 2:  Detection results of momentum only, momentum plus divergence, and full PHS.
 
-WHY A SEPARATE SCRIPT rather than extending verify_hallucinations.py or
-evaluate_phs.py: those two produce EXHAUSTIVE diagnostic material (every
-perturbation type, every epsilon, multiple views per case) for verifying
-and debugging the pipeline. This script instead produces a small, CURATED
-set of illustrative figures for a paper, sized and styled for print rather
-than on-screen inspection. Keeping this separate means the diagnostic
-scripts stay focused on exhaustive verification and this one stays focused
-on "what actually goes in the PDF," without either job compromising the
-other's defaults.
-
-IEEE double-column sizing convention used throughout: IEEE_PAGE_WIDTH
-(7.16in) is the full page width spanning both columns. Font sizes are set
-explicitly (8-9pt) rather than left at matplotlib defaults (10-12pt),
-which look oversized once a figure is scaled down to print at these
-physical dimensions.
-
-Deliberately reuses rather than duplicates: Table 2 and Figure 2's ROC
-panel read directly from evaluate_phs.py's own outputs
-(detection_metrics_summary.csv, phs_components_raw.csv) rather than
-recomputing anything, so they can never drift from the numbers
-evaluate_phs.py itself reports. Figure 1's clean/hallucinated/diff panels
-and residual computation reuse the exact same grid convention as
-verify_hallucinations.py's build_interior_grid (res=96, time_frac=0.5) and
-the same compute_residuals/apply_perturbation functions everything else in
-this project uses, so "the residual" means the same thing here as
-everywhere else.
+Table 2 and Figure 2 read evaluate_phs.py's outputs (detection_metrics_summary.csv,
+phs_components_raw.csv) rather than recomputing them. Figure 1 uses
+verify_hallucinations.py's grid convention (res=96, time_frac=0.5) and the same residual
+and damage functions as the rest of the project.
 
 Outputs (all under plots/paper_figures/):
   figure1_valid_hallucinated_diff_residual.png
@@ -142,12 +115,8 @@ def load_model(case_id: str, k: float, device: str):
 
 def build_grid(T: float, res: int, time_frac: float, device: str):
     """
-    Builds a square, gradient-tracked (x, y) grid at a single fixed time
-    slice. Identical convention to verify_hallucinations.py's
-    build_interior_grid (same defaults: res=96, time_frac=0.5), duplicated
-    here rather than imported to keep this script's I/O self-contained,
-    matching the project's established convention for these small,
-    frequently-reused grid builders.
+    Builds a square, gradient-tracked (x, y) grid at one time, with the convention of
+    verify_hallucinations.py's build_interior_grid (res=96, time_frac=0.5).
 
     Inputs:
         T (float): The case's final simulation time.
@@ -172,28 +141,11 @@ def build_grid(T: float, res: int, time_frac: float, device: str):
 
 def make_figure1(args, case_meta_by_id, output_dir):
     """
-    Figure 1: Valid field, hallucinated field, difference map, and residual
-    DIFFERENCE heatmap -- one representative (case, perturbation, epsilon)
-    example.
-
-    Uses the u-velocity component for the valid/hallucinated/difference
-    panels (matching what verify_hallucinations.py's contour checks already
-    show). The 4th panel is |R_hallucinated| - |R_clean| (momentum residual
-    magnitude, sqrt(Ru^2+Rv^2)), NOT the raw hallucinated-field residual on
-    its own -- an earlier version used the raw residual, but checked directly
-    (comparing clean vs. hallucinated residual statistics side by side) found
-    the two have nearly IDENTICAL standard deviation (clean: mean=2.51e-3,
-    std=1.76e-3; hallucinated at eps=0.001: mean=2.73e-3, std=1.76e-3) --
-    meaning the speckled texture in the raw residual map is almost entirely
-    the trained network's own intrinsic second-derivative approximation
-    noise (present even with zero perturbation), not something the
-    hallucination introduced. Taking the difference cancels that shared
-    baseline noise and isolates just the perturbation's own contribution,
-    which is a small quantity at this epsilon (chosen deliberately to be
-    visually subtle) -- plotted with a diverging colormap centered at zero
-    since the difference can be negative in places (where clean's own noise
-    happens to exceed hallucinated's at that specific point, from noise
-    alone, not a real effect).
+    Figure 1, for one (case, damage type, strength): the valid u, the damaged u, their
+    difference, and |R_damaged| - |R_clean| (momentum residual magnitude, sqrt(Ru^2 + Rv^2)).
+    The residual panel is a difference so that the trained model's own residual pattern,
+    shared by both fields, cancels; it can be negative in places, so it uses a diverging
+    colour map centred at zero.
 
     Inputs:
         args (argparse.Namespace): Must have case_id, perturbation_type,
@@ -257,30 +209,10 @@ def make_figure1(args, case_meta_by_id, output_dir):
 
 def make_figure2(phs_df, tau, output_dir):
     """
-    Figure 2: Histogram of log10(PHS) and ROC curve -- both restricted to
-    Score3_PHS_full specifically (the official, currently-adopted PHS
-    score). The fuller multi-baseline ROC comparison (every score in
-    BASELINE_DEFINITIONS overlaid) remains available separately in
-    evaluate_phs.py's own roc_curves.png for the ablation discussion --
-    this figure is the clean, single-score headline version for the paper.
-
-    Panel (a)'s histogram is stratified by epsilon rather than pooling every
-    hallucinated field into one color, on the same reasoning that motivated
-    evaluate_phs.py's score_distributions_comparison.png strip-plot redesign:
-    a flat two-color histogram hides exactly the dose-response structure that
-    matters once EPSILON_VALUES spans from near the detection floor up to
-    the ceiling -- a wide, spread-out "hallucinated" mass with no visual
-    indication that "easy" (large epsilon) and "hard" (small epsilon) fields
-    are mixed together. Each epsilon's hallucinated fields get their own
-    stacked histogram layer, colored on a light-to-dark gradient for
-    increasing epsilon (same convention as score_distributions_comparison.png).
-    Clean fields are drawn SEPARATELY, in a fixed, distinct color (never
-    confusable with any epsilon shade) and with a high zorder so they are
-    always visible in front of the stacked hallucinated bars, even where
-    their bins overlap in x-range -- rather than stacked in among them, where
-    a thin clean layer could be visually buried under much larger
-    hallucinated counts. A vertical dashed line at log10(tau) marks the
-    calibrated detection threshold directly on the distribution.
+    Figure 2, for Score3_PHS_full: (a) a histogram of log10(PHS), the damaged fields stacked
+    by epsilon (light to dark for increasing epsilon) and the clean fields drawn separately on
+    top in their own colour, with a dashed line at log10(tau); (b) the ROC curve.
+    evaluate_phs.py's roc_curves.png has all three scores.
 
     Inputs:
         phs_df (pd.DataFrame): evaluate_phs.py's phs_components_raw.csv,
@@ -346,38 +278,11 @@ def make_figure2(phs_df, tau, output_dir):
 
 def make_figure3(phs_df, output_dir):
     """
-    Figure 3: Violation signature heatmap -- rows are perturbation types,
-    columns are the 4 raw PHS components, cell value is that component's
-    NORMALIZED value (the same S_bar quantity evaluate_phs.py sums into
-    scores), averaged over test-split cases at the LARGEST epsilon in
-    EPSILON_VALUES (the strongest, clearest signal for each cell).
-
-    S_bar IS correctly normalized in the sense this project defines it --
-    each raw Sj is divided by ITS OWN mean over clean validation fields, so
-    a clean field reads ~1.0 for every component regardless of scale. That
-    is a per-component, relative-to-clean normalization; it does NOT (and
-    isn't meant to) equalize how STRONGLY different perturbation types
-    activate different components -- a perturbation genuinely can push one
-    component to several hundred times its clean level while barely moving
-    another, and that contrast IS the finding this figure exists to show
-    (e.g. Sbc staying near 1 even for "boundary" is the blind spot;
-    S_bar_local responding broadly rather than boundary-only). So the wide
-    spread across cells is real, not evidence of missing normalization to fix.
-
-    Uses a LOG-SCALE color mapping (the wide spread across cells genuinely
-    spans roughly three orders of magnitude, and a linear color scale makes
-    the single largest cell dominate the whole heatmap, leaving nearly
-    everything else looking similarly dark and undifferentiated -- tried
-    directly and confirmed unusable) but LINEAR, un-transformed numbers in
-    the cell annotations. An earlier version log-transformed the annotated
-    numbers too (to match the color scale) for readability across that same
-    wide range, but that produced NEGATIVE annotated numbers for any cell
-    below 1.0 (log10 of a value less than 1 is negative), which read as
-    confusing/wrong at a glance even though it was mathematically
-    consistent -- reverted the TEXT to plain values while keeping the COLOR
-    log-scaled, which is the combination that avoids both problems: cells
-    are visually distinguishable via color across the full dynamic range,
-    and every annotated number is a plain, always-positive S_bar value.
+    Figure 3: a heatmap with one row per damage type and one column per component; each cell
+    is the mean normalized component (S_bar) over the test-split cases at the largest epsilon
+    of EPSILON_VALUES. A clean field is about 1 in every column, so a cell says how strongly
+    that damage raises that component. The colours use a log scale, since the cells span a
+    wide range; the printed numbers are the plain S_bar values.
 
     Inputs:
         phs_df (pd.DataFrame): evaluate_phs.py's phs_components_raw.csv,
@@ -404,10 +309,8 @@ def make_figure3(phs_df, output_dir):
     im = ax.imshow(matrix, cmap="viridis", norm=LogNorm(vmin=max(matrix[matrix > 0].min(), 1e-3),
                                                           vmax=matrix.max()), aspect="auto")
     ax.set_xticks(range(len(PHS_COMPONENT_NAMES)))
-    # Underscores inside an already-subscripted mathtext label trigger a second, nested subscript
-    # and render as a stray vertical bar -- .replace('_', ',') is a defensive no-op now that
-    # PHS_COMPONENT_NAMES (mom, div, bc, E) has none, kept in case a future component name does
-    # (this exact bug hit the former "bc_local" column before it was renamed to "bc").
+    # An underscore inside a subscripted mathtext label would start a nested subscript, so any
+    # underscore in a component name is replaced (the current names have none).
     ax.set_xticklabels([f"$\\bar{{S}}_{{{c.replace('_', ',')}}}$" for c in PHS_COMPONENT_NAMES])
     ax.set_yticks(range(len(perturbation_types)))
     ax.set_yticklabels(perturbation_types)
@@ -426,33 +329,23 @@ def make_figure3(phs_df, output_dir):
 
 def _escape_latex(text: str) -> str:
     """
-    Escapes underscores for safe inclusion in a raw LaTeX table cell.
-    Needed because several values written into these tables come directly
-    from Python identifiers (e.g. PERTURBATION_NAMES) that contain
-    underscores -- e.g. "velocity_divergence", "temporal_mismatch" -- and an
-    unescaped underscore in LaTeX text mode is a reserved math-mode
-    character that would either fail to compile or render as an
-    unintended subscript. The CSV outputs are left with plain underscores
-    (correct there; CSVs have no such reserved character), only the .tex
-    outputs need this.
+    Escapes the underscores of a LaTeX table cell (names such as "velocity_divergence"), which
+    LaTeX would read as subscripts. The .csv files keep plain underscores.
 
     Inputs:
         text (str): Raw text that may contain underscores.
 
     Outputs:
-        str: The same text with every "_" replaced by "\\_".
+        str: The same text with every underscore escaped.
     """
     return text.replace("_", "\\_")
 
 
 def make_table1(case_meta_by_id, output_dir):
     """
-    Table 1: Experimental setup -- summarizes the case ensemble,
-    perturbation sweep, and PHS calibration in one small reference table,
-    computed directly from cases_metadata.json and the project's own
-    constants (PERTURBATION_NAMES, EPSILON_VALUES, PHS_COMPONENT_NAMES)
-    rather than hand-typed, so it can't silently drift out of sync with
-    the actual pipeline.
+    Table 1: the experimental setup (cases, damage sweep, calibration), computed from
+    cases_metadata.json and the project's constants (PERTURBATION_NAMES, EPSILON_VALUES,
+    PHS_COMPONENT_NAMES) rather than typed by hand.
 
     Inputs:
         case_meta_by_id (dict): Output of load_case_metadata().
@@ -494,18 +387,8 @@ def make_table1(case_meta_by_id, output_dir):
 
 def make_table2(metrics_summary_path, output_dir):
     """
-    Table 2: Detection results comparing momentum-only, momentum plus
-    divergence, and full PHS -- read directly from evaluate_phs.py's own
-    detection_metrics_summary.csv rather than recomputed, so this table
-    can never disagree with the numbers evaluate_phs.py itself reports.
-    A clean 3-way comparison now -- an earlier
-    version also carried a 4th "Score3, without bc_local" ablation row from
-    when PHS had 5 components; that structure was replaced (see the
-    README's Findings section: the original Sbc was found to be blind to
-    nearly every perturbation type in this benchmark, and was replaced by
-    the boundary-localized computation rather than kept alongside it), so
-    there is no longer a separate "with/without bc_local" distinction to
-    show here.
+    Table 2: detection results of momentum only, momentum plus divergence, and full PHS, read
+    from evaluate_phs.py's detection_metrics_summary.csv rather than recomputed.
 
     Inputs:
         metrics_summary_path (Path): evaluate_phs.py's detection_metrics_summary.csv.

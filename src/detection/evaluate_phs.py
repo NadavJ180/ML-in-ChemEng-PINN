@@ -1,96 +1,50 @@
 """
 PHS Detection Evaluation Script
 
-For every (case_id, perturbation_type, epsilon) row listed in
-data/hallucinations/hallucination_index.json (produced by
+For every (case_id, perturbation_type, epsilon) row of
+data/hallucinations/hallucination_index.json (written by
 src/hallucinations/generate_hallucinations.py), this script:
 
-  1. Loads that case's trained model once (models/{case_id}.pth, or the
-     lbfgs_final.pth of its case folder; a missing model stops the run
-     before any scoring, so no case is skipped), then computes the 4 raw PHS
-     components (Smom, Sdiv, Sbc, SE -- see src/detection/phs.py) for every
-     one of its rows DIRECTLY from the model + perturbation functions, NOT
-     from the saved data/hallucinations/*.pt bundles. Those bundles store
-     detached, no-grad predictions (see generate_hallucinations.py's
-     run_model_in_chunks); Smom/Sdiv need a live autograd graph for exact
-     PDE residuals, so the field has to be recomputed here regardless. The
-     index is still exactly what makes this script possible without
-     re-deriving which (case, perturbation, epsilon, split, label) combos
-     exist -- that enumeration is what generate_hallucinations.py's bundle
-     is for.
-     NOTE: "Sbc" here is computed via compute_boundary_localization_violation,
-     NOT a literal periodicity-comparison formula -- see phs.py's module
-     docstring for why that original formula was REPLACED (checked directly:
-     it was essentially blind to every perturbation type in this benchmark,
-     not just "boundary").
-  2. Normalizes all 4 components using the VALIDATION split's clean-field
-     means.
-  3. Computes 3 detection scores per field -- 2 residual-only baselines plus
-     PHS itself:
+  1. Loads the case's trained model once (models/{case_id}.pth, or the lbfgs_final.pth
+     of its case folder; a missing model stops the run before any scoring), and computes
+     the 4 raw PHS components (src/detection/phs.py) of each of its rows from the model and
+     the damage functions. The saved *.pt bundles are not read: the residuals need a live
+     autograd graph, so every field is recomputed here.
+  2. Normalizes the components by their means over the clean VALIDATION-split fields.
+  3. Computes the 3 scores of phs.BASELINE_DEFINITIONS:
        Score1_momentum_only        = S_bar_mom
        Score2_momentum_divergence  = S_bar_mom + S_bar_div
-       Score3_PHS_full             = S_bar_mom + S_bar_div + S_bar_bc + S_bar_E
-                                     (= PHS, the official score)
-  4. Selects each score's threshold tau from the 95th percentile of its
-     VALIDATION-split clean-field distribution.
-  5. Evaluates detection (ROC-AUC, Precision, Recall, F1 @ tau) for all 3
-     scores on the held-out TEST split (target: AUC(PHS) > 0.90, ideally
-     > AUC(Score2)).
+       Score3_PHS_full             = S_bar_mom + S_bar_div + S_bar_bc + S_bar_E (= PHS)
+  4. Sets each score's tau to the 95th percentile of its clean validation-split fields.
+  5. Evaluates detection (ROC-AUC, precision, recall, F1 at tau) on the TEST split.
 
 Outputs:
   data/phs_scores/phs_components_raw.csv / .json
-      One row per (case, perturbation, epsilon) field: raw components,
-      normalized ("_bar") components, and all 3 score columns.
+      One row per field: raw and normalized components and the 3 scores.
   plots/phs_evaluation/normalizers_and_thresholds.json
-      The 4 component normalizers and the 3 scores' tau values.
+      The 4 normalizers and the 3 tau.
   plots/phs_evaluation/detection_metrics_summary.csv / .json
-      Per-score AUC / Precision / Recall / F1 on the test split.
+      AUC, precision, recall and F1 of each score on the test split.
   plots/phs_evaluation/roc_curves.png
-      ROC curves for all 3 scores overlaid (test split).
+      The ROC curves of the 3 scores (test split).
   plots/phs_evaluation/score_distributions_comparison.png
-      Clean vs. hallucinated scores for every score (Score1/2/3), as a
-      strip plot with epsilon as categorical x-axis positions (clean, then
-      each epsilon value, light-to-dark color gradient) rather than a
-      pooled histogram -- shows the dose-response structure per epsilon
-      directly, including exactly which epsilon's fields sit below tau.
+      Clean and damaged scores, one column per epsilon.
   plots/phs_evaluation/normalized_components_vs_epsilon.png
-      S_bar_mom, S_bar_div, S_bar_bc, S_bar_E (normalized -- the same
-      quantities the scores are built from) vs. epsilon, one panel per
-      perturbation type, on a single shared axis -- shows exactly which
-      component(s) each perturbation type activates. Was raw_components_
-      vs_epsilon.png (pre-normalization values) until Sbc became a
-      near/far ratio and needed a different plotting approach; see
-      plot_normalized_components_vs_epsilon's docstring for why normalized
-      values were used instead of a secondary axis.
+      The 4 normalized components against epsilon, one panel per damage type.
   plots/phs_evaluation/scores_vs_epsilon.png
-      Score1 / Score2 / Score3 (PHS) vs. epsilon, one panel per
-      perturbation type -- shows how adding each successive component
-      changes the detection signal.
+      The 3 scores against epsilon, one panel per damage type.
 
-FROZEN CALIBRATION (--calibration, #45): steps 2-4 above are replaced by
-src/detection/frozen_calibration.py's apply(), which reads the normalizers and
-tau from the given JSON instead of fitting them on the validation split, and
-computes all five scores of phs.SCORE_DEFINITIONS. Step 5 is skipped: only the
-scored table is written, to data/phs_scores/phs_components_frozen.csv (raw and
-normalized components, the 5 scores and the 5 flagged_<score> columns), and
-none of the metrics and plots above are made, since they are defined on the
-old validation/test split. Without --calibration nothing changes. The metrics
-of the final iteration's benchmark come from src/detection/benchmark_metrics.py (#35).
+FROZEN CALIBRATION (--calibration, #45): steps 2-4 are replaced by
+src/detection/frozen_calibration.py's apply(), which reads the normalizers and tau from
+the given JSON and computes the five scores of phs.SCORE_DEFINITIONS. Step 5 is skipped:
+only data/phs_scores/phs_components_frozen.csv is written (raw and normalized components,
+the 5 scores and their flagged_<score> columns). The final iteration's metrics come from
+src/detection/benchmark_metrics.py (#35).
 
-PATHS (#35): --metadata, --models_dir, --hallucinations_dir and --scores_dir
-point the script at another case file, models folder, hallucination index and
-scores folder; their defaults are the paths above. A models folder with one
-subfolder per case (models/confirmation/) is read from {case_id}/lbfgs_final.pth
-(checkpoints.final_model_path()). The scoring settings don't change.
-
-CAVEAT (historical): models committed before commit `be9b8ff` predated a phase-mismatch
-bug identified during the hallucination-verification audit (see verify_hallucinations.py's
-phase_amplitude_fit_diagnostic -- clean predictions matched the analytical TGV solution at
-the WRONG phase). Retrained, phase-corrected models have since been committed. This script
-was unaffected by that bug either way: Smom/Sdiv/Sbc are phase-invariant PDE/BC residuals,
-and SE's reference curve is explicitly phase-invariant by construction (see phs.py's
-compute_energy_violation) -- but Relative-L2-vs-analytical numbers from that era were not
-representative and should not be cited.
+PATHS (#35): --metadata, --models_dir, --hallucinations_dir and --scores_dir point the
+script at another case file, models folder, hallucination index and scores folder. A
+models folder with one subfolder per case (models/confirmation/) is read from
+{case_id}/lbfgs_final.pth. The scoring settings don't change.
 
 Usage:
     python src/detection/evaluate_phs.py
@@ -511,38 +465,15 @@ def diagnose_misclassifications(df: pd.DataFrame, thresholds: dict, score_name: 
 
 def plot_score_distributions_comparison(df: pd.DataFrame, thresholds: dict, output_dir: Path):
     """
-    Plots clean vs. hallucinated scores for ALL baseline scores (Score1-3)
-    side by side, one panel per score, as a STRIP PLOT (jittered individual
-    points) with epsilon as categorical x-axis positions, rather than a
-    pooled histogram.
-
-    WHY THIS REPLACED A POOLED HISTOGRAM: the previous version pooled all
-    epsilon values into one "hallucinated" bucket per panel, which hid
-    exactly the structure that matters most once EPSILON_VALUES was
-    rebuilt around the detection boundary (see the README's Findings
-    section) -- a wide, spread-out mass spanning orders of magnitude, with
-    no visual indication that "easy" (large epsilon) and "hard" (small
-    epsilon) fields were mixed together, which is exactly what made the
-    false-negative mass hard to interpret at a glance. Splitting by
-    epsilon as separate x-axis categories, with a light-to-dark color
-    gradient for increasing epsilon and a distinct color for the clean
-    baseline, shows the dose-response structure directly: each epsilon's
-    cluster of points relative to tau is a visual recall readout for that
-    epsilon specifically, not just a number in recall_by_type.png.
-
-    A strip plot (not a histogram, box plot, or violin) was chosen because
-    the sample sizes here are small (n=5 clean, n=25 hallucinated per
-    epsilon) -- a violin plot's smoothed density estimate can visually
-    oversell how much data backs it at this size, and a histogram bins
-    away exactly the individual-field detail that matters when n is this
-    small. Showing every real point, jittered only to avoid exact overlap,
-    plus a short median marker per group, is the most honest
-    representation of data this size.
+    Plots the clean and damaged scores of the test split for every score (one panel each), as
+    a strip plot: one column for the clean fields and one per epsilon, every field shown as a
+    point (jittered), with each group's median and the score's tau. Light to dark red for
+    increasing epsilon, blue for clean.
 
     Inputs:
-        df (pd.DataFrame): Must have "split", "label", "epsilon", and
-            every score column in BASELINE_DEFINITIONS.
-        thresholds (dict): Output of evaluate_detection(); tau per score.
+        df (pd.DataFrame): Must have "split", "label", "epsilon" and every score column of
+            BASELINE_DEFINITIONS.
+        thresholds (dict): tau of each score, from evaluate_detection().
         output_dir (Path): Where to save score_distributions_comparison.png.
 
     Outputs:
@@ -649,20 +580,9 @@ def evaluate_detection_by_perturbation_type(df: pd.DataFrame, thresholds: dict) 
 
 def plot_recall_by_type(recall_df: pd.DataFrame, output_dir: Path):
     """
-    Plots per-perturbation-type recall (Score3_PHS_full only, at tau) vs.
-    epsilon, so any systematically under-detected perturbation type is
-    immediately visible as a curve sitting below the others rather than
-    hidden inside a single pooled recall number.
-
-    Lines are plotted at their TRUE, unmodified recall values -- no
-    vertical offset -- with a standard legend, matching every other
-    multi-line plot in this module (_styled_line's distinct linestyle/
-    marker cycle is what keeps types identifiable when several are tied
-    at recall=1.0 and overlap exactly). An earlier version used
-    per-type colored callout labels with leader lines instead of a
-    legend specifically to guarantee zero label-to-label overlap; reverted
-    in favor of a plain legend for consistency with the rest of the
-    module's plots.
+    Plots the recall of Score3_PHS_full at tau against epsilon, one line per damage type, so a
+    type that is detected less well stands out. Each line has its own line style and marker,
+    so lines that coincide (at recall 1.0) stay distinguishable.
 
     Inputs:
         recall_df (pd.DataFrame): Output of evaluate_detection_by_perturbation_type().
@@ -693,49 +613,16 @@ def plot_recall_by_type(recall_df: pd.DataFrame, output_dir: Path):
 
 def plot_normalized_components_vs_epsilon(df: pd.DataFrame, output_dir: Path):
     """
-    Plots all 4 NORMALIZED components (S_bar_mom, S_bar_div, S_bar_bc,
-    S_bar_E -- the "_bar" quantities that actually get summed into the
-    scores, S_bar_j = Sj / mean(Sj_clean_validation)) vs.
-    epsilon, one subplot per perturbation type, on a SINGLE shared axis --
-    so you can see exactly which component(s) each perturbation type
-    activates, in the same units the scoring itself uses.
+    Plots the four normalized components (S_bar_mom, S_bar_div, S_bar_bc, S_bar_E, the
+    quantities the scores add up) against epsilon, one panel per damage type, on one shared
+    log axis: each is about 1 on its own clean fields, so they are comparable.
 
-    HISTORY: an earlier version plotted the RAW (pre-normalization)
-    components instead, which needed a secondary y-axis for "bc"
-    specifically once it became a near/far RATIO -- a ratio of two
-    similarly-tiny residuals is naturally of order 1, roughly six orders
-    of magnitude larger than Smom/Sdiv/SE's raw MSE-style values (checked
-    directly: bc's clean-baseline normalizer is ~1.39 vs. ~1e-6 to 1e-7
-    for the other three). Switched to normalized values instead of
-    maintaining two axes: every "_bar" component is, by construction,
-    ~1.0 at its own clean baseline (S_bar = S / mean(S_clean)), so all 4
-    become directly comparable on one shared axis without needing any
-    special-casing for "bc" -- this is a more direct fix than the
-    secondary-axis version, and ties the plot directly to what the actual
-    scores are built from, rather than an intermediate raw quantity.
-
-    NOTE on a related, separately-investigated finding this plot makes
-    visible: for perturbation types OTHER than "boundary", S_bar_bc often
-    starts ELEVATED at the smallest epsilon and DECREASES as epsilon
-    grows, rather than the monotonic rise the other components show. This
-    is not noise -- checked directly, the smallest-epsilon value is
-    essentially identical to that SAME case's own clean-field bc value
-    (e.g. one case: clean=3.190, eps=0.0001 gives 3.189), meaning at tiny
-    epsilon this reflects each TRAINED MODEL's own intrinsic near/far
-    residual imbalance (which varies substantially case-to-case, from
-    below 1 to above 3) rather than a perturbation effect. As epsilon
-    grows, a globally-uniform perturbation's own contribution starts
-    dominating both the near- and far-boundary residual comparably,
-    diluting that baseline imbalance toward the perturbation's own
-    (typically closer-to-1) near/far ratio. For "boundary" specifically,
-    the perturbation's effect is concentrated enough to quickly overwhelm
-    this baseline-imbalance effect instead, producing the clear rise seen
-    there rather than a dip.
+    At the smallest epsilon a damaged field is still almost its clean field, so S_bar_bc there
+    shows that model's own near/far ratio, which varies between cases.
 
     Inputs:
-        df (pd.DataFrame): Post evaluate_detection() -- must have
-            "perturbation_type", "epsilon", "label", and the 4 normalized
-            ("mom_bar", "div_bar", "bc_bar", "E_bar") columns.
+        df (pd.DataFrame): Post evaluate_detection(); must have "perturbation_type",
+            "epsilon", "label" and the four "_bar" columns.
         output_dir (Path): Where to save normalized_components_vs_epsilon.png.
 
     Outputs:
