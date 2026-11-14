@@ -40,8 +40,6 @@ This project does not aim to create a new PINN architecture or a faster CFD solv
 ## 🗂️ Repository Structure
 
 ```text
-├── notebooks/
-│   └── 01_tgv_visualization.ipynb   # Visualization of Taylor-Green Vortex
 ├── src/
 │   ├── data/                        # Point sampling and dataset generation
 │   │   ├── generate_datasets.py
@@ -194,12 +192,6 @@ kept even when the case fails, and its sidecar says `PASSED` or `FAILED`. The ca
 Rerunning skips cases that already have `lbfgs_final.pth`. Cases with `seed_points`/`seed_train` (the
 confirmation cases) get their own fixed points and training seed. Load any checkpoint, or an old
 `models/case_XX.pth`, with `src.models.checkpoints.load_checkpoint()`.
-
-### Visualizing Analytical Solutions
-Launch Jupyter to explore the Taylor-Green Vortex generator and verify the initial flow fields:
-```bash
-jupyter notebook notebooks/01_tgv_visualization.ipynb
-```
 
 ### Generating the Hallucination Dataset (Issue #8)
 Builds the perturbed-field dataset (5 perturbation types × 6 epsilon values + 1 clean baseline, per trained case):
