@@ -11,7 +11,14 @@ A "physical hallucination" is defined as a generated flow field that appears vis
 *Can a normalized physics-based score detect visually plausible but physically inconsistent perturbations of PINN-generated 2D incompressible Navier-Stokes flow fields?*
 
 ## Reproducibility
-All randomized case generations and network initializations are controlled via a global seed utility (`src.utils.seed.set_global_seed()`) to ensure deterministic behavior.
+All randomized case generations and network initializations are controlled via a global seed utility (`src.utils.seed.set_global_seed()`), so a run draws the same points and starts from the same weights each time. Training on a GPU is still not repeatable bit for bit, so the final results are rebuilt from the saved models, not retrained (see [`release/PACKAGE_README.md`](release/PACKAGE_README.md)). The 30 cases of the final iteration each carry their own seeds for their points, their training and their scoring (`cases/confirmation_cases.json`, see [`PROTOCOL.md`](PROTOCOL.md)).
+
+### Final iteration (Oct–Nov 2026)
+The last round of experiments, asked for by Barak in October 2026: 30 new test cases (`case_30` … `case_59`, 10 per k), each trained once and saved at 7 stages (`models/confirmation/`), a calibration frozen on the 30 old cases (`calibration/`), five scores, a synthetic-damage benchmark and a natural-error study. [`PROTOCOL.md`](PROTOCOL.md) fixes every setting; it was frozen (tag `protocol-v1`) before any new case was scored. Every result is in `results/`, and one command rebuilds all of them from the committed models, with no training (about 80 min on a CPU):
+```bash
+python run_pipeline.py --preset final --device cpu
+```
+The package sent to Barak is this repository at the tag `final-v1`, built by `release/build_final_package.py`; its guide, [`release/PACKAGE_README.md`](release/PACKAGE_README.md), lists what is where and summarizes the results. The work is tracked in GitHub issues #35–#48, with the roadmap in #47.
 
 ## Project Workflow & Training Execution
 
@@ -26,21 +33,20 @@ The current pipeline trains individual Physics-Informed Neural Networks for each
 
 **Training Pipeline:**
 1. **Adam Pre-training:** Guides the network out of local minima using dynamic spatial/temporal mini-batches.
-2. **L-BFGS Fine-tuning:** A full-batch quasi-Newton optimization phase to drive physics residuals below the required $\mathcal{O}(10^{-4})$ thresholds.
-3. **Automated Evaluation:** Models are strictly evaluated against the WP3 usability criteria (Relative L2 error, Continuity MSE, Momentum MSE). Failing models trigger the Section 12.4 risk mitigation protocol.
+2. **L-BFGS Fine-tuning:** A quasi-Newton phase on one fixed batch of the case's points (by default 4,000 of its 100,000 interior points, `--n_int`), which lowers the residuals further. L-BFGS needs the same objective at every step, so the batch does not change during this phase.
+3. **Automated Evaluation:** Each model is checked on its case's 64 × 64 × 20 evaluation grid: velocity relative L2 error below 0.10, MSE(R_c) below 1e-4 and MSE(R_m) below 1e-3 (`evaluate_model` in `src/models/train_model.py`). The first run saved only the models that passed. The final iteration keeps every run and marks a failed one FAILED (`PROTOCOL.md` section 2); all 30 of its runs passed.
 This project does not aim to create a new PINN architecture or a faster CFD solver. Instead, it provides a small, interpretable **detection framework** for identifying physically inconsistent generated flow fields using a Physical Hallucination Score (PHS).
 
 ## 🗂️ Repository Structure
 
 ```text
-├── notebooks/
-│   └── 01_tgv_visualization.ipynb   # Visualization of Taylor-Green Vortex
 ├── src/
 │   ├── data/                        # Point sampling and dataset generation
 │   │   ├── generate_datasets.py
 │   │   ├── point_samplers.py
-│   │   └── sampler.py
+│   │   └── sampler.py               # The 30 old cases; --confirmation: the 30 new ones (#44)
 │   ├── models/                      # PINN architecture and loss functions
+│   │   ├── accuracy_audit.py        # #37: true error of every model against the exact solution
 │   │   ├── checkpoints.py           # save_checkpoint()/load_checkpoint(): .pth + .json sidecar (opens old models too)
 │   │   ├── loss.py
 │   │   ├── pinn.py
@@ -58,16 +64,24 @@ This project does not aim to create a new PINN architecture or a faster CFD solv
 │   │   ├── phs.py                   # Pure formula module: Smom/Sdiv/Sbc(ratio)/SE, normalization, scoring
 │   │   ├── evaluate_phs.py          # Full detection pipeline: scores every field, calibrates tau, evaluates
 │   │   ├── detection_sensitivity.py # Probes detection precision below the canonical epsilon floor
-│   │   └── publication_figures.py   # Issues #12-13: curated Figures 1-3 / Tables 1-2 for the paper
+│   │   ├── publication_figures.py   # Issues #12-13: curated Figures 1-3 / Tables 1-2 for the paper
+│   │   ├── frozen_calibration.py    # #45: the calibration fitted once on the 30 old clean fields, and apply()
+│   │   ├── grouped_eval.py          # #41: case bootstrap and Clopper-Pearson ranges
+│   │   ├── benchmark_metrics.py     # #35: the synthetic-damage benchmark's tables
+│   │   ├── natural_errors.py        # #39: scores of the 210 checkpoints against their true errors
+│   │   └── final_figures.py         # #36: the final figures and tables, from the saved tables
 │   └── utils/                       # Utility functions (e.g., seeding)
 │       └── seed.py
-├── tests/                           # Pytest suite for physics, samplers, losses, perturbations, and PHS
-│   ├── test_checkpoints.py
-│   ├── test_pinn_loss.py
-│   ├── test_point_samplers.py
-│   ├── test_residuals.py
-│   ├── test_perturbations.py
-│   └── test_phs.py
+├── tests/                           # Pytest suite: physics, samplers, losses, perturbations, PHS, and each final-iteration script
+├── cases/confirmation_cases.json    # The 30 new cases and their seeds (tag cases-v1)
+├── calibration/                     # The frozen calibration and the old scores it was fitted on (tag protocol-v1)
+├── models/                          # case_00.pth … case_29.pth: the 30 old models, loss_summary.csv: their training record;
+│   └── confirmation/                #   case_30/ … case_59/: 7 checkpoints each, training logs, MANIFEST.sha256 (tag models-v1)
+├── results/                         # accuracy/ (#37), benchmark/ (#35), natural_errors/ (#39), figures/ (#36)
+├── release/                         # #46: build_final_package.py and PACKAGE_README.md, the package for Barak
+├── PROTOCOL.md                      # The evaluation protocol of the final iteration
+├── PIPELINE.md                      # Which script to run when, and what each needs and makes
+├── run_pipeline.py                  # Runs a whole pipeline: the original one, or --preset final
 ├── requirements.txt                 # Python dependencies
 └── README.md                        # Project documentation
 ```
@@ -125,6 +139,42 @@ To verify the physical constraints, residual computations, and point sampling lo
 pytest tests/
 ```
 
+### Rebuilding the Final Iteration's Results (#46)
+One command rebuilds every result of the final iteration from the committed models, with no training (about 80 min on a CPU; `--device cuda` on a GPU):
+```bash
+python run_pipeline.py --preset final --device cpu
+python run_pipeline.py --preset final --list     # its 9 stages and the exact command of each
+```
+It runs these scripts, in this order, and overwrites the committed files in `results/` with the rebuilt ones, so `git status` shows any file that came out different (on another OS the CSVs can differ in the last digits, about 1e-13; counts, flags and `.tex` files don't):
+```bash
+python src/data/sampler.py                       # data/cases_metadata.json: the 30 old cases
+python src/data/generate_datasets.py --metadata cases/confirmation_cases.json --output_dir data/confirmation/tensors
+python src/hallucinations/generate_hallucinations.py --metadata cases/confirmation_cases.json \
+    --models_dir models/confirmation --tensors_dir data/confirmation/tensors --output_dir data/confirmation/hallucinations
+python src/detection/evaluate_phs.py --calibration calibration/frozen_calibration.json \
+    --metadata cases/confirmation_cases.json --models_dir models/confirmation \
+    --hallucinations_dir data/confirmation/hallucinations --scores_dir data/confirmation/phs_scores
+python src/detection/benchmark_metrics.py        # -> results/benchmark/ (#35)
+python src/models/accuracy_audit.py --metadata data/cases_metadata.json --models_dir models \
+    --out results/accuracy/reference_errors_existing.csv
+python src/models/accuracy_audit.py --metadata cases/confirmation_cases.json --models_dir models/confirmation \
+    --out results/accuracy/reference_errors_confirmation.csv
+python src/detection/natural_errors.py           # -> results/natural_errors/ (#39)
+python src/detection/final_figures.py            # -> results/figures/ (#36)
+```
+The damage stage also writes about 1.8 GB of damaged fields into `data/confirmation/hallucinations/` (gitignored) that nothing reads afterwards. `python src/detection/natural_errors.py --from_scores` rebuilds the natural-error tables and figures from the saved `checkpoint_scores.csv` without rescoring. [`PIPELINE.md`](PIPELINE.md) says what each stage needs, makes and costs.
+
+### Building the Package for Barak (#46)
+`release/build_final_package.py` exports the repository at the tag `final-v1` with `git archive`, adds `release/PACKAGE_README.md` as `00_README.md`, the rebuilt `data/cases_metadata.json` and `pip_freeze.txt`, checks that every item Barak asked for is there and that the checkpoints match `models/confirmation/MANIFEST.sha256`, compares the outputs of a rebuild from scratch with the package's copies (`reproduction_check.txt`), and zips it:
+```bash
+git worktree add ../pinn-final-check final-v1
+cd ../pinn-final-check
+python run_pipeline.py --preset final --device cpu > ../repro_log.txt 2>&1
+cd -
+python release/build_final_package.py --rebuilt ../pinn-final-check --log ../repro_log.txt
+```
+It writes `barak_package_final/` and `barak_package_final.zip` in the repository root (gitignored). `--trial --ref HEAD` builds a trial package of the current commit without the comparison.
+
 ### Training with Checkpoints
 `train_model.py` with no flags trains the 30 cases of `data/cases_metadata.json` into `models/{case_id}.pth`
 (saved only if the case passes) and skips every case that already has one. To train another case file into
@@ -142,12 +192,6 @@ kept even when the case fails, and its sidecar says `PASSED` or `FAILED`. The ca
 Rerunning skips cases that already have `lbfgs_final.pth`. Cases with `seed_points`/`seed_train` (the
 confirmation cases) get their own fixed points and training seed. Load any checkpoint, or an old
 `models/case_XX.pth`, with `src.models.checkpoints.load_checkpoint()`.
-
-### Visualizing Analytical Solutions
-Launch Jupyter to explore the Taylor-Green Vortex generator and verify the initial flow fields:
-```bash
-jupyter notebook notebooks/01_tgv_visualization.ipynb
-```
 
 ### Generating the Hallucination Dataset (Issue #8)
 Builds the perturbed-field dataset (5 perturbation types × 6 epsilon values + 1 clean baseline, per trained case):
@@ -225,23 +269,29 @@ Based on the project blueprint, the following components are implemented or acti
 - [x] **Physical Hallucination Score (Issue #10):** Smom/Sdiv/Sbc(near/far ratio)/SE components,
       validation-split normalization, and threshold calibration (`src/detection/phs.py`).
 - [x] **Detection Metrics & Baseline Comparison (Issue #11):** ROC-AUC/Precision/Recall/F1 for PHS vs. 2
-      baselines, plus a per-perturbation-type recall breakdown (`src/detection/evaluate_phs.py`). The
-      acceptance bar (`AUC(PHS) > 0.90`) is met on the current epsilon range (`AUC(Score3_PHS_full) =
-      0.908`) — see [`FINDINGS.md`](FINDINGS.md) for the full investigation, including why
-      `Score2_momentum_divergence` (`AUC = 0.928`) still edges out PHS in this pooled ranking, and why that's
-      an expected consequence of testing PHS against its own detection boundary rather than a flaw.
+      baselines, plus a per-perturbation-type recall breakdown (`src/detection/evaluate_phs.py`). First
+      iteration (calibrated on the 5 validation cases, tested on the 5 test cases): `AUC(Score3_PHS_full) =
+      0.908`, above the planned bar of 0.90, and `AUC(Score2_momentum_divergence) = 0.928` (see
+      [`FINDINGS.md`](FINDINGS.md)). The final iteration, on 30 new cases with a frozen calibration, finds the
+      same order: Score2 0.900 and PHS 0.884, so the PHS does not beat the simpler Score2
+      ([`release/PACKAGE_README.md`](release/PACKAGE_README.md), bad result 1).
 - [x] **Publication Figures & Tables (Issues #12-13):** Figures 1-3 and Tables 1-2, IEEE double-column
-      sized (`src/detection/publication_figures.py`, output in `plots/paper_figures/`). One caveat: Figure
-      1's residual panel should be regenerated against the actual retrained models before being treated as
-      final — see [`FINDINGS.md`](FINDINGS.md).
+      sized (`src/detection/publication_figures.py`, output in `plots/paper_figures/`). Figure 1's residual
+      panel is a difference map (the damaged field's residual minus the clean one's, see
+      [`FINDINGS.md`](FINDINGS.md)), and all 7 files were rebuilt byte for byte from the current models on
+      6 Oct 2026 (commit `4437907`).
+- [x] **Final Iteration (Issues #35-#48):** 30 pre-registered test cases with staged checkpoints, a frozen calibration,
+      five scores, the synthetic-damage benchmark, the natural-error study, the true errors and the final figures
+      (`PROTOCOL.md`, `results/`), rebuilt from the models by `python run_pipeline.py --preset final`, and packaged
+      for Barak by `release/build_final_package.py`.
 - [ ] **Technical Report & Archiving (Issue #14):** Not started.
 
 ## 📝 Documentation
-Please refer to the `PINN suggestion-1.pdf` within the repository for the full academic roadmap, methodological details, and risk management strategies. [`FINDINGS.md`](FINDINGS.md) is the project's research log — every bug, design change, and investigation, documented as it happened; read it for the full "why" behind a design decision. For a practical run-order guide (which script to run when, what it needs, what it costs, and when it's safe to skip), see [`PIPELINE.md`](PIPELINE.md); [`run_pipeline.py`](run_pipeline.py) automates running every stage end to end.
+`PINN suggestion-1.pdf` is the project's original plan (June 2026): its roadmap, methods and risk strategies. Parts of it were changed later, among them S_bc (a near/far residual ratio instead of a periodicity check) and, in the final iteration, the calibration (frozen on the clean fields of the 30 old cases instead of the validation fields); [`PROTOCOL.md`](PROTOCOL.md) describes what the final iteration did. [`FINDINGS.md`](FINDINGS.md) is the project's research log — every bug, design change, and investigation, documented as it happened; read it for the full "why" behind a design decision. For a practical run-order guide (which script to run when, what it needs, what it costs, and when it's safe to skip), see [`PIPELINE.md`](PIPELINE.md); [`run_pipeline.py`](run_pipeline.py) automates running every stage end to end.
 
 ## 🚀 Future Research Directions
 
-Having established a robust baseline pipeline and trained 30 independent Taylor-Green Vortex (TGV) models, the Physical Hallucination Score (PHS) framework opens up several exciting, high-impact avenues for subsequent academic research:
+With a baseline pipeline in place and 60 trained Taylor-Green Vortex (TGV) models (the 30 old cases and the 30 new ones), the Physical Hallucination Score (PHS) framework suggests several directions for further research:
 
 ---
 
@@ -258,5 +308,5 @@ Having established a robust baseline pipeline and trained 30 independent Taylor-
 * **Approach:** Inject varying levels of Gaussian white noise into the pristine validation and test datasets. The research goal is to demonstrate that the PHS can mathematically distinguish between standard, expected experimental measurement noise and smooth, structurally incorrect deep-learning hallucinations.
 
 ### 4. Cross-PDE Methodological Generalization
-* **Objective:** Prove that the normalization and thresholding framework is universally applicable to physics-informed models.
+* **Objective:** Test whether the normalization and thresholding framework carries over to other physics-informed models.
 * **Approach:** Port the exact PHS methodology (calculating component-wise residuals, normalizing them using clean validation cases, and establishing a unified detection threshold tau) to entirely different partial differential equations, such as the Heat Equation, Burgers' Equation, or 3D flow systems.

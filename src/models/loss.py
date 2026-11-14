@@ -62,7 +62,8 @@ class LossEvaluator:
         Outputs:
             loss_ns (torch.Tensor): The scaled combined Mean Squared Error of the u and v momentum residuals.
             loss_div (torch.Tensor): The scaled Mean Squared Error of the continuity (divergence) residual.
-            loss_p (torch.Tensor): The scaled pressure anchoring loss (mean of p squared).
+            loss_p (torch.Tensor): The scaled pressure anchoring loss: the square of the mean of the
+                                   scaled p, which fixes the free constant in p (zero mean).
         """
         # 1. Slice and enable gradients for independent coordinate tracking
         x = interior_coords[:, 0:1].clone().requires_grad_(True)
@@ -94,7 +95,7 @@ class LossEvaluator:
         loss_ns = self.mse(R_u_scaled, zeros_scaled) + self.mse(R_v_scaled, zeros_scaled)
         loss_div = self.mse(R_c_scaled, zeros_scaled)
         
-        # L_p: Pressure anchoring (mean of scaled p squared)
+        # L_p: Pressure anchoring (square of the mean of scaled p: the mean is pushed to 0)
         loss_p = torch.mean(p_scaled)**2
         
         # Return the unscaled NS loss alongside the rest
