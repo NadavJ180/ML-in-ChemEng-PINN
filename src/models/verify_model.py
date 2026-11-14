@@ -56,9 +56,7 @@ def verify_case(case_id="case_00", show: bool = True):
     Re = case_meta["Re"]
     U0 = case_meta["U0"]
     k = case_meta["k"]
-    # FIX: these were previously never read from case_meta, so generate_tgv()
-    # below was silently comparing against phi_x=phi_y=0.0 for every case
-    # instead of this case's actual target phase.
+    # The case's own phases, for the exact solution below
     phi_x = case_meta["phi_x"]
     phi_y = case_meta["phi_y"]
     nu = compute_nu(U0, Re, k)
@@ -70,8 +68,7 @@ def verify_case(case_id="case_00", show: bool = True):
     if not model_path.exists():
         raise FileNotFoundError(f"Model weights not found at {model_path}")
 
-    # FIX: BaselinePINN's constructor requires k (used to build the sin(kx)/cos(kx)
-    # input features) -- calling it with no arguments raised a TypeError.
+    # BaselinePINN needs k for its sin(kx)/cos(kx) input features
     model = BaselinePINN(k=k)
     # Ensure precision matches the training configuration
     model.to(torch.float64)
@@ -97,7 +94,7 @@ def verify_case(case_id="case_00", show: bool = True):
         v_pred = preds[:, 1].reshape(res, res)
 
     # 5. Generate Exact Analytical Truth
-    # FIX: use this case's actual target phase, not a hardcoded phi_x=phi_y=0.0.
+    # At this case's own phases
     u_true, v_true, _ = generate_tgv(X, Y, T, U0, k, phi_x=phi_x, phi_y=phi_y, nu=nu)
 
     # 6. Calculate Metrics

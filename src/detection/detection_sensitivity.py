@@ -1,66 +1,23 @@
 """
-Detection Sensitivity Analysis (probes the canonical epsilon grid against an existing calibration)
+Detection Sensitivity Analysis: rescores the damage strengths of EPSILON_VALUES against an
+EXISTING calibration (normalizers_and_thresholds.json from an evaluate_phs.py run, loaded,
+never refitted), and reports where recall crosses 50% and 90%.
 
-HISTORY: this script originally existed to probe BELOW the canonical epsilon
-floor using its own, separate SENSITIVITY_EPSILON_VALUES grid, because the
-canonical sweep (at the time [0.005, 0.01, 0.02, 0.05, 0.1], later several
-narrower revisions) gave a flat AUC=1.000 that didn't say where detection
-actually became unreliable. That finding led directly to EPSILON_VALUES
-itself being rebuilt around the real detection boundary. Maintaining two
-similar-but-different epsilon lists across the project (this script's own
-grid vs. perturbations.py's canonical one) then became its own source of
-confusion -- worth asking "why two lists" independent of what either one
-contained. Consolidated: this script now imports and uses the SAME
-EPSILON_VALUES every other script uses, rather than a separate grid. The
-one deliberate exception project-wide remains VISUAL_CHECK_EPSILONS in
-verify_hallucinations.py, independently fixed at its own named
-visual-plausibility values.
-
-WHAT THIS MEANS FOR THIS SCRIPT'S ROLE: it can no longer independently probe
-epsilon values below the canonical floor (there's only one floor now, and
-it's whatever EPSILON_VALUES's smallest value is). Its remaining, narrower
-purpose is re-scoring the SAME canonical epsilon values against an EXISTING,
-possibly older or frozen calibration (loaded from disk, never refit) --
-useful for checking whether a prior calibration still holds after retraining
-models, or as an independent consistency check against evaluate_phs.py's own
-fresh-calibration run, without needing a second, separate epsilon grid to do
-either of those things.
-
-Epsilon itself is not a fair cross-perturbation-type axis: it means "a
-fraction of U0" for one perturbation type, "a fraction of a boundary bump
-amplitude" for another, "a fraction of a decay timescale" for a third --
-none of those are directly comparable magnitudes. Relative L2 error IS
-comparable across types (it is always "how much did this change the
-field, in the same physical units, relative to the field's own scale"),
-so THAT axis is what gives a meaningful, portable answer to "what is this
-method's precision" -- e.g. "PHS reliably detects hallucinations once they
-change the field by more than X% in relative L2 terms," a claim that
-means the same thing regardless of which perturbation produced them.
+Recall is reported against epsilon and against the relative change a damage makes to the
+field (phs.compute_relative_error). Epsilon means a different thing for each damage type
+(a fraction of U0, of a bump amplitude, of a decay time); the relative change means the
+same for all of them.
 
 Outputs:
   data/phs_scores/sensitivity_probe_raw.csv
-      One row per (case, perturbation, epsilon): raw components, the
-      normalized Score3_PHS_full (using the LOADED calibration), relative
-      L2 error, and whether it was detected.
+      One row per (case, perturbation, epsilon): raw components, Score3_PHS_full with the
+      loaded calibration, the relative change, and whether it was detected.
   plots/phs_evaluation/sensitivity_recall_vs_epsilon.png
-      Recall vs. epsilon, one line per perturbation type, over the
-      canonical EPSILON_VALUES grid.
+      Recall against epsilon, one line per damage type, plus all types pooled.
   plots/phs_evaluation/sensitivity_boundary_summary.csv / .json
-      The epsilon and relative-error values where recall crosses 50% and
-      90% (linear interpolation in log-space, over QUANTILE bins -- see
-      _binned_recall's docstring for why equal-width log bins produced
-      visibly "jerky" curves with occasional single-point bins reading a
-      hard 0% or 100%, and why equal-COUNT bins fix that), overall and
-      per perturbation type. NOTE: the relative-error columns/crossings
-      here are computed the same way as before, but the corresponding
-      PLOT (sensitivity_recall_vs_relative_error.png) was removed --
-      even after both binning fixes, per-perturbation-type curves still
-      showed real 0%/100% jumps from small sample size (~35 rows/type),
-      which read as more informative than they actually were. The single
-      interpolated crossing NUMBER per type in this file is less
-      misleading than the jumpy curve was, since it's one summary value
-      rather than a chart inviting over-interpretation of every wiggle --
-      but treat it with the same small-sample caution.
+      The epsilon and relative change at which recall crosses 50% and 90% (linear
+      interpolation in log x), pooled and per damage type. With about 35 fields per type,
+      the per-type crossings are rough.
 
 Usage:
     python src/detection/detection_sensitivity.py
@@ -130,10 +87,7 @@ def parse_args():
 
 def load_model(case_id: str, k: float, device: str):
     """
-    Loads a trained BaselinePINN checkpoint for a single case. Duplicated
-    from evaluate_phs.py's load_model rather than imported, matching that
-    file's own reasoning for not sharing it: keeping each script's I/O
-    self-contained.
+    Loads the trained BaselinePINN of one case from models/{case_id}.pth.
 
     Inputs:
         case_id (str): The case identifier (e.g. "case_00").
@@ -241,66 +195,23 @@ def score_against_existing_calibration(df: pd.DataFrame, normalizers: dict, tau:
 
 def _binned_recall(df: pd.DataFrame, x_col: str, n_bins: int = 15, min_points_per_bin: int = 4) -> tuple:
     """
-    Bins `df` by `x_col` into EQUAL-COUNT (quantile) bins and returns each
-    bin's mean detection rate against its own mean x-value, sorted by x.
+    Sorts the rows by x_col, splits them into bins with equal numbers of rows, and returns
+    each bin's detection rate against its mean x (geometric mean), sorted by x.
 
-    WHY THIS EXISTS: "epsilon" is a small, shared, discrete grid (the same
-    EPSILON_VALUES for every perturbation type), so grouping by
-    its exact value already pools multiple (case, perturbation) rows
-    together meaningfully. "relative_error" is NOT shared like that --
-    different perturbation types produce different relative_error values
-    at the same epsilon (that's the whole point of using it as a
-    cross-type-comparable axis), so relative_error values essentially
-    never exactly match across rows. Grouping by exact value there doesn't
-    pool anything -- it just returns one point per row, and adjacent
-    points in sorted order can come from unrelated perturbation
-    types/epsilons, making the "crossing" interpolation in
-    find_boundary_crossings meaningless (confirmed: the first version of
-    this analysis reported the same relative-error value for both 50% and
-    90% recall, which should be impossible for a monotonic-ish curve --
-    tracing it back showed this exact-groupby issue).
-
-    WHY EQUAL-COUNT BINS, NOT EQUAL-WIDTH LOG BINS (a second, later fix):
-    the first binned version used equal-width bins in log-x space, which
-    fixed the grouping problem above but introduced a new, subtler one --
-    equal-width bins have no knowledge of where the data actually
-    clusters, so they occasionally slice through a tight cluster of
-    near-identical x-values and isolate one point alone in its own bin.
-    Confirmed directly: one such bin contained exactly n=1 point (case_26,
-    "boundary", eps=0.0002) whose relative_error (4.5e-5) was almost
-    identical to 4 OTHER rows (the same perturbation/epsilon for the other
-    4 test cases, at 3.8e-5 to 4.1e-5) that landed in the adjacent bin
-    purely because of where the fixed bin edge happened to fall -- with
-    n=1, that bin could only ever read 0% or 100%, producing a visible
-    "jerk" in the curve that had nothing to do with a real detection
-    effect. Equal-COUNT bins (splitting the SORTED data into n_bins
-    contiguous, similarly-sized chunks) make a lone-point bin possible
-    only when there are fewer total rows than n_bins, not as a routine
-    side effect of wherever bin edges happen to land.
+    Used for the relative change, whose values never coincide between rows, so they must be
+    binned to pool anything. Bins of equal counts, not of equal width in log x, so a bin can't
+    end up holding a single row. The number of bins is lowered so that each holds on average
+    at least min_points_per_bin rows.
 
     Inputs:
         df (pd.DataFrame): Must have `x_col` and "detected" columns.
         x_col (str): Either "epsilon" or "relative_error".
-        n_bins (int): Maximum number of equal-count bins. The actual
-            number used is capped so each bin averages at least
-            min_points_per_bin rows -- see min_points_per_bin.
-        min_points_per_bin (int): Minimum average rows per bin. A group
-            with few rows (e.g. one perturbation type's own subset, 1/5th
-            of "overall"'s row count) automatically gets fewer, wider bins
-            instead of reusing n_bins=15 regardless of how little data
-            backs each one -- confirmed necessary in practice: even after
-            switching to equal-count bins (see the docstring above), a
-            single perturbation type's ~35 rows split into 15 bins still
-            averaged ~2 rows/bin, which reads as a near-coin-flip 0%/33%/
-            50%/67%/100% by chance alone and produced a visibly jagged
-            per-type curve even though the pooled "overall" curve (5x the
-            rows) was smooth. This ties bin width to how much data is
-            actually available, per group, rather than a single fixed count.
+        n_bins (int): The largest number of bins.
+        min_points_per_bin (int): The smallest average number of rows per bin.
 
     Outputs:
-        (bin_centers, mean_recall): both np.ndarray, sorted by bin_centers.
-        Returns fewer than n_bins points if there isn't enough data to
-        fill them all.
+        (bin_centers, mean_recall): both np.ndarray, sorted by bin_centers. Fewer than n_bins
+        points when there isn't enough data.
     """
     x = df[x_col].values
     detected = df["detected"].values
@@ -325,25 +236,16 @@ def _binned_recall(df: pd.DataFrame, x_col: str, n_bins: int = 15, min_points_pe
 
 def find_boundary_crossings(df: pd.DataFrame, x_col: str, levels: list, n_bins: int = 15) -> dict:
     """
-    Finds where detection rate crosses each level in `levels` (see
-    _recall_curve for how "epsilon" and "relative_error" are computed
-    differently), via linear interpolation in log-x space -- computed on
-    the pooled (all perturbation types, all cases) curve, plus the same
-    per perturbation type.
-
-    Also reports the highest recall actually observed in-range and the
-    x-value it occurred at, regardless of whether any requested level was
-    crossed -- so a level that isn't reached (e.g. 90% recall, if the
-    chosen x range tops out below it) still gets a complete, useful
-    answer ("recall reached at most 0.80, at eps=0.001") instead of a
-    bare "not reached," which said nothing about how close the curve got
-    or whether it's worth widening the range at all.
+    Finds where the detection rate crosses each level in `levels`, by linear interpolation in
+    log x, on the pooled curve and on each damage type's curve (_recall_curve). Also reports
+    the highest recall reached and where, so a level that is never reached still gets an
+    answer.
 
     Inputs:
         df (pd.DataFrame): Must have "perturbation_type", x_col, "detected" columns.
         x_col (str): Either "epsilon" or "relative_error".
-        levels (list[float]): Recall levels to find crossings for (e.g. [0.5, 0.9]).
-        n_bins (int): Forwarded to _recall_curve (only used when x_col is "relative_error").
+        levels (list[float]): Recall levels (e.g. [0.5, 0.9]).
+        n_bins (int): Forwarded to _recall_curve.
 
     Outputs:
         dict: {"overall": {"crossings": {level: x_value_or_None, ...},
@@ -375,26 +277,9 @@ def find_boundary_crossings(df: pd.DataFrame, x_col: str, levels: list, n_bins: 
 
 def _recall_curve(df: pd.DataFrame, x_col: str, n_bins: int = 15) -> tuple:
     """
-    Dispatches to the appropriate recall-curve computation for `x_col`:
-    an exact groupby for "epsilon" (a small, shared, discrete grid where
-    every row at a given value is a genuinely comparable replicate -- the
-    same convention evaluate_phs.py's recall_by_type.png uses), or the
-    quantile-binned _binned_recall for "relative_error" (continuous,
-    essentially never exactly shared across rows, so it needs binning to
-    pool anything at all -- see _binned_recall's own docstring).
-
-    WHY THIS SPLIT EXISTS: an earlier version ran BOTH axes through
-    _binned_recall uniformly. For "epsilon" specifically, that meant
-    sorting all rows by epsilon and cutting them into equal-count chunks
-    WITHOUT regard for the fact that many rows already share the exact
-    same epsilon value -- chunk boundaries routinely fell in the middle of
-    a block of identical-epsilon rows, mixing two adjacent epsilon values'
-    worth of detection outcomes into one plotted point. Confirmed directly:
-    the resulting curve was extremely jagged (recall bouncing between
-    ~0.17 and ~0.82 with no clear trend), while the CORRECT exact-groupby
-    version of the exact same underlying data is a clean, flat floor at
-    0.40 from eps=0.00001 through 0.0002, rising to 0.44 then 0.76 -- the
-    jaggedness was entirely a plotting artifact, not a property of the data.
+    The recall curve of x_col: for "epsilon", the detection rate at each exact epsilon (every
+    row at one epsilon is a replicate of the same strength); for "relative_error", the binned
+    curve of _binned_recall.
 
     Inputs:
         df (pd.DataFrame): Must have `x_col` and "detected" columns.
@@ -461,11 +346,10 @@ def plot_recall_vs_x(df: pd.DataFrame, x_col: str, x_label: str, output_path: Pa
 
 def main():
     """
-    Entry point. Loads an existing calibration, probes the fine epsilon
-    grid across every perturbation type for the requested case(s), scores
-    against that calibration, finds where recall crosses 50%/90% in both
-    epsilon and relative-error terms, and writes the outputs described in
-    this module's docstring.
+    Entry point. Loads an existing calibration, probes every damage type at every strength of
+    EPSILON_VALUES for the requested cases, scores them against that calibration, finds where
+    recall crosses 50% and 90% against epsilon and against the relative change, and writes
+    the outputs listed in this module's docstring.
 
     Inputs:
         None (reads parsed command-line arguments via parse_args()).

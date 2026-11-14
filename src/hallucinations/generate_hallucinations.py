@@ -92,32 +92,18 @@ def parse_args():
 
 def load_case_metadata(metadata_path: Path):
     """
-    Loads a case file and flattens its splits into a single lookup dictionary
-    keyed by case_id: train/validation/test for cases_metadata.json, and the
-    single confirmation list for cases/confirmation_cases.json (the 30 new cases).
-
-    IMPORTANT: each case is tagged with a "split" field ("train", "validation",
-    or "test") indicating which of sampler.py's partitions it belongs to
-    (20 train / 5 validation / 5 test, per src/data/sampler.py), or
-    "confirmation" for a new case. This field
-    is not used to change WHICH cases get processed here -- generating
-    hallucinations for all 30 is harmless data preparation. It exists so
-    downstream PHS threshold calibration/evaluation code can correctly
-    restrict itself to validation-split cases for calibration and test-split
-    cases for final, held-out evaluation reporting, per the README's stated
-    methodology ("normalizing them using clean validation cases, and
-    establishing a unified detection threshold tau"). Currently NOTHING in
-    the pipeline (training included) discriminates by split; without this
-    tag, that information is silently lost after this flattening step.
+    Loads a case file and flattens its lists into one dictionary keyed by case_id: train,
+    validation and test for data/cases_metadata.json, confirmation for
+    cases/confirmation_cases.json. Each case gets a "split" field naming its list, which the
+    first iteration's evaluate_phs.py uses to calibrate on the validation split and test on
+    the test split.
 
     Inputs:
-        metadata_path (Path): Path to the case file (data/cases_metadata.json
-                              or cases/confirmation_cases.json).
+        metadata_path (Path): The case file.
 
     Outputs:
-        dict: Mapping of case_id (str) -> case metadata dict
-              (containing "Re", "U0", "k", "phi_x", "phi_y", "seed", "split", etc.).
-              Raises ValueError if the file lists no cases under any split.
+        dict: case_id (str) -> the case's entry plus "split".
+              Raises ValueError if the file lists no cases.
     """
     with open(metadata_path, "r") as f:
         dataset = json.load(f)
