@@ -35,8 +35,7 @@ def sample_fields_and_coords():
             params (dict): {"U0": 1.0, "k": 1, "T": 1.0, "tau_decay": 3.0}
                 physical constants. tau_decay=3.0 (> T=1.0) mimics the real
                 dataset, where every case's natural decay timescale exceeds
-                its capped simulation window (see the README's Findings
-                section) -- this is what makes temporal_mismatch's
+                its capped simulation window -- this is what makes temporal_mismatch's
                 clamp-to-T behavior exercised by this fixture rather than
                 a no-op.
     """

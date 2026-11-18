@@ -2,8 +2,7 @@
 End-to-End Pipeline Runner
 
 Runs every stage of a pipeline in dependency order by invoking each stage's
-own script exactly as documented in the README's Usage section and in
-PIPELINE.md (same module, same flags) -- this file sequences the pipeline, it
+own script exactly as documented in PIPELINE.md (same module, same flags) -- this file sequences the pipeline, it
 does not duplicate any of its logic.
 
 There are two pipelines, chosen with --preset:

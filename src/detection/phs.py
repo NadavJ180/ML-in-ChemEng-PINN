@@ -38,8 +38,7 @@ from src.hallucinations.perturbations import apply_perturbation
 
 # The 4 raw PHS components. "bc" is computed via compute_boundary_localization_violation
 # (a near/far residual ratio), NOT a literal periodicity comparison -- see this
-# module's docstring ("WHY Sbc IS A NEAR/FAR RATIO") for why, and the README's Findings
-# section for the fuller investigation.
+# module's docstring ("WHY Sbc IS A NEAR/FAR RATIO") for why.
 PHS_COMPONENT_NAMES = ["mom", "div", "bc", "E"]
 
 # 2 residual-only baselines PHS is compared against, plus PHS itself as Score3.

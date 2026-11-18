@@ -2,11 +2,13 @@
 Tests for release/build_final_package.py (#46): the comparison of rebuilt
 outputs, the package checks, the log, the report and the ZIP. They build small
 packages in tmp_path; only the export and checks marked "real" read this
-repository.
+repository. The three that call `git archive` are skipped outside a git checkout
+(the unzipped package has no .git).
 """
 
 import json
 import os
+import subprocess
 import zipfile
 from pathlib import Path
 
@@ -17,6 +19,11 @@ import pytest
 import release.build_final_package as b
 
 ROOT = b.ROOT
+
+IN_GIT_CHECKOUT = subprocess.run(["git", "rev-parse", "--git-dir"], cwd=str(ROOT),
+                                 capture_output=True).returncode == 0
+needs_git = pytest.mark.skipif(not IN_GIT_CHECKOUT,
+                               reason="needs a git checkout (the unzipped package has no .git)")
 
 
 def write(path: Path, data) -> Path:
@@ -258,6 +265,7 @@ def test_the_old_training_summary_is_the_copy_sent_in_october():
     assert table["passed"].all()
 
 
+@needs_git
 def test_the_real_calibration_refits_to_the_frozen_file_and_a_changed_one_does_not(tmp_path):
     """real: the committed code refits calibration/frozen_calibration.json from its source scores."""
     b.export_tree("HEAD", tmp_path, ["src", "calibration"])
@@ -270,6 +278,7 @@ def test_the_real_calibration_refits_to_the_frozen_file_and_a_changed_one_does_n
     assert "is not what its source refits to" in problem
 
 
+@needs_git
 def test_export_tree_writes_files_as_git_stores_them(tmp_path):
     """real: text files come out with LF on every OS, and -text files with their exact bytes."""
     b.export_tree("HEAD", tmp_path, ["run_pipeline.py", "calibration/source_phs_components_raw.csv"])
@@ -279,6 +288,7 @@ def test_export_tree_writes_files_as_git_stores_them(tmp_path):
                 "calibration/source_phs_components_raw.csv"])
 
 
+@needs_git
 def test_export_tree_of_an_unknown_ref_fails_cleanly(tmp_path):
     with pytest.raises(b.BuildError):
         b.export_tree("no-such-ref-46", tmp_path)
@@ -413,6 +423,33 @@ def test_a_trial_build_zips_a_checked_package(tmp_path, monkeypatch):
     with pytest.raises(b.BuildError, match="already exists"):
         b.build(b.parse_args(["--trial", "--out", str(tmp_path)]))
     assert b.build(b.parse_args(["--trial", "--out", str(tmp_path), "--overwrite"])) == zip_path
+
+
+def test_the_package_readme_replaces_the_repository_s_and_first_iteration_files_stop_the_build(tmp_path, monkeypatch):
+    fake_build_steps(monkeypatch)
+    zip_path = b.build(b.parse_args(["--trial", "--out", str(tmp_path)]))
+    top = f"{b.PACKAGE_NAME}{b.TRIAL_SUFFIX}/"
+    with zipfile.ZipFile(zip_path) as archive:
+        assert archive.read(f"{top}README.md") == b"# The package\n"
+        assert f"{top}{b.README_SOURCE}" not in archive.namelist()
+
+    export = b.export_tree
+    def export_with_findings(ref, dest, paths=()):
+        export(ref, dest, paths)
+        write(dest / "FINDINGS.md", "# old\n")
+    monkeypatch.setattr(b, "export_tree", export_with_findings)
+    with pytest.raises(b.BuildError, match="FINDINGS.md"):
+        b.build(b.parse_args(["--trial", "--out", str(tmp_path), "--overwrite"]))
+
+
+@needs_git
+def test_the_tree_marks_the_first_iteration_files_export_ignore():
+    """real: git archive of the working tree's attributes leaves out every FIRST_ITERATION_ONLY path."""
+    for path in b.FIRST_ITERATION_ONLY:
+        probe = path + "/x.png" if path == "plots" else path
+        out = subprocess.run(["git", "check-attr", "export-ignore", "--", probe], cwd=str(ROOT),
+                             capture_output=True, text=True).stdout
+        assert out.strip().endswith("export-ignore: set"), out
 
 
 def test_a_trial_build_with_a_missing_item_is_not_zipped(tmp_path, monkeypatch):
