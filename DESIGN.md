@@ -2,9 +2,9 @@
 
 Why the code is built the way it is. The docstrings in `src/` say what each function does; this file gives the reasons behind the choices that the code alone doesn't explain.
 
-- How each choice was reached: [`FINDINGS.md`](FINDINGS.md) (first iteration) and issues #35–#48 (final iteration).
+- How each choice was reached: issues #35–#48 of the repository (the roadmap is #47).
 - Every setting of the final iteration: [`PROTOCOL.md`](PROTOCOL.md).
-- The known limits of this design: [`release/PACKAGE_README.md`](release/PACKAGE_README.md), "Limits of the design" (A–F below refer to it).
+- The known limits of this design: the package's `README.md` (in the repository: [`release/PACKAGE_README.md`](release/PACKAGE_README.md)), "Limits of the design" (A–F below refer to it).
 
 ## 1. Units and scaling
 
@@ -47,7 +47,7 @@ Why the code is built the way it is. The docstrings in `src/` say what each func
 | `temporal_mismatch` | u and v taken at time t + ε·τ_decay (at most T), p at t | momentum (see below) |
 | `boundary` | ε·U0·m(x)·sin(3y) to u, with m(x) = exp(−x²/σ²) + exp(−(2π−x)²/σ²), σ = 0.2 | momentum, in a band near x = 0 and x = 2π |
 
-- **Every damage stays periodic.** The added terms are trigonometric functions with whole-number frequencies, or the bump m(x), which is symmetric: m(0) = m(2π), and so is every derivative. So no damage creates a mismatch between the values (or slopes) at x = 0 and x = 2π. This is why S_bc is not a periodicity check (section 5).
+- **Every damage stays periodic.** The added terms are trigonometric functions with whole-number frequencies, or the bump m(x), which is symmetric about π: m(0) = m(2π), and its slopes there are both zero to machine precision (about e^(−987), with σ = 0.2). So no damage creates a mismatch between the values (or slopes) at x = 0 and x = 2π. This is why S_bc is not a periodicity check (section 5).
 - **The time shift is scaled by τ_decay, not by T.** Then a given ε is the same fraction of each flow's own evolution, while a fraction of T would be a fraction of the cap of 2.
 - **The shifted time is cut off at T**, so the model is never asked about times it wasn't trained on. Outside its window it extrapolates and gives clearly wrong fields, which would make the damage trivially easy to detect. The cut-off makes the largest strengths saturate for the slowest-decaying cases (limit E).
 - **Where the time shift's residual comes from.** Shifting u, v and p together would give another exact solution. The residual comes from the velocity being shifted while the pressure is not, and from u_t = 0 where the cut-off acts.

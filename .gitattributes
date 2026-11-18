@@ -9,3 +9,11 @@ calibration/** -text
 
 # The training summary of the 30 old models, as sent to Barak in October 2026, stored byte for byte (#46).
 models/loss_summary.csv -text
+
+# The first iteration's README, research log, original plan and figures stay in the repository
+# but are not sent in the final package: git archive leaves them out, and
+# release/build_final_package.py puts release/PACKAGE_README.md in as README.md (#46).
+/README.md export-ignore
+/FINDINGS.md export-ignore
+/PINN[[:space:]]suggestion-1.pdf export-ignore
+/plots/** export-ignore

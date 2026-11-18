@@ -7,14 +7,14 @@ complete code, figures in PDF/PNG, tables in CSV/LaTeX, and instructions to
 regenerate everything without retraining", and to "check completeness and
 reproducibility before handoff".
 
-The package is the repository at a tag (final-v1 by default), exported with
+The package is the repository at a tag (final-v2 by default), exported with
 `git archive` exactly as git stores it (LF line endings on every OS): the code,
 the models, the case files, the frozen calibration, PROTOCOL.md and every
 result. So the regeneration command runs inside the unpacked package. The
 script adds:
 
-    00_README.md              release/PACKAGE_README.md: what is where, how each figure
-                              and table is made, and what the results show
+    README.md                 release/PACKAGE_README.md, moved: what is where, how each
+                              figure and table is made, and what the results show
     data/cases_metadata.json  the 30 old cases, rebuilt by the package's own
                               src/data/sampler.py (data/ is not in git)
     pip_freeze.txt            the Python packages of the machine that ran the check
@@ -30,7 +30,9 @@ the frozen calibration from its source scores. If a check fails, or a rebuilt
 output differs, it writes the report and stops without zipping. The ZIP is written with
 Python's zipfile (forward-slash paths, which open on macOS, Linux and Windows).
 The damaged fields (data/confirmation/hallucinations, about 1.8 GB) are left
-out, since the command rebuilds them.
+out, since the command rebuilds them. So are the first iteration's README.md,
+FINDINGS.md, original plan (PDF) and figures (plots/): they are marked
+export-ignore in .gitattributes, and the build stops if one is there.
 
 Comparing a rebuilt output with its copy (compare_file): line endings are
 ignored. A .csv or .json file whose bytes differ is compared as numbers: every
@@ -43,7 +45,7 @@ pixel or two apart.
 
 Usage:
     # 1. Rebuild every result in a clean checkout of the tag (about 80 min on a CPU)
-    git worktree add ../pinn-final-check final-v1
+    git worktree add ../pinn-final-check final-v2
     cd ../pinn-final-check
     python run_pipeline.py --preset final --device cpu > ../repro_log.txt 2>&1
     cd -
@@ -77,10 +79,12 @@ ROOT = Path(__file__).resolve().parent.parent
 
 PACKAGE_NAME = "barak_package_final"
 TRIAL_SUFFIX = "_trial"
-DEFAULT_REF = "final-v1"
+DEFAULT_REF = "final-v2"
 
 README_SOURCE = "release/PACKAGE_README.md"
-README_NAME = "00_README.md"
+README_NAME = "README.md"
+# The first iteration's documents and figures, kept in the repository but not sent (export-ignore in .gitattributes)
+FIRST_ITERATION_ONLY = ("README.md", "FINDINGS.md", "PINN suggestion-1.pdf", "plots")
 CHECK_NAME = "reproduction_check.txt"
 LOG_NAME = "repro_log.txt"
 FREEZE_NAME = "pip_freeze.txt"
@@ -223,7 +227,7 @@ def expected_files(package_dir: Path) -> list:
         ("Training logs", [f"models/confirmation/{c}/loss_history.json" for c in new_ids]
                           + ["models/confirmation/loss_summary.csv", "models/confirmation/training_summary.log",
                              "models/confirmation/RESTARTS.md", OLD_TRAINING_SUMMARY]),
-        ("Code", ["run_pipeline.py", "requirements.txt", "README.md", "PIPELINE.md",
+        ("Code", ["run_pipeline.py", "requirements.txt", "PIPELINE.md", "DESIGN.md",
                   "release/build_final_package.py", FREEZE_NAME]),
         ("Every false alarm and every miss", ["results/benchmark/false_alarms.csv",
                                               "results/benchmark/missed_detections.csv",
@@ -685,7 +689,10 @@ def build(args) -> Path:
     export_tree(commit, package_dir)
     if not (package_dir / README_SOURCE).is_file():
         raise BuildError(f"{args.ref} has no {README_SOURCE}")
-    shutil.copyfile(package_dir / README_SOURCE, package_dir / README_NAME)
+    left_in = [p for p in FIRST_ITERATION_ONLY if (package_dir / p).exists()]
+    if left_in:
+        raise BuildError(f"{args.ref} exports {', '.join(left_in)}: mark it export-ignore in .gitattributes")
+    shutil.move(str(package_dir / README_SOURCE), str(package_dir / README_NAME))
     print(f"Rebuilding {OLD_CASES} and writing {FREEZE_NAME}", flush=True)
     rebuild_old_cases(package_dir)
     write_pip_freeze(package_dir)

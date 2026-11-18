@@ -18,7 +18,7 @@ The last round of experiments, asked for by Barak in October 2026: 30 new test c
 ```bash
 python run_pipeline.py --preset final --device cpu
 ```
-The package sent to Barak is this repository at the tag `final-v1`, built by `release/build_final_package.py`; its guide, [`release/PACKAGE_README.md`](release/PACKAGE_README.md), lists what is where and summarizes the results. The work is tracked in GitHub issues #35–#48, with the roadmap in #47.
+The package sent to Barak is this repository at the tag `final-v2`, built by `release/build_final_package.py`; its guide, [`release/PACKAGE_README.md`](release/PACKAGE_README.md), lists what is where and summarizes the results. The work is tracked in GitHub issues #35–#48, with the roadmap in #47.
 
 ## Project Workflow & Training Execution
 
@@ -165,9 +165,9 @@ python src/detection/final_figures.py            # -> results/figures/ (#36)
 The damage stage also writes about 1.8 GB of damaged fields into `data/confirmation/hallucinations/` (gitignored) that nothing reads afterwards. `python src/detection/natural_errors.py --from_scores` rebuilds the natural-error tables and figures from the saved `checkpoint_scores.csv` without rescoring. [`PIPELINE.md`](PIPELINE.md) says what each stage needs, makes and costs.
 
 ### Building the Package for Barak (#46)
-`release/build_final_package.py` exports the repository at the tag `final-v1` with `git archive`, adds `release/PACKAGE_README.md` as `00_README.md`, the rebuilt `data/cases_metadata.json` and `pip_freeze.txt`, checks that every item Barak asked for is there and that the checkpoints match `models/confirmation/MANIFEST.sha256`, compares the outputs of a rebuild from scratch with the package's copies (`reproduction_check.txt`), and zips it:
+`release/build_final_package.py` exports the repository at the tag `final-v2` with `git archive` (without this README, `FINDINGS.md`, the original plan and `plots/`, marked export-ignore in `.gitattributes`), puts `release/PACKAGE_README.md` in as its `README.md`, adds the rebuilt `data/cases_metadata.json` and `pip_freeze.txt`, checks that every item Barak asked for is there and that the checkpoints match `models/confirmation/MANIFEST.sha256`, compares the outputs of a rebuild from scratch with the package's copies (`reproduction_check.txt`), and zips it:
 ```bash
-git worktree add ../pinn-final-check final-v1
+git worktree add ../pinn-final-check final-v2
 cd ../pinn-final-check
 python run_pipeline.py --preset final --device cpu > ../repro_log.txt 2>&1
 cd -
@@ -284,7 +284,7 @@ Based on the project blueprint, the following components are implemented or acti
       five scores, the synthetic-damage benchmark, the natural-error study, the true errors and the final figures
       (`PROTOCOL.md`, `results/`), rebuilt from the models by `python run_pipeline.py --preset final`, and packaged
       for Barak by `release/build_final_package.py`.
-- [ ] **Technical Report & Archiving (Issue #14):** Not started.
+- [x] **Technical Report & Archiving (Issue #14):** Done; closed 5 Oct 2026 with the first package for Barak.
 
 ## 📝 Documentation
 `PINN suggestion-1.pdf` is the project's original plan (June 2026): its roadmap, methods and risk strategies. Parts of it were changed later, among them S_bc (a near/far residual ratio instead of a periodicity check) and, in the final iteration, the calibration (frozen on the clean fields of the 30 old cases instead of the validation fields); [`PROTOCOL.md`](PROTOCOL.md) describes what the final iteration did. [`DESIGN.md`](DESIGN.md) explains why the code is built the way it is (the scaling, the loss, the damage types and the score components). [`FINDINGS.md`](FINDINGS.md) is the project's research log — every bug, design change, and investigation, documented as it happened; read it for the full "why" behind a design decision. For a practical run-order guide (which script to run when, what it needs, what it costs, and when it's safe to skip), see [`PIPELINE.md`](PIPELINE.md); [`run_pipeline.py`](run_pipeline.py) automates running every stage end to end.

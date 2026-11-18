@@ -2,9 +2,9 @@
 
 This is the final round of experiments asked for in October 2026, with everything needed to rebuild its results from the saved models, without retraining. Prepared by Nadav and Alon.
 
-- **What is here:** the repository at the tag `final-v1` of https://github.com/NadavJ180/ML-in-ChemEng-PINN, exported with `git archive`: the code, the 30 old models, the 210 checkpoints of the 30 new cases, the case files with their seeds, the frozen calibration, the evaluation protocol and every result. The build script (`release/build_final_package.py`) added this file, `data/cases_metadata.json`, `pip_freeze.txt`, `reproduction_check.txt` and `repro_log.txt`.
+- **What is here:** the repository at the tag `final-v2` of https://github.com/NadavJ180/ML-in-ChemEng-PINN, exported with `git archive`: the code, the 30 old models, the 210 checkpoints of the 30 new cases, the case files with their seeds, the frozen calibration, the evaluation protocol and every result. The build script (`release/build_final_package.py`) added this file, `data/cases_metadata.json`, `pip_freeze.txt`, `reproduction_check.txt` and `repro_log.txt`. It left out the first iteration's README, research log, original plan and figures, which are not part of this round.
 - **Checked:** every result was rebuilt from scratch on a CPU and compared with the copies in this package. The outcome is in `reproduction_check.txt`, and the commit in its first lines.
-- The repository's own `README.md` and `PIPELINE.md` document the code; `PROTOCOL.md` is the evaluation protocol, frozen before any new case was scored.
+- `PIPELINE.md` lists each script, what it needs and what it makes; `DESIGN.md` says why the code is built this way; `PROTOCOL.md` is the evaluation protocol, frozen before any new case was scored. Each script prints its options with `--help`.
 
 ## Quick start
 
@@ -20,7 +20,7 @@ python run_pipeline.py --preset final --device cpu
 - It writes over the copies in `results/`. To compare yours with ours, unzip a second copy first.
 - On another OS or with other library builds, the CSV files can differ in the last digits (about 1e-13). Every count, flag and LaTeX table should come out the same.
 - The damaged fields (about 1.8 GB, `data/confirmation/hallucinations/`) are not in the ZIP; the command rebuilds them.
-- Training runs on a GPU and is not repeatable bit for bit, so the package ships the trained checkpoints and every result is rebuilt from them. Retraining (`src/models/train_model.py`, see `README.md`) gives similar, not identical, models.
+- Training runs on a GPU and is not repeatable bit for bit, so the package ships the trained checkpoints and every result is rebuilt from them. Retraining (`src/models/train_model.py`, see `PIPELINE.md`) gives similar, not identical, models.
 
 ## What was asked for, and where it is
 
@@ -92,7 +92,7 @@ python run_pipeline.py --preset final --device cpu
 
 ### The bad results, and what the results do not show
 
-1. **The PHS does not beat the simpler Score2.** Score2 has the highest AUC (0.900 against 0.884 for the PHS) and the highest recall, with fewer false alarms than the PHS. The difference in AUC, Score2 minus PHS, is +0.016 [+0.003, +0.030]. This range was computed after the fact, not planned in the protocol (paired case bootstrap on `results/benchmark/confirmation_scores_raw.csv`, 2000 resamples within each k, seed 0). Adding bc or E to Score2 lowers its AUC.
+1. **The PHS does not beat the simpler Score2.** Score2 has the highest AUC (0.900 against 0.884 for the PHS) and the highest recall, with fewer false alarms than the PHS. The difference in AUC, Score2 minus PHS, is +0.016 [+0.003, +0.030]. This range was computed after the fact, not planned in the protocol (paired case bootstrap on `results/benchmark/confirmation_scores_raw.csv`, 2000 resamples within each k, seed 0). Adding bc or E to Score2 lowers its AUC. Part of Score2's lead comes from the choice of damages (limit G below).
 2. **False alarms and k.** Section 5 of `PROTOCOL.md` expected more false alarms for k = 1, since clean scores fall with k. That holds for Score1, Score2 and Score5: their clean scores fall with k (Spearman correlation with k: −0.80, −0.78, −0.90), and Score5's two false alarms are both k = 1. It does not hold for Score3 and Score4, whose false alarms are case 46 and case 48 (k = 2) and case 53 (k = 3). Their energy terms are large: S̄_E = 36.1, 20.4 and 9.14. S_E is not scaled by the velocity scale U0, so it grows like U0⁴ times the squared relative energy error. These three cases have U0 = 1.86, 1.66 and 1.91, higher than any old case of the same k (at most 1.56 for k = 2 and 1.62 for k = 3). Case 46 and case 48 also have the largest relative energy errors of all 60 models (0.84% and 0.79%, against at most 0.48% for the old ones). See `results/figures/fig_energy_term_vs_u0`. `PROTOCOL.md` is frozen, so this answer is given here.
 3. **A fully trained model that is wrong was never tested.** All 142 inaccurate checkpoints are half-trained Adam checkpoints (errors from 10.5% up), and no final model is inaccurate. So "no failure is missed" holds for half-trained models only.
 4. **Among the final models, the flags don't follow the error.** Score2 to Score5 flag final models with errors of 0.17–0.54%, while the least accurate one (`case_58`, 0.73%) is flagged by none. Over the 30 final models, the Spearman correlation of the score with the error is −0.15, −0.13, +0.34, +0.67 and −0.34 for Score1 to Score5 (computed after the fact from `results/natural_errors/checkpoint_scores.csv`). Only Score4 clearly follows it, through its energy term (limit 7). Within one run the scores do follow the error: over the 7 checkpoints of a case, the median Spearman correlation is 0.89–0.98. But the final models' errors span only a factor of 5 (0.15–0.73%), while the score per squared error varies 35 to 41-fold between them (Score1, Score2, Score5), and for Score1 is about 10 times higher for k = 1 than for k = 3.
@@ -117,6 +117,10 @@ D. **Periodicity is asked for, not built in.** The network takes x and y themsel
 E. **The time-shift damage stops growing at large ε.** The shifted time is cut off at T. For `case_30`, `case_31` and `case_49` the shift reaches past T for every time already at ε = 0.03, so their field at ε = 0.05 equals the one at 0.03 (3 of the 180 time-shift fields), and on average 54% of the window is cut off at ε = 0.05. Needs: rescoring with a smaller shift; no training.
 
 F. **The points are drawn in single precision.** The samplers draw float32 numbers and convert them to float64, so the right edge is stored as 2π + 1.7e-7. That is far below every error here. Needs: float64 sampling, which changes every point, so new training.
+
+G. **The damages favour the continuity term.** Three of the five damages (velocity divergence, momentum, boundary) add a velocity that is not divergence-free, while the trained models satisfy continuity very well (their clean S_div is tiny). So continuity is the easiest law to catch, and part of Score2's lead (bad result 1) comes from the choice of damages: even the momentum damage is ranked better by the continuity term alone (AUC 0.928) than by the momentum term alone (0.874) (`results/figures/table_term_auc`). Needs: damages that break only momentum, for example a velocity added from a stream function ψ (u += ∂ψ/∂y, v −= ∂ψ/∂x), which is divergence-free by construction; rescoring, no training.
+
+H. **The pooled AUC includes fields that are not damaged in practice.** At ε = 0.0001 a damaged field is almost its clean field: against the clean fields its AUC is 0.51–0.53 for every score. These are one sixth of the damaged fields, so they cap the pooled AUC near 0.92. Without them the AUCs are 0.943 (Score1), 0.974 (Score2), 0.958 (PHS), 0.963 (Score4) and 0.964 (Score5), in the same order. So the protocol's AUC bar is largely set by which strengths were included; read the recall and AUC per strength (`results/benchmark/metrics_by_type_eps`), and ε = 0.0001 as a below-detection control. Computed after the fact from `results/benchmark/confirmation_scores_raw.csv`.
 
 ### Reading the error bars
 
@@ -163,7 +167,5 @@ The steps after `scores` read what the earlier ones wrote, so `--from metrics` n
 
 ## Notes
 
-- `plots/paper_figures/` holds the first paper's figures and tables, from the 30 old cases. They are not part of this iteration and were not rechecked for it; `python run_pipeline.py --stages sample,hallucinate,phs,figures --device cpu` rebuilds them (checked byte for byte at commit `4437907`, October 2026).
-- `calibration/source_phs_components_raw.csv` is that run's table of the 930 old fields, copied byte for byte; `PROTOCOL.md` (sections 4, 5 and 8) records how it and the calibration were checked, and their SHA-256.
-- `PINN suggestion-1.pdf` is the project's original plan (June 2026). Parts of it were changed later: S_bc is a near/far residual ratio instead of its periodicity check, and the calibration is frozen on the 30 old clean fields instead of fitted on the validation fields. `PROTOCOL.md` describes what this iteration did.
-- More detail: `PROTOCOL.md` (every setting), `DESIGN.md` (why the code is built this way), `README.md` and `PIPELINE.md` (the code), and issues #35 to #48 of the repository (the work, step by step; the roadmap is #47).
+- `calibration/source_phs_components_raw.csv` is the first iteration's table of the 930 old fields (`python run_pipeline.py --stages sample,hallucinate,phs --device cpu` rebuilds it; checked byte for byte at commit `4437907`, October 2026), copied byte for byte; `PROTOCOL.md` (sections 4, 5 and 8) records how it and the calibration were checked, and their SHA-256.
+- More detail: `PROTOCOL.md` (every setting), `DESIGN.md` (why the code is built this way), `PIPELINE.md` (the code), and issues #35 to #48 of the repository (the work, step by step; the roadmap is #47).

@@ -37,7 +37,7 @@ class LossEvaluator:
         
         self.mse = nn.MSELoss()
         
-        # Loss weights (see the README's Project Workflow section)
+        # Loss weights
         self.lambda_ns = 1.0
         self.lambda_div = 10.0
         self.lambda_ic = 10.0
@@ -108,7 +108,7 @@ class LossEvaluator:
         Inputs:
             model (nn.Module): The initialized PINN model.
             ic_coords (torch.Tensor): Spatial coordinates at t=0 of shape (N_ic, 3).
-            ic_true (torch.Tensor): Exact analytical values for u and v at t=0, shape (N_ic, 3).
+            ic_true (torch.Tensor): Exact analytical values for u and v at t=0, shape (N_ic, 2).
 
         Outputs:
             loss_ic (torch.Tensor): Mean Squared Error between predicted and true initial velocities.
